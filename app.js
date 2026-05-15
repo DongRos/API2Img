@@ -1,10 +1,11 @@
 const CONFIG_KEY = "image2.canvas.config.v1";
+const CONFIG_VERSION = 2;
 const CONFIG_HISTORY_KEY = "image2.canvas.config.history.v1";
 const GENERATION_LOGS_KEY = "image2.generation.logs.v1";
 const FLOW_STATE_KEY = "image2.flow.state.v1";
 const CONFIG_HISTORY_LIMIT = 12;
 const GENERATION_LOG_LIMIT = 30;
-const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
+const SINGLE_IMAGE_MAX_ATTEMPTS = 1;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
 const FLOW_META_STORE = "meta";
@@ -66,9 +67,10 @@ const config = {
   apiKey: "",
   rememberKey: false,
   requestFormat: "openai",
-  transportMode: "proxy",
+  transportMode: "direct",
   customTemplate: defaultTemplate,
   multiImageMode: "single",
+  modelName: "gpt-image-2",
 };
 
 const state = {
@@ -173,9 +175,9 @@ function bindEvents() {
 
 function onModelSelect() {
   if ($("#modelName").value !== "custom") return;
-  const custom = prompt("输入自定义模型名称", config.modelName || "gpt-image-1");
+  const custom = prompt("输入自定义模型名称", config.modelName || "gpt-image-2");
   if (!custom) {
-    $("#modelName").value = config.modelName || "gpt-image-1";
+    $("#modelName").value = config.modelName || "gpt-image-2";
     return;
   }
   ensureModelOption(custom);
@@ -236,16 +238,13 @@ async function generateImages(extra = {}) {
   startProgress("提交生成请求", "正在把提示词发送到中转接口", 8, { generated: 0, total: options.count });
   try {
     updateProgress("等待模型生成", `正在生成 ${options.count} 张图片`, 28, { generated: 0, total: options.count });
-    const images = await requestImageBatch(endpoint, options);
-    if (!images.length) {
+    const context = createGenerationContext(options);
+    const images = await requestImageBatch(endpoint, options, context);
+    const created = context.created;
+    if (!created.length && !images.length) {
       throw new Error("没有成功生成图片，请稍后重试或降低生成数量");
     }
-    updateProgress("加载图片", "正在整理图片并加入结果区", 88, { generated: images.length, total: options.count });
-    const created = await Promise.all(images.map((src, index) => createResult(src, options, index)));
-    state.latestGenerationId = generationId;
-    state.results.unshift(...created);
-    await persistState();
-    renderResults();
+    updateProgress("整理结果", "正在确认已生成图片", 88, { generated: created.length, total: options.count });
     const suffix = created.length < options.count ? `，${options.count - created.length} 张未完成` : "";
     const finalStatus = generationCancelled ? "cancelled" : created.length >= options.count ? "completed" : "partial";
     const finalMessage = generationCancelled
@@ -263,12 +262,25 @@ async function generateImages(extra = {}) {
   } catch (error) {
     console.error(error);
     const cancelled = generationCancelled || isAbortError(error);
-    finishGenerationLog(cancelled ? "cancelled" : "failed", {
-      error: error.message || "生成失败",
-      imageCount: 0,
+    const keptCount = state.results.filter((item) => item.generationId === generationId).length;
+    const status = cancelled ? "cancelled" : keptCount ? "partial" : "failed";
+    const message = cancelled
+      ? keptCount
+        ? `已取消，保留 ${keptCount}/${options.count} 张图片`
+        : "已取消生成，没有可保留的图片"
+      : keptCount
+        ? `已保留 ${keptCount}/${options.count} 张图片，后续生成停止：${error.message || "生成失败"}`
+        : error.message || "生成失败";
+    finishGenerationLog(status, {
+      error: status === "partial" ? "" : error.message || "生成失败",
+      message: status === "partial" ? message : "",
+      imageCount: keptCount,
     });
-    updateProgress(cancelled ? "生成已取消" : "生成失败", cancelled ? "已取消生成，没有可保留的图片" : error.message || "生成失败", 100);
-    showToast(cancelled ? "已取消生成，没有可保留的图片" : error.message || "生成失败");
+    updateProgress(cancelled ? "生成已取消" : keptCount ? "部分完成" : "生成失败", message, 100, {
+      generated: keptCount,
+      total: options.count,
+    });
+    showToast(message);
   } finally {
     setTimeout(() => {
       isGenerating = false;
@@ -454,11 +466,40 @@ function compatibleQuality(options) {
   return "";
 }
 
-async function requestImageBatch(endpoint, options) {
+function createGenerationContext(options) {
+  return {
+    options,
+    created: [],
+    seenSources: new Set(),
+  };
+}
+
+async function commitGeneratedImage(src, options, index, context) {
+  if (!src || context?.seenSources?.has(src)) return null;
+  context?.seenSources?.add(src);
+  const result = await createResult(src, options, index);
+  state.latestGenerationId = options.generationId || "";
+  state.results.unshift(result);
+  if (context) context.created.push(result);
+  await persistState();
+  renderResults();
+  return result;
+}
+
+async function commitGeneratedImages(sources, options, startIndex, context) {
+  const created = [];
+  for (const [index, src] of sources.entries()) {
+    const result = await commitGeneratedImage(src, options, startIndex + index, context);
+    if (result) created.push(result);
+  }
+  return created;
+}
+
+async function requestImageBatch(endpoint, options, context) {
   const desired = Math.max(1, options.count || 1);
   if (desired > 1 && options.multiImageMode === "single") {
     updateProgress("逐张生成中", `正在精确生成 ${desired} 张图片`, 30, { generated: 0, total: desired });
-    return requestSingleImages(endpoint, options, desired, 0, desired);
+    return requestSingleImages(endpoint, options, desired, 0, desired, context);
   }
 
   const title = desired > 1 ? "批量优先生成中" : "生成中";
@@ -467,35 +508,29 @@ async function requestImageBatch(endpoint, options) {
   try {
     const payload = await requestImages(endpoint, { ...options, count: desired, batchTotal: 0 });
     images = normalizeImages(payload).slice(0, desired);
+    await commitGeneratedImages(images, options, 0, context);
     updateProgress("接收生成结果", `接口返回 ${images.length}/${desired} 张图片`, 82, { generated: images.length, total: desired });
-    if (images.length >= desired || desired === 1) return images;
+    if (images.length < desired && desired > 1) {
+      showToast(`批量请求返回 ${images.length}/${desired} 张，已停止自动补单以避免重复扣费`);
+    }
+    return images;
   } catch (error) {
     const message = cleanErrorMessage(error);
     if (desired === 1 || isFatalImageError(message)) throw error;
+    if (isUncertainChargedError(message)) {
+      throw new Error(`批量请求结果未知，已停止自动补单以避免重复扣费：${message}`);
+    }
     updateProgress("批量失败，改用逐张生成", `批量请求失败：${message}，正在逐张补齐`, 42, {
       generated: 0,
       total: desired,
     });
-    return requestSingleImages(endpoint, options, desired, 0, desired);
+    return requestSingleImages(endpoint, options, desired, 0, desired, context);
   }
 
-  updateProgress("补齐剩余图片", `批量接口只返回 ${images.length}/${desired} 张，正在逐张补齐`, 84, {
-    generated: images.length,
-    total: desired,
-  });
-  try {
-    const extraImages = await requestSingleImages(endpoint, options, desired - images.length, images.length, desired);
-    return [...images, ...extraImages].slice(0, desired);
-  } catch (error) {
-    if (images.length) {
-      showToast(`已保留 ${images.length}/${desired} 张，剩余图片生成失败：${cleanErrorMessage(error)}`);
-      return images;
-    }
-    throw error;
-  }
+  return images;
 }
 
-async function requestSingleImages(endpoint, options, desired, offset = 0, total = desired) {
+async function requestSingleImages(endpoint, options, desired, offset = 0, total = desired, context = null) {
   const tasks = Array.from({ length: desired }, (_, index) => index);
   const images = Array.from({ length: desired }, () => "");
   const errors = [];
@@ -523,6 +558,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
           const source = normalizeImages(payload)[0] || "";
           if (!source) throw new Error("接口没有返回图片");
           images[index] = source;
+          await commitGeneratedImage(source, options, absoluteIndex, context);
           break;
         } catch (error) {
           lastError = cleanErrorMessage(error);
@@ -569,9 +605,16 @@ function isFatalImageError(message) {
 function shouldRetrySingleImageError(message) {
   return (
     !isFatalImageError(message) &&
+    !isUncertainChargedError(message) &&
     /\b(500|502|503|504|520|522|524)\b|timeout|timed out|bad gateway|gateway|temporar|network|failed to fetch|没有返回图片|no image/i.test(
       message,
     )
+  );
+}
+
+function isUncertainChargedError(message) {
+  return /failed to fetch|network|timeout|timed out|\b(504|524)\b|edgeone_proxy_timeout|代理等待上游生图超时|上游接口超时|请求超时|连接中断|connection|aborted/i.test(
+    message || "",
   );
 }
 
@@ -580,7 +623,8 @@ function shouldRetryWithMinimalPayload(message, variant, options = {}) {
     variant === "compatible" &&
     Number(options.count || 1) <= 1 &&
     !isFatalImageError(message) &&
-    /upstream did not return image output|no image output|invalid|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param/i.test(
+    !isUncertainChargedError(message) &&
+    /invalid|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param/i.test(
       message,
     )
   );
@@ -1190,7 +1234,7 @@ function syncSizeOptions() {
 
 function getModelName() {
   const value = $("#modelName").value;
-  return value === "custom" ? config.modelName || "gpt-image-1" : value;
+  return value === "custom" ? config.modelName || "gpt-image-2" : value;
 }
 
 function loadConfig() {
@@ -1199,6 +1243,10 @@ function loadConfig() {
   try {
     const saved = JSON.parse(raw);
     Object.assign(config, saved);
+    if (Number(saved.configVersion || 1) < CONFIG_VERSION) {
+      if (saved.transportMode === "proxy") config.transportMode = "direct";
+      if (!saved.modelName || saved.modelName === "gpt-image-1") config.modelName = "gpt-image-2";
+    }
     if (!saved.rememberKey) config.apiKey = "";
     if (saved.modelName) ensureModelOption(saved.modelName);
   } catch {
@@ -1212,11 +1260,11 @@ function hydrateConfig() {
   $("#apiKey").value = config.apiKey || "";
   $("#rememberKey").checked = Boolean(config.rememberKey);
   $("#requestFormat").value = config.requestFormat || "openai";
-  $("#transportMode").value = config.transportMode || "proxy";
+  $("#transportMode").value = config.transportMode || "direct";
   $("#multiImageMode").value = config.multiImageMode || "single";
   $("#customTemplate").value = config.customTemplate || defaultTemplate;
-  ensureModelOption(config.modelName || "gpt-image-1");
-  $("#modelName").value = config.modelName || "gpt-image-1";
+  ensureModelOption(config.modelName || "gpt-image-2");
+  $("#modelName").value = config.modelName || "gpt-image-2";
   updateTemplateVisibility();
 }
 
@@ -1268,10 +1316,11 @@ function saveActiveConfig() {
     apiKey: config.rememberKey ? config.apiKey || "" : "",
     rememberKey: Boolean(config.rememberKey),
     requestFormat: config.requestFormat || "openai",
-    transportMode: config.transportMode || "proxy",
+    transportMode: config.transportMode || "direct",
     multiImageMode: config.multiImageMode || "single",
     customTemplate: config.customTemplate || defaultTemplate,
-    modelName: config.modelName || "gpt-image-1",
+    modelName: config.modelName || "gpt-image-2",
+    configVersion: CONFIG_VERSION,
   };
   localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted));
 }
@@ -1294,10 +1343,10 @@ function sanitizeConfigSnapshot(snapshot) {
     apiKey: snapshot.rememberKey ? snapshot.apiKey || "" : "",
     rememberKey: Boolean(snapshot.rememberKey),
     requestFormat: snapshot.requestFormat || "openai",
-    transportMode: snapshot.transportMode || "proxy",
+    transportMode: snapshot.transportMode || "direct",
     multiImageMode: snapshot.multiImageMode || "single",
     customTemplate: snapshot.customTemplate || defaultTemplate,
-    modelName: snapshot.modelName || "gpt-image-1",
+    modelName: snapshot.modelName || "gpt-image-2",
     updatedAt: Number(snapshot.updatedAt) || Date.now(),
   };
 }
@@ -1343,7 +1392,7 @@ function renderConfigHistory() {
           <button class="config-history-main" type="button" data-action="switch-config">
             <strong>${escapeHtml(item.title)}</strong>
             <span>${escapeHtml(endpoint)}</span>
-            <small>${escapeHtml(item.modelName || "gpt-image-1")} · ${escapeHtml(item.requestFormat || "openai")} · ${transportLabel} · ${multiLabel} · ${keyLabel}</small>
+            <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${escapeHtml(item.requestFormat || "openai")} · ${transportLabel} · ${multiLabel} · ${keyLabel}</small>
           </button>
           <button class="icon-button config-history-delete" type="button" data-action="delete-config" title="删除配置">
             <i data-icon="trash"></i>
@@ -1373,7 +1422,7 @@ function switchConfigHistory(id) {
 
   Object.assign(config, item);
   normalizeConfiguredEditEndpoint();
-  ensureModelOption(config.modelName || "gpt-image-1");
+  ensureModelOption(config.modelName || "gpt-image-2");
   hydrateConfig();
   saveActiveConfig();
   showToast("已切换 API 配置");
@@ -1644,12 +1693,14 @@ function renderGenerationLogs() {
   if (!list) return;
   renderCurrentLogPreview();
 
+  const notice = `<div class="log-notice">生成速度和稳定性主要取决于你使用的 API 服务。不同中转站或模型通道的响应时间、超时策略和跨域支持可能不同；如果遇到超时、失败或结果未知，可以稍后重试、降低单次生成数量，或切换到更稳定的 API 再生成。</div>`;
+
   if (!generationLogs.length) {
-    list.innerHTML = `<div class="log-empty">还没有生成日志。发起一次生成后，这里会显示请求和返回。</div>`;
+    list.innerHTML = `${notice}<div class="log-empty">还没有生成日志。发起一次生成后，这里会显示请求和返回。</div>`;
     return;
   }
 
-  list.innerHTML = generationLogs
+  list.innerHTML = notice + generationLogs
     .map((log, index) => {
       const status = generationStatusLabel(log.status);
       const prompt = log.options?.prompt || "";
@@ -1853,7 +1904,7 @@ function requestLogLabel(options) {
 }
 
 function generationStatusLabel(status) {
-  return { running: "生成中", completed: "完成", partial: "部分完成", failed: "失败" }[status] || status || "未知";
+  return { running: "生成中", completed: "完成", partial: "部分完成", failed: "失败", cancelled: "已取消" }[status] || status || "未知";
 }
 
 function requestStatusLabel(entry) {

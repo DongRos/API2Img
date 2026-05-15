@@ -796,6 +796,16 @@ svg {
   line-height: 1.5;
 }
 
+.log-notice {
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .log-entry,
 .log-request {
   border: 1px solid var(--glass-border);
