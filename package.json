@@ -1,0 +1,9 @@
+{
+  "name": "api-2-image",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "build:edgeone": "node scripts/build-edgeone.mjs"
+  }
+}
