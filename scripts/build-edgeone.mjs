@@ -19,7 +19,7 @@ for (const file of ["package.json"]) {
   await copyFile(join(root, "cloud-functions", file), join(functionsDir, file));
 }
 
-for (const file of ["proxy-image.js", "cache-image.js"]) {
+for (const file of ["proxy-image.js", "cache-image.js", "health.js"]) {
   await copyFile(join(root, "cloud-functions", "api", file), join(functionsDir, "api", file));
 }
 

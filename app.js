@@ -606,22 +606,37 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
 
 async function sendImageRequest(endpoint, request) {
   if (config.transportMode === "direct") {
-    if (request.bodyType === "multipart") {
-      const form = new FormData();
-      Object.entries(request.fields).forEach(([key, value]) => form.append(key, value));
-      request.files.forEach((file) => form.append(file.field, dataUrlToBlob(file.dataUrl), file.filename));
-      return fetch(endpoint, { method: request.method, headers: request.headers, body: form, signal: request.signal });
-    }
-    return fetch(endpoint, { method: request.method, headers: request.headers, body: request.body, signal: request.signal });
+    return fetchDirectImageRequest(endpoint, request);
   }
 
   const { signal, ...proxyRequest } = request;
-  return fetch("/api/proxy-image", {
+  const proxyResponse = await fetch("/api/proxy-image", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ endpoint, request: proxyRequest }),
     signal,
   });
+  if (shouldFallbackToDirect(proxyResponse)) {
+    showToast("线上代理超时，正在尝试浏览器直连");
+    return fetchDirectImageRequest(endpoint, request);
+  }
+  return proxyResponse;
+}
+
+function fetchDirectImageRequest(endpoint, request) {
+  if (request.bodyType === "multipart") {
+    const form = new FormData();
+    Object.entries(request.fields).forEach(([key, value]) => form.append(key, value));
+    request.files.forEach((file) => form.append(file.field, dataUrlToBlob(file.dataUrl), file.filename));
+    return fetch(endpoint, { method: request.method, headers: request.headers, body: form, signal: request.signal });
+  }
+  return fetch(endpoint, { method: request.method, headers: request.headers, body: request.body, signal: request.signal });
+}
+
+function shouldFallbackToDirect(response) {
+  if (config.transportMode !== "proxy") return false;
+  const contentType = response.headers.get("content-type") || "";
+  return response.status === 504 && /text\/html|text\/plain/i.test(contentType);
 }
 
 async function parseApiResponse(response, requestLog = null) {
@@ -742,6 +757,9 @@ function formatHttpError(status, message) {
   const title = text.match(/<title>(.*?)<\/title>/i)?.[1];
   if (code === "524" || /524: A timeout occurred|A timeout occurred/i.test(text)) {
     return "上游接口超时（Cloudflare 524）。本次没有自动追加请求，请减少数量或稍后重试。";
+  }
+  if (code === "504" && /EdgeOne Pages/i.test(text)) {
+    return "EdgeOne 代理函数超时或未生效。已尝试直连；如果仍失败，请在设置里切到“浏览器直连”或降低生成数量。";
   }
   if (/<!doctype html|<html[\s>]/i.test(text)) {
     return title ? `接口返回 HTML：${title}` : "接口返回 HTML 页面，请检查 API URL 是否为真实接口路径";

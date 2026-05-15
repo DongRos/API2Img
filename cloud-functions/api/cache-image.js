@@ -11,9 +11,9 @@ export async function onRequestPost({ request }) {
       return jsonResponse(400, { error: { message: "图片 URL 必须以 http:// 或 https:// 开头" } });
     }
 
-    const upstream = await fetch(imageUrl, {
+    const upstream = await fetchWithTimeout(imageUrl, {
       headers: sanitizeHeaders(payload.headers || {}),
-    });
+    }, 25000);
     const contentType = upstream.headers.get("content-type") || "";
     if (!upstream.ok || !contentType.startsWith("image/")) {
       return jsonResponse(upstream.ok ? 415 : upstream.status, {
@@ -25,6 +25,9 @@ export async function onRequestPost({ request }) {
       dataUrl: `data:${contentType.split(";")[0]};base64,${arrayBufferToBase64(await upstream.arrayBuffer())}`,
     });
   } catch (error) {
+    if (error?.name === "AbortError") {
+      return jsonResponse(504, { error: { code: "edgeone_cache_timeout", message: "EdgeOne 图片缓存代理超时" } });
+    }
     return jsonResponse(500, { error: { message: error?.message || "Image cache error" } });
   }
 }
@@ -64,6 +67,12 @@ function corsResponse(body, init = {}) {
   headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
   return new Response(body, { ...init, headers });
+}
+
+function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 function arrayBufferToBase64(buffer) {

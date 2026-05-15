@@ -1,0 +1,4 @@
+.edgeone/
+node_modules/
+*.log
+verification-*.png

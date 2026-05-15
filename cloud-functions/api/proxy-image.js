@@ -37,7 +37,7 @@ export async function onRequestPost({ request }) {
       }
     }
 
-    const upstream = await fetch(endpoint, init);
+    const upstream = await fetchWithTimeout(endpoint, init, 25000);
     const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
     const responseBytes = await upstream.arrayBuffer();
 
@@ -55,6 +55,14 @@ export async function onRequestPost({ request }) {
       },
     });
   } catch (error) {
+    if (error?.name === "AbortError") {
+      return jsonResponse(504, {
+        error: {
+          code: "edgeone_proxy_timeout",
+          message: "EdgeOne 代理等待上游生图超时。请在网页设置里切换到“浏览器直连”，或降低生成数量后重试。",
+        },
+      });
+    }
     return jsonResponse(500, { error: { message: error?.message || "Proxy server error" } });
   }
 }
@@ -102,6 +110,12 @@ function corsResponse(body, init = {}) {
   headers.set("Access-Control-Allow-Methods", "POST, OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
   return new Response(body, { ...init, headers });
+}
+
+function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
 function base64ToUint8Array(base64) {
