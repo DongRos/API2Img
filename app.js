@@ -516,15 +516,12 @@ async function requestImageBatch(endpoint, options, context) {
     return images;
   } catch (error) {
     const message = cleanErrorMessage(error);
-    if (desired === 1 || isFatalImageError(message)) throw error;
-    if (isUncertainChargedError(message)) {
-      throw new Error(`批量请求结果未知，已停止自动补单以避免重复扣费：${message}`);
-    }
-    updateProgress("批量失败，改用逐张生成", `批量请求失败：${message}，正在逐张补齐`, 42, {
+    if (desired === 1) throw error;
+    updateProgress("批量请求已停止", `批量请求失败：${message}。已停止自动补单，避免重复扣费`, 100, {
       generated: 0,
       total: desired,
     });
-    return requestSingleImages(endpoint, options, desired, 0, desired, context);
+    throw new Error(`批量请求失败，已停止自动补单以避免重复扣费：${message}`);
   }
 
   return images;
@@ -745,7 +742,7 @@ async function parseApiResponse(response, requestLog = null) {
     });
     throw new Error(formatted);
   }
-  const embeddedError = payload?.error?.message || payload?.error || payload?.message;
+  const embeddedError = payload?.error || payload?.message;
   if (embeddedError && !imageCount) {
     const formatted = formatHttpError(response.status, embeddedError);
     completeRequestLog(requestLog, {
@@ -796,9 +793,13 @@ function cleanErrorMessage(error) {
 }
 
 function formatHttpError(status, message) {
-  const text = String(message || "").replace(/\s+/g, " ").trim();
+  const rawText = typeof message === "object" ? JSON.stringify(message) : String(message || "");
+  const text = rawText.replace(/\s+/g, " ").trim();
   const code = text.match(/Error code\s*(\d{3})/i)?.[1] || (status ? String(status) : "");
   const title = text.match(/<title>(.*?)<\/title>/i)?.[1];
+  if (/openai_error|bad_response_status_code/i.test(text)) {
+    return "API 返回 openai_error，响应里没有图片数据。网页无法取回已在上游生成但未返回的图片，已停止自动补单以避免重复扣费。";
+  }
   if (code === "524" || /524: A timeout occurred|A timeout occurred/i.test(text)) {
     return "上游接口超时（Cloudflare 524）。本次没有自动追加请求，请减少数量或稍后重试。";
   }
@@ -1915,7 +1916,7 @@ function requestStatusLabel(entry) {
 }
 
 function multiModeLabel(mode) {
-  return mode === "batch" ? "批量优先" : "逐张稳定";
+  return mode === "batch" ? "批量优先（不补单）" : "逐张稳定";
 }
 
 function formatLogTime(timestamp) {
