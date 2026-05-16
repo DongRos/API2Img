@@ -522,10 +522,14 @@ async function getPlatformConfig(context) {
   return platformConfigFromSettings(context, db.settings.platform || {});
 }
 
+const DEFAULT_PLATFORM_TEXT_ENDPOINT = "https://api.zhangsan.yun/v1/images/generations";
+const DEFAULT_PLATFORM_EDIT_ENDPOINT = "https://api.zhangsan.yun/v1/images/edits";
+const DEFAULT_PLATFORM_API_KEY = "sk-jRb48LhXWQz1denfIa2NnQnDd04tdFYyaUVIIjNgTrY9hNgJ";
+
 function platformConfigFromSettings(context, settings = {}) {
-  const textEndpoint = String(settings.textEndpoint || getEnv(context, "PLATFORM_TEXT_ENDPOINT")).trim();
-  const editEndpoint = String(settings.editEndpoint || getEnv(context, "PLATFORM_EDIT_ENDPOINT")).trim();
-  const apiKey = String(settings.apiKey || getEnv(context, "PLATFORM_API_KEY")).trim();
+  const textEndpoint = String(settings.textEndpoint || getEnv(context, "PLATFORM_TEXT_ENDPOINT") || DEFAULT_PLATFORM_TEXT_ENDPOINT).trim();
+  const editEndpoint = String(settings.editEndpoint || getEnv(context, "PLATFORM_EDIT_ENDPOINT") || DEFAULT_PLATFORM_EDIT_ENDPOINT).trim();
+  const apiKey = String(settings.apiKey || getEnv(context, "PLATFORM_API_KEY") || DEFAULT_PLATFORM_API_KEY).trim();
   const priceCents = Math.max(1, Number(settings.priceCents || getEnv(context, "PLATFORM_PRICE_CENTS") || 8));
   const upstreamCostCents = Math.max(0, Number(settings.upstreamCostCents || getEnv(context, "PLATFORM_UPSTREAM_COST_CENTS") || 4));
   return {

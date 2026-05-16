@@ -79,7 +79,7 @@ const config = {
   customTemplate: defaultTemplate,
   multiImageMode: "single",
   modelName: "gpt-image-2",
-  apiProvider: "custom",
+  apiProvider: "platform",
 };
 
 const state = {
@@ -1426,7 +1426,7 @@ function hydrateConfig() {
   $("#requestFormat").value = config.requestFormat || "openai";
   $("#transportMode").value = config.transportMode || "direct";
   $("#multiImageMode").value = config.multiImageMode || "single";
-  $("#apiProviderSelect").value = config.apiProvider || "custom";
+  $("#apiProviderSelect").value = config.apiProvider || "platform";
   $("#customTemplate").value = config.customTemplate || defaultTemplate;
   ensureModelOption(config.modelName || "gpt-image-2");
   $("#modelName").value = config.modelName || "gpt-image-2";
@@ -1492,7 +1492,7 @@ function saveActiveConfig() {
     requestFormat: config.requestFormat || "openai",
     transportMode: config.transportMode || "direct",
     multiImageMode: config.multiImageMode || "single",
-    apiProvider: config.apiProvider || "custom",
+    apiProvider: config.apiProvider || "platform",
     customTemplate: config.customTemplate || defaultTemplate,
     modelName: config.modelName || "gpt-image-2",
     configVersion: CONFIG_VERSION,
@@ -1520,7 +1520,7 @@ function sanitizeConfigSnapshot(snapshot) {
     requestFormat: snapshot.requestFormat || "openai",
     transportMode: snapshot.transportMode || "direct",
     multiImageMode: snapshot.multiImageMode || "single",
-    apiProvider: snapshot.apiProvider || "custom",
+    apiProvider: snapshot.apiProvider || "platform",
     customTemplate: snapshot.customTemplate || defaultTemplate,
     modelName: snapshot.modelName || "gpt-image-2",
     updatedAt: Number(snapshot.updatedAt) || Date.now(),
