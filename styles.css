@@ -149,6 +149,14 @@ body[data-theme="light"] select option:checked {
   min-width: 0;
 }
 
+.titlebar p {
+  max-width: min(760px, 52vw);
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 h1,
 h2,
 h3,
@@ -705,7 +713,10 @@ svg {
   transform: translateX(0);
 }
 
-.logs-panel {
+.logs-panel,
+.code-admin-panel,
+.stats-panel,
+.wallet-panel {
   position: fixed;
   top: 76px;
   right: 16px;
@@ -727,8 +738,23 @@ svg {
   transition: transform 0.2s ease;
 }
 
-.logs-panel.open {
+.logs-panel.open,
+.code-admin-panel.open,
+.stats-panel.open,
+.wallet-panel.open {
   transform: translateX(0);
+}
+
+.stats-panel {
+  width: min(640px, calc(100vw - 32px));
+}
+
+.code-admin-panel {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.wallet-panel {
+  width: min(500px, calc(100vw - 32px));
 }
 
 .panel-header {
@@ -784,10 +810,250 @@ svg {
   justify-content: flex-end;
 }
 
+.wallet-chip.active {
+  border-color: var(--accent);
+}
+
+.wallet-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.wallet-summary div,
+.redeem-box,
+.wallet-item {
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+}
+
+.wallet-summary div {
+  padding: 12px;
+}
+
+.wallet-summary span,
+.wallet-item span,
+.wallet-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wallet-summary strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 22px;
+}
+
+.redeem-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.amount-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.amount-grid button {
+  min-height: 36px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-strong);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.wallet-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wallet-history {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wallet-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wallet-item {
+  padding: 10px;
+}
+
+.wallet-item div {
+  min-width: 0;
+}
+
+.wallet-item strong,
+.wallet-item span,
+.wallet-item small {
+  display: block;
+}
+
+.wallet-item strong {
+  font-size: 14px;
+}
+
+.wallet-item small {
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-admin-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+}
+
+.code-admin-result textarea {
+  width: 100%;
+  min-height: 190px;
+  padding: 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.code-admin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
 .generation-log-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.api-stats-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.api-stats-summary div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+}
+
+.api-stats-summary strong,
+.api-stats-summary span {
+  display: block;
+}
+
+.api-stats-summary strong {
+  font-size: 20px;
+}
+
+.api-stats-summary span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.api-stats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.api-stat-card {
+  padding: 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+}
+
+.api-stat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.api-stat-head strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-stat-head span {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-strong);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.api-stat-endpoint {
+  margin-top: 6px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.api-stat-grid span {
+  min-width: 0;
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .log-empty {
@@ -1178,6 +1444,11 @@ svg {
     display: none;
   }
 
+  .titlebar p {
+    max-width: 54vw;
+    font-size: 11px;
+  }
+
   .result-grid {
     grid-template-columns: 1fr;
   }
@@ -1213,11 +1484,42 @@ svg {
     padding-bottom: 120px;
   }
 
-  .logs-panel {
+  .logs-panel,
+  .code-admin-panel,
+  .stats-panel {
     top: 68px;
     right: 8px;
     width: calc(100vw - 16px);
     max-height: calc(100vh - 84px);
+  }
+
+  .wallet-panel {
+    top: 68px;
+    right: auto;
+    left: 8px;
+    width: calc(100vw - 16px) !important;
+    max-height: calc(100vh - 84px);
+    transform: translateX(calc(-100% - 24px));
+  }
+
+  .logs-panel.open,
+  .code-admin-panel.open,
+  .stats-panel.open,
+  .wallet-panel.open {
+    transform: translateX(0) !important;
+  }
+
+  .wallet-summary,
+  .amount-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .api-stats-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .api-stat-grid {
+    grid-template-columns: 1fr;
   }
 
   .log-entry > summary {
@@ -1231,4 +1533,5 @@ svg {
   .field-grid {
     grid-template-columns: 1fr;
   }
+
 }

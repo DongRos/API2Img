@@ -2,10 +2,16 @@ const CONFIG_KEY = "image2.canvas.config.v1";
 const CONFIG_VERSION = 2;
 const CONFIG_HISTORY_KEY = "image2.canvas.config.history.v1";
 const GENERATION_LOGS_KEY = "image2.generation.logs.v1";
+const API_STATS_KEY = "image2.api.stats.v1";
 const FLOW_STATE_KEY = "image2.flow.state.v1";
+const CODE_ADMIN_PASSWORD_KEY = "image2.code.admin.password.v1";
 const CONFIG_HISTORY_LIMIT = 12;
 const GENERATION_LOG_LIMIT = 30;
+const API_STATS_LIMIT = 80;
+const API_STATS_OPEN_PHRASE = "apistats";
+const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
 const SINGLE_IMAGE_MAX_ATTEMPTS = 1;
+const PLATFORM_PRICE_FALLBACK_CENTS = 8;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
 const FLOW_META_STORE = "meta";
@@ -53,6 +59,8 @@ const iconPaths = {
   settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.3 7A2 2 0 1 1 7.1 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
   list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M8 17V9"/><path d="M13 17V5"/><path d="M18 17v-6"/>',
+  wallet: '<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2H7"/><path d="M16 14h.01"/>',
   check: '<path d="m20 6-11 11-5-5"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
@@ -71,6 +79,7 @@ const config = {
   customTemplate: defaultTemplate,
   multiImageMode: "single",
   modelName: "gpt-image-2",
+  apiProvider: "custom",
 };
 
 const state = {
@@ -82,6 +91,18 @@ const state = {
   latestGenerationId: "",
 };
 
+const billingState = {
+  customerId: "",
+  balanceCents: 0,
+  priceCents: PLATFORM_PRICE_FALLBACK_CENTS,
+  upstreamCostCents: 4,
+  platformEnabled: false,
+  orders: [],
+  usage: [],
+  redemptions: [],
+  activeOrder: null,
+};
+
 let toastTimer = null;
 let progressTimer = null;
 let progressStartedAt = 0;
@@ -90,11 +111,16 @@ let progressGenerated = 0;
 let progressTotal = 0;
 let configHistory = [];
 let generationLogs = [];
+let apiStats = [];
 let activeGenerationLog = null;
 let isGenerating = false;
 let generationAbortController = null;
 let generationCancelled = false;
 let flowDbPromise = null;
+let statsOpenBuffer = "";
+let codeAdminOpenBuffer = "";
+let lastCodeAdminCsv = "";
+let lastCodeAdminFilename = "";
 const detailView = {
   scale: 1,
   x: 0,
@@ -111,10 +137,14 @@ async function init() {
   loadConfig();
   loadConfigHistory();
   loadGenerationLogs();
+  loadApiStats();
+  await loadBilling();
   await loadState();
   hydrateConfig();
   renderConfigHistory();
   renderGenerationLogs();
+  renderApiStats();
+  renderWallet();
   bindEvents();
   renderReferences();
   renderResults();
@@ -132,6 +162,19 @@ function fillControls() {
 function bindEvents() {
   $("#settingsToggle").addEventListener("click", () => $("#settingsPanel").classList.toggle("open"));
   $("#closeSettings").addEventListener("click", () => $("#settingsPanel").classList.remove("open"));
+  $("#walletToggle").addEventListener("click", () => {
+    $("#walletPanel").classList.toggle("open");
+    refreshBilling();
+  });
+  $("#closeWallet").addEventListener("click", () => $("#walletPanel").classList.remove("open"));
+  $("#apiProviderSelect").addEventListener("change", onApiProviderChange);
+  $("#redeemCodeButton").addEventListener("click", redeemCode);
+  $("#redeemCodeInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      redeemCode();
+    }
+  });
   $("#saveConfigButton").addEventListener("click", saveConfigFromForm);
   $("#themeButton").addEventListener("click", toggleTheme);
   $("#uploadButton").addEventListener("click", () => $("#imageInput").click());
@@ -145,6 +188,15 @@ function bindEvents() {
   });
   $("#closeLogs").addEventListener("click", () => $("#logsPanel").classList.remove("open"));
   $("#clearLogsButton").addEventListener("click", clearGenerationLogs);
+  $("#closeStats").addEventListener("click", () => $("#statsPanel").classList.remove("open"));
+  $("#clearStatsButton").addEventListener("click", clearApiStats);
+  $("#closeCodeAdmin").addEventListener("click", () => $("#codeAdminPanel").classList.remove("open"));
+  $("#generateCodesButton").addEventListener("click", generateRedeemCodesFromPanel);
+  $("#copyCodesButton").addEventListener("click", copyGeneratedCodes);
+  $("#downloadCodesButton").addEventListener("click", downloadLastCodeCsv);
+  $("#codeAdminAmount").addEventListener("input", syncCodeAdminLabel);
+  $("#loadPlatformConfigButton").addEventListener("click", loadPlatformAdminConfig);
+  $("#savePlatformConfigButton").addEventListener("click", savePlatformAdminConfig);
   $("#cancelGenerateButton").addEventListener("click", cancelGeneration);
   $("#generationProgress").addEventListener("click", onProgressClick);
   $("#ratioSelect").addEventListener("change", syncSizeOptions);
@@ -171,6 +223,7 @@ function bindEvents() {
     }
   });
   window.addEventListener("resize", debounce(layoutResultMasonry, 120));
+  if (new URLSearchParams(location.search).has("admin")) openCodeAdminPanel();
 }
 
 function onModelSelect() {
@@ -197,6 +250,12 @@ async function generateImages(extra = {}) {
   }
 
   const mode = extra.mode || $("#modeSelect").value;
+  const usePlatformApi = isPlatformApiSelected();
+  if (usePlatformApi && !billingState.platformEnabled) {
+    $("#walletPanel").classList.add("open");
+    showToast("推荐 API 暂未配置，请联系站长处理");
+    return;
+  }
   if (mode === "image" && !state.references.length) {
     showToast("图生图需要先上传参考图");
     return;
@@ -204,7 +263,8 @@ async function generateImages(extra = {}) {
   const endpointInfo = resolveEndpointForMode(mode);
   const endpoint = endpointInfo.endpoint;
   if (!endpoint) {
-    $("#settingsPanel").classList.add("open");
+    if (usePlatformApi) $("#walletPanel").classList.add("open");
+    else $("#settingsPanel").classList.add("open");
     showToast(endpointInfo.message || "请先配置 API URL");
     return;
   }
@@ -229,7 +289,17 @@ async function generateImages(extra = {}) {
     referenceImages: mode === "image" ? [...state.references] : [],
     generationId,
     abortSignal: generationAbortController.signal,
+    apiProvider: usePlatformApi ? "platform" : "custom",
   };
+  if (usePlatformApi) {
+    const requiredCents = options.count * billingState.priceCents;
+    if (billingState.balanceCents < requiredCents) {
+      $("#walletPanel").classList.add("open");
+      showToast(`余额不足，本次预计需要 ${formatMoney(requiredCents)} 元`);
+      renderWallet();
+      return;
+    }
+  }
   state.lastOptions = options;
   activeGenerationLog = startGenerationLog(endpoint, options);
 
@@ -335,6 +405,14 @@ function normalizeEndpointBeforeRequest(endpoint, options) {
 }
 
 function resolveEndpointForMode(mode) {
+  if (isPlatformApiSelected()) {
+    return {
+      endpoint: "/api/billing/platform-image",
+      inferred: false,
+      message: "",
+    };
+  }
+
   if (mode === "image") {
     const editEndpoint = (config.editEndpoint || "").trim();
     if (editEndpoint) {
@@ -407,7 +485,17 @@ async function requestTextImages(endpoint, headers, options, variant) {
   const body = buildImageJsonBody(options, variant);
   return sendAndParseImageRequest(
     endpoint,
-    { method: "POST", headers, bodyType: "json", body: JSON.stringify(body), signal: options.abortSignal },
+    {
+      method: "POST",
+      headers,
+      bodyType: "json",
+      body: JSON.stringify(body),
+      signal: options.abortSignal,
+      billingCount: options.count,
+      billingMode: options.mode,
+      billingModel: options.model,
+      billingGenerationId: options.generationId,
+    },
     options,
     { variant, label: requestLogLabel(options) },
   );
@@ -423,7 +511,18 @@ async function requestEditImages(endpoint, headers, options, variant) {
 
   return sendAndParseImageRequest(
     endpoint,
-    { method: "POST", headers, bodyType: "multipart", fields, files, signal: options.abortSignal },
+    {
+      method: "POST",
+      headers,
+      bodyType: "multipart",
+      fields,
+      files,
+      signal: options.abortSignal,
+      billingCount: options.count,
+      billingMode: options.mode,
+      billingModel: options.model,
+      billingGenerationId: options.generationId,
+    },
     options,
     { variant, label: requestLogLabel(options) },
   );
@@ -635,17 +734,43 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
   const requestLog = startRequestLog(endpoint, request, options, meta);
   try {
     const response = await sendImageRequest(endpoint, request);
-    return await parseApiResponse(response, requestLog);
+    const payload = await parseApiResponse(response, requestLog);
+    if (isPlatformApiSelected()) refreshBilling();
+    await recordApiUsage(endpoint, options, requestLog, {
+      status: requestLog?.status === "success" ? "success" : "failed",
+      error: requestLog?.error || (requestLog?.status === "no-image" ? "接口返回成功，但没有图片数据" : ""),
+    });
+    return payload;
   } catch (error) {
     completeRequestLog(requestLog, {
       status: "failed",
       error: error.message || String(error),
     });
+    if (isPlatformApiSelected()) refreshBilling();
+    await recordApiUsage(endpoint, options, requestLog, { status: "failed", error: error.message || String(error) });
     throw error;
   }
 }
 
 async function sendImageRequest(endpoint, request) {
+  if (isPlatformApiSelected()) {
+    const { signal, billingCount, billingMode, billingModel, billingGenerationId, ...platformRequest } = request;
+    const response = await fetch("/api/billing/platform-image", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: billingMode || $("#modeSelect").value,
+        count: billingCount || 1,
+        model: billingModel || getModelName(),
+        generationId: billingGenerationId || "",
+        request: platformRequest,
+      }),
+      signal,
+    });
+    updateBillingFromGenerationResponse(response);
+    return response;
+  }
+
   if (config.transportMode === "direct") {
     return fetchDirectImageRequest(endpoint, request);
   }
@@ -1110,6 +1235,44 @@ function onDetailPointerUp() {
 
 function onGlobalKeyDown(event) {
   if (event.key === "Escape" && !$("#detailModal").hidden) closeDetail();
+  if (event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1) return;
+  const key = event.key.toLowerCase();
+  statsOpenBuffer = `${statsOpenBuffer}${key}`.slice(-API_STATS_OPEN_PHRASE.length);
+  codeAdminOpenBuffer = `${codeAdminOpenBuffer}${key}`.slice(-CODE_ADMIN_OPEN_PHRASE.length);
+  if (statsOpenBuffer === API_STATS_OPEN_PHRASE) {
+    event.preventDefault();
+    statsOpenBuffer = "";
+    removeOpenPhraseFromActiveField(API_STATS_OPEN_PHRASE);
+    openStatsPanelWithPassword();
+  } else if (codeAdminOpenBuffer === CODE_ADMIN_OPEN_PHRASE) {
+    event.preventDefault();
+    codeAdminOpenBuffer = "";
+    removeOpenPhraseFromActiveField(CODE_ADMIN_OPEN_PHRASE);
+    openCodeAdminPanel();
+  }
+}
+
+function removeOpenPhraseFromActiveField(phrase) {
+  const field = document.activeElement;
+  if (!field || !["INPUT", "TEXTAREA"].includes(field.tagName || "")) return;
+  const value = field.value || "";
+  if (!value.toLowerCase().endsWith(phrase)) return;
+  field.value = value.slice(0, -phrase.length);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+async function openStatsPanelWithPassword() {
+  const password = prompt("请输入管理员密码");
+  if (password == null) return;
+  const response = await fetch("/api/billing/admin/platform", {
+    headers: { "X-Admin-Password": password },
+  });
+  if (!response.ok) {
+    showToast("管理员密码不正确");
+    return;
+  }
+  renderApiStats();
+  $("#statsPanel").classList.add("open");
 }
 
 function resetDetailView() {
@@ -1263,10 +1426,12 @@ function hydrateConfig() {
   $("#requestFormat").value = config.requestFormat || "openai";
   $("#transportMode").value = config.transportMode || "direct";
   $("#multiImageMode").value = config.multiImageMode || "single";
+  $("#apiProviderSelect").value = config.apiProvider || "custom";
   $("#customTemplate").value = config.customTemplate || defaultTemplate;
   ensureModelOption(config.modelName || "gpt-image-2");
   $("#modelName").value = config.modelName || "gpt-image-2";
   updateTemplateVisibility();
+  updateApiProviderUi();
 }
 
 function saveConfigFromForm() {
@@ -1278,6 +1443,7 @@ function saveConfigFromForm() {
   config.requestFormat = $("#requestFormat").value;
   config.transportMode = $("#transportMode").value;
   config.multiImageMode = $("#multiImageMode").value;
+  config.apiProvider = $("#apiProviderSelect").value;
   config.customTemplate = $("#customTemplate").value.trim() || defaultTemplate;
   config.modelName = getModelName();
   delete config.id;
@@ -1302,6 +1468,13 @@ function saveMultiImageMode() {
   saveActiveConfig();
 }
 
+function onApiProviderChange() {
+  config.apiProvider = $("#apiProviderSelect").value;
+  saveActiveConfig();
+  updateApiProviderUi();
+  if (isPlatformApiSelected()) refreshBilling();
+}
+
 function loadConfigHistory() {
   try {
     configHistory = normalizeConfigHistory(JSON.parse(localStorage.getItem(CONFIG_HISTORY_KEY) || "[]"));
@@ -1319,6 +1492,7 @@ function saveActiveConfig() {
     requestFormat: config.requestFormat || "openai",
     transportMode: config.transportMode || "direct",
     multiImageMode: config.multiImageMode || "single",
+    apiProvider: config.apiProvider || "custom",
     customTemplate: config.customTemplate || defaultTemplate,
     modelName: config.modelName || "gpt-image-2",
     configVersion: CONFIG_VERSION,
@@ -1346,6 +1520,7 @@ function sanitizeConfigSnapshot(snapshot) {
     requestFormat: snapshot.requestFormat || "openai",
     transportMode: snapshot.transportMode || "direct",
     multiImageMode: snapshot.multiImageMode || "single",
+    apiProvider: snapshot.apiProvider || "custom",
     customTemplate: snapshot.customTemplate || defaultTemplate,
     modelName: snapshot.modelName || "gpt-image-2",
     updatedAt: Number(snapshot.updatedAt) || Date.now(),
@@ -1361,7 +1536,16 @@ function normalizeConfigHistory(value) {
 }
 
 function configHistoryKey(item) {
-  return [item.textEndpoint, item.editEndpoint, item.apiKey, item.requestFormat, item.transportMode, item.multiImageMode, item.modelName].join("|");
+  return [
+    item.textEndpoint,
+    item.editEndpoint,
+    fingerprintApiKeySync(item.apiKey),
+    item.requestFormat,
+    item.transportMode,
+    item.multiImageMode,
+    item.apiProvider,
+    item.modelName,
+  ].join("|");
 }
 
 function configSnapshotTitle(snapshot) {
@@ -1434,6 +1618,403 @@ function deleteConfigHistory(id) {
   localStorage.setItem(CONFIG_HISTORY_KEY, JSON.stringify(configHistory));
   renderConfigHistory();
   showToast("已删除历史配置");
+}
+
+async function loadBilling() {
+  try {
+    const [configResponse, meResponse] = await Promise.all([fetch("/api/billing/config"), fetch("/api/billing/me")]);
+    if (configResponse.ok) {
+      const info = await configResponse.json();
+      billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+      billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
+      billingState.platformEnabled = Boolean(info.platformEnabled);
+    }
+    if (meResponse.ok) applyBillingDashboard(await meResponse.json());
+  } catch (error) {
+    console.warn("充值信息读取失败", error);
+  }
+}
+
+async function refreshBilling() {
+  try {
+    const response = await fetch("/api/billing/me");
+    if (!response.ok) return;
+    applyBillingDashboard(await response.json());
+    renderWallet();
+  } catch (error) {
+    console.warn("余额刷新失败", error);
+  }
+}
+
+function applyBillingDashboard(payload) {
+  billingState.customerId = payload.customerId || payload.customer?.id || billingState.customerId;
+  billingState.balanceCents = Number(payload.customer?.balanceCents || 0);
+  billingState.orders = Array.isArray(payload.orders) ? payload.orders : [];
+  billingState.usage = Array.isArray(payload.usage) ? payload.usage : [];
+  billingState.redemptions = Array.isArray(payload.redemptions) ? payload.redemptions : [];
+  billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+  billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
+}
+
+function renderWallet() {
+  $("#walletBalance").textContent = `余额 ${formatMoney(billingState.balanceCents)} 元`;
+  $("#walletPanelBalance").textContent = `${formatMoney(billingState.balanceCents)} 元`;
+  $("#walletPrice").textContent = `${formatMoney(billingState.priceCents)} 元/张`;
+  updateRecommendedApiLabels();
+  $("#walletCustomerId").textContent = billingState.customerId ? `用户 ${billingState.customerId.slice(-8)}` : "";
+  renderRedemptionList();
+  renderUsageList();
+}
+
+function renderUsageList() {
+  const list = $("#usageList");
+  if (!billingState.usage.length) {
+    list.innerHTML = `<div class="log-empty">还没有扣费记录。</div>`;
+    return;
+  }
+  list.innerHTML = billingState.usage
+    .map(
+      (item) => `
+        <article class="wallet-item">
+          <div>
+            <strong>-${formatMoney(item.amountCents)} 元</strong>
+            <span>${Number(item.imageCount || 0)} 张 · ${escapeHtml(modeLabel(item.mode))}</span>
+          </div>
+          <small>${escapeHtml(item.model || "-")} · ${formatWalletTime(item.createdAt)}</small>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderRedemptionList() {
+  const list = $("#redemptionList");
+  if (!billingState.redemptions.length) {
+    list.innerHTML = `<div class="log-empty">还没有兑换记录。</div>`;
+    return;
+  }
+  list.innerHTML = billingState.redemptions
+    .map(
+      (item) => `
+        <article class="wallet-item">
+          <div>
+            <strong>+${formatMoney(item.amountCents)} 元</strong>
+            <span>${escapeHtml(item.label || "兑换码充值")}</span>
+          </div>
+          <small>${escapeHtml(item.code || "-")} · ${formatWalletTime(item.createdAt)}</small>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+async function redeemCode() {
+  const code = $("#redeemCodeInput").value.trim();
+  if (!code) {
+    showToast("请输入兑换码");
+    return;
+  }
+  try {
+    const response = await fetch("/api/billing/redeem", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error?.message || "兑换失败");
+    $("#redeemCodeInput").value = "";
+    await refreshBilling();
+    showToast(`兑换成功，已到账 ${formatMoney(payload.redemption?.amountCents || 0)} 元`);
+  } catch (error) {
+    showToast(error.message || "兑换失败");
+  }
+}
+
+function openCodeAdminPanel() {
+  const savedPassword = localStorage.getItem(CODE_ADMIN_PASSWORD_KEY) || "";
+  $("#codeAdminPassword").value = savedPassword;
+  syncCodeAdminLabel();
+  hydratePlatformAdminPriceDefaults();
+  $("#codeAdminPanel").classList.add("open");
+  $("#walletPanel").classList.remove("open");
+  $("#settingsPanel").classList.remove("open");
+  $("#logsPanel").classList.remove("open");
+  $("#statsPanel").classList.remove("open");
+  setTimeout(() => $("#codeAdminPassword")?.focus(), 0);
+  if (savedPassword) loadPlatformAdminConfig({ silent: true });
+}
+
+function syncCodeAdminLabel() {
+  const amount = Number($("#codeAdminAmount")?.value || 0);
+  const label = $("#codeAdminLabel");
+  if (!label || document.activeElement === label) return;
+  label.value = amount > 0 ? `${formatCodeAdminAmount(amount)}元充值码` : "充值码";
+}
+
+async function generateRedeemCodesFromPanel() {
+  const password = $("#codeAdminPassword").value.trim();
+  const amountYuan = Number($("#codeAdminAmount").value || 0);
+  const count = Math.floor(Number($("#codeAdminCount").value || 0));
+  const label = $("#codeAdminLabel").value.trim() || `${formatCodeAdminAmount(amountYuan)}元充值码`;
+
+  if (!password) {
+    showToast("请输入管理密码");
+    return;
+  }
+  if (!Number.isFinite(amountYuan) || amountYuan <= 0) {
+    showToast("金额要大于 0 元");
+    return;
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 1000) {
+    showToast("数量范围是 1 到 1000");
+    return;
+  }
+
+  const button = $("#generateCodesButton");
+  button.disabled = true;
+  button.textContent = "生成中...";
+  setCodeAdminStatus("正在生成");
+
+  try {
+    const amountCents = Math.round(amountYuan * 100);
+    const codes = Array.from({ length: count }, () => ({
+      code: makeRedeemCode(),
+      amountCents,
+      label,
+    }));
+    const response = await fetch("/api/billing/admin/codes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify({ codes }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `生成失败：HTTP ${response.status}`);
+
+    const created = Array.isArray(payload.codes) ? payload.codes : [];
+    if (!created.length) throw new Error("没有生成任何兑换码");
+
+    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
+    lastCodeAdminCsv = buildRedeemCodesCsv(created);
+    lastCodeAdminFilename = `redeem-codes-${formatCodeAdminAmount(amountYuan)}yuan-${Date.now()}.csv`;
+    $("#codeAdminOutput").value = created.map((item) => item.code).join("\n");
+    setCodeAdminStatus(`已生成 ${created.length} 个`);
+    downloadTextFile(lastCodeAdminCsv, lastCodeAdminFilename, "text/csv;charset=utf-8");
+    showToast(`已生成 ${created.length} 个兑换码，并下载 CSV`);
+  } catch (error) {
+    setCodeAdminStatus("生成失败");
+    showToast(error.message || "生成失败");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="download"></i><span>生成并下载 CSV</span>`;
+    renderIcons();
+  }
+}
+
+async function copyGeneratedCodes() {
+  const text = $("#codeAdminOutput").value.trim();
+  if (!text) {
+    showToast("还没有可复制的兑换码");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("兑换码已复制");
+  } catch {
+    $("#codeAdminOutput").select();
+    document.execCommand("copy");
+    showToast("兑换码已复制");
+  }
+}
+
+function downloadLastCodeCsv() {
+  if (!lastCodeAdminCsv) {
+    showToast("还没有生成过 CSV");
+    return;
+  }
+  downloadTextFile(lastCodeAdminCsv, lastCodeAdminFilename || `redeem-codes-${Date.now()}.csv`, "text/csv;charset=utf-8");
+}
+
+function setCodeAdminStatus(text) {
+  $("#codeAdminStatus").textContent = text;
+}
+
+async function loadPlatformAdminConfig(options = {}) {
+  const password = $("#codeAdminPassword").value.trim();
+  if (!password) {
+    if (!options.silent) showToast("请输入管理密码");
+    return;
+  }
+  setPlatformAdminStatus("读取中");
+  try {
+    const response = await fetch("/api/billing/admin/platform", {
+      headers: { "X-Admin-Password": password },
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "读取推荐 API 配置失败");
+    hydratePlatformAdminForm(payload.platform || {});
+    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
+    setPlatformAdminStatus(payload.platform?.enabled ? "已启用" : "未启用");
+    if (!options.silent) showToast("已读取推荐 API 配置");
+  } catch (error) {
+    setPlatformAdminStatus("读取失败");
+    if (!options.silent) showToast(error.message || "读取失败");
+  }
+}
+
+async function savePlatformAdminConfig() {
+  const password = $("#codeAdminPassword").value.trim();
+  if (!password) {
+    showToast("请输入管理密码");
+    return;
+  }
+
+  const settings = readPlatformAdminForm();
+  if (!settings.textEndpoint || !settings.apiKey) {
+    showToast("请填写文生图接口和 API Key");
+    return;
+  }
+
+  const button = $("#savePlatformConfigButton");
+  button.disabled = true;
+  button.textContent = "保存中...";
+  setPlatformAdminStatus("保存中");
+  try {
+    const response = await fetch("/api/billing/admin/platform", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify(settings),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "保存推荐 API 配置失败");
+    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
+    hydratePlatformAdminForm(payload.platform || settings);
+    await loadBilling();
+    renderWallet();
+    setPlatformAdminStatus(payload.platform?.enabled ? "已保存并启用" : "已保存");
+    showToast("推荐 API 配置已保存");
+  } catch (error) {
+    setPlatformAdminStatus("保存失败");
+    showToast(error.message || "保存失败");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="check"></i><span>保存推荐 API</span>`;
+    renderIcons();
+  }
+}
+
+function hydratePlatformAdminForm(platform) {
+  $("#platformTextEndpoint").value = platform.textEndpoint || "";
+  $("#platformEditEndpoint").value = platform.editEndpoint || "";
+  $("#platformApiKey").value = platform.apiKey || "";
+  $("#platformPriceYuan").value = formatCodeAdminAmount((Number(platform.priceCents || billingState.priceCents) || 8) / 100);
+  $("#platformCostYuan").value = formatCodeAdminAmount((Number(platform.upstreamCostCents || billingState.upstreamCostCents) || 0) / 100);
+}
+
+function hydratePlatformAdminPriceDefaults() {
+  if (!$("#platformPriceYuan").value) $("#platformPriceYuan").value = formatCodeAdminAmount(billingState.priceCents / 100);
+  if (!$("#platformCostYuan").value) $("#platformCostYuan").value = formatCodeAdminAmount(billingState.upstreamCostCents / 100);
+}
+
+function readPlatformAdminForm() {
+  return {
+    textEndpoint: $("#platformTextEndpoint").value.trim(),
+    editEndpoint: $("#platformEditEndpoint").value.trim(),
+    apiKey: $("#platformApiKey").value.trim(),
+    priceCents: Math.max(1, Math.round(Number($("#platformPriceYuan").value || 0) * 100)),
+    upstreamCostCents: Math.max(0, Math.round(Number($("#platformCostYuan").value || 0) * 100)),
+  };
+}
+
+function setPlatformAdminStatus(text) {
+  $("#platformAdminStatus").textContent = text;
+}
+
+function updateRecommendedApiLabels() {
+  const label = `推荐 API · ${formatMoney(billingState.priceCents)} 元/张`;
+  const option = $('#apiProviderSelect option[value="platform"]');
+  if (option) option.textContent = label;
+}
+
+function makeRedeemCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  const chars = [...bytes].map((byte) => alphabet[byte % alphabet.length]);
+  return `A2I-${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}-${chars.slice(8, 12).join("")}-${chars
+    .slice(12, 16)
+    .join("")}`;
+}
+
+function buildRedeemCodesCsv(codes) {
+  const rows = [
+    ["code", "amount_yuan", "label"],
+    ...codes.map((item) => [item.code, formatMoney(item.amountCents), item.label || ""]),
+  ];
+  return `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\n")}`;
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[,"\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function formatCodeAdminAmount(amount) {
+  return Number(amount || 0)
+    .toFixed(2)
+    .replace(/\.?0+$/, "");
+}
+
+function downloadTextFile(text, filename, type = "text/plain;charset=utf-8") {
+  downloadBlob(new Blob([text], { type }), filename);
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: { message: text } };
+  }
+}
+
+function updateApiProviderUi() {
+  const usingPlatform = isPlatformApiSelected();
+  $("#settingsPanel").classList.toggle("platform-selected", usingPlatform);
+  $("#walletToggle").classList.toggle("active", usingPlatform);
+  updateRecommendedApiLabels();
+}
+
+function isPlatformApiSelected() {
+  return $("#apiProviderSelect")?.value === "platform";
+}
+
+function updateBillingFromGenerationResponse(response) {
+  const balance = Number(response.headers.get("X-Platform-Balance-Cents"));
+  if (Number.isFinite(balance)) {
+    billingState.balanceCents = balance;
+    renderWallet();
+  }
+}
+
+function formatMoney(cents) {
+  return (Number(cents || 0) / 100).toFixed(2);
+}
+
+function formatWalletTime(timestamp) {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function maskApiKey(key) {
@@ -1802,6 +2383,210 @@ function clearGenerationLogs() {
   showToast("生成日志已清空");
 }
 
+function loadApiStats() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(API_STATS_KEY) || "[]");
+    apiStats = mergeApiStats(Array.isArray(saved) ? saved.map(normalizeApiStat).filter(Boolean) : []);
+  } catch {
+    apiStats = [];
+  }
+}
+
+function saveApiStats() {
+  try {
+    localStorage.setItem(API_STATS_KEY, JSON.stringify(apiStats.slice(0, API_STATS_LIMIT)));
+  } catch (error) {
+    console.warn("API 统计保存失败", error);
+  }
+}
+
+function normalizeApiStat(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: entry.id || makeId(),
+    endpoint: entry.endpoint || "",
+    endpointHost: entry.endpointHost || endpointHostLabel(entry.endpoint || ""),
+    keyFingerprint: entry.keyFingerprint || "no-key",
+    keyLabel: entry.keyLabel || "未填写 Key",
+    mode: entry.mode || "text",
+    model: entry.model || "",
+    total: Number(entry.total) || 0,
+    success: Number(entry.success) || 0,
+    failed: Number(entry.failed) || 0,
+    images: Number(entry.images) || 0,
+    firstUsedAt: Number(entry.firstUsedAt) || Date.now(),
+    lastUsedAt: Number(entry.lastUsedAt) || Date.now(),
+    lastStatus: entry.lastStatus || "",
+    lastHttpStatus: Number(entry.lastHttpStatus) || 0,
+    lastError: entry.lastError || "",
+  };
+}
+
+async function recordApiUsage(endpoint, options = {}, requestLog = null, details = {}) {
+  const now = Date.now();
+  const keyFingerprint = await fingerprintApiKey(config.apiKey);
+  const statKey = apiStatKey({ endpoint, keyFingerprint, mode: options.mode || "text", model: options.model || "" });
+  const existing = apiStats.find((entry) => apiStatKey(entry) === statKey);
+  const stat =
+    existing ||
+    normalizeApiStat({
+      id: makeId(),
+      endpoint,
+      endpointHost: endpointHostLabel(endpoint),
+      keyFingerprint,
+      keyLabel: maskApiKey(config.apiKey) || "未填写 Key",
+      mode: options.mode || "text",
+      model: options.model || "",
+      firstUsedAt: now,
+    });
+
+  stat.endpoint = endpoint || "";
+  stat.endpointHost = endpointHostLabel(endpoint);
+  stat.keyFingerprint = keyFingerprint;
+  stat.keyLabel = maskApiKey(config.apiKey) || "未填写 Key";
+  stat.mode = options.mode || stat.mode || "text";
+  stat.model = options.model || stat.model || "";
+  stat.total += 1;
+  if (details.status === "success") stat.success += 1;
+  else stat.failed += 1;
+  stat.images += Number(requestLog?.imageCount || 0);
+  stat.lastUsedAt = now;
+  stat.lastStatus = details.status || requestLog?.status || "";
+  stat.lastHttpStatus = Number(requestLog?.httpStatus || 0);
+  stat.lastError = details.error ? truncateText(details.error, 220) : requestLog?.error || "";
+
+  apiStats = mergeApiStats([stat, ...apiStats.filter((entry) => entry.id !== stat.id)]);
+  saveApiStats();
+  renderApiStats();
+}
+
+function mergeApiStats(items) {
+  const merged = new Map();
+  for (const item of items) {
+    const stat = normalizeApiStat(item);
+    if (!stat) continue;
+    const key = apiStatKey(stat);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, stat);
+      continue;
+    }
+    existing.total += stat.total;
+    existing.success += stat.success;
+    existing.failed += stat.failed;
+    existing.images += stat.images;
+    existing.firstUsedAt = Math.min(existing.firstUsedAt || stat.firstUsedAt, stat.firstUsedAt || existing.firstUsedAt);
+    if ((stat.lastUsedAt || 0) >= (existing.lastUsedAt || 0)) {
+      existing.lastUsedAt = stat.lastUsedAt;
+      existing.lastStatus = stat.lastStatus;
+      existing.lastHttpStatus = stat.lastHttpStatus;
+      existing.lastError = stat.lastError;
+      existing.keyLabel = stat.keyLabel || existing.keyLabel;
+    }
+  }
+  return [...merged.values()].sort((a, b) => b.lastUsedAt - a.lastUsedAt).slice(0, API_STATS_LIMIT);
+}
+
+function apiStatKey(entry) {
+  return [entry.endpoint || "", entry.keyFingerprint || "no-key", entry.mode || "text", entry.model || ""].join("|");
+}
+
+function renderApiStats() {
+  const summary = $("#apiStatsSummary");
+  const list = $("#apiStatsList");
+  if (!summary || !list) return;
+
+  const totals = apiStats.reduce(
+    (acc, item) => {
+      acc.total += item.total;
+      acc.success += item.success;
+      acc.failed += item.failed;
+      acc.images += item.images;
+      return acc;
+    },
+    { total: 0, success: 0, failed: 0, images: 0 },
+  );
+
+  summary.innerHTML = `
+    <div><strong>${totals.total}</strong><span>请求</span></div>
+    <div><strong>${totals.success}</strong><span>成功</span></div>
+    <div><strong>${totals.failed}</strong><span>失败</span></div>
+    <div><strong>${totals.images}</strong><span>图片</span></div>
+  `;
+
+  if (!apiStats.length) {
+    list.innerHTML = `<div class="log-empty">还没有 API 统计。发起一次生成后，这里会显示本机测试数据。</div>`;
+    return;
+  }
+
+  list.innerHTML = apiStats
+    .map((item) => {
+      const okRate = item.total ? Math.round((item.success / item.total) * 100) : 0;
+      return `
+        <article class="api-stat-card">
+          <div class="api-stat-head">
+            <strong>${escapeHtml(item.endpointHost || "未知 API")}</strong>
+            <span>${escapeHtml(item.lastStatus === "success" ? "成功" : item.lastStatus === "failed" ? "失败" : "记录")}</span>
+          </div>
+          <div class="api-stat-endpoint">${escapeHtml(item.endpoint || "")}</div>
+          <div class="api-stat-grid">
+            <span>Key ${escapeHtml(item.keyLabel || "未填写 Key")}</span>
+            <span>指纹 ${escapeHtml(item.keyFingerprint || "no-key")}</span>
+            <span>${escapeHtml(modeLabel(item.mode))}</span>
+            <span>${escapeHtml(item.model || "-")}</span>
+            <span>请求 ${item.total}</span>
+            <span>成功率 ${okRate}%</span>
+            <span>图片 ${item.images}</span>
+            <span>最近 ${escapeHtml(formatLogTime(item.lastUsedAt))}</span>
+          </div>
+          ${item.lastError ? `<p class="log-error">${escapeHtml(item.lastError)}</p>` : ""}
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function clearApiStats() {
+  apiStats = [];
+  saveApiStats();
+  renderApiStats();
+  showToast("API 统计已清空");
+}
+
+function endpointHostLabel(endpoint) {
+  try {
+    return endpoint ? new URL(endpoint).host : "未设置 API";
+  } catch {
+    return String(endpoint || "未设置 API").replace(/^https?:\/\//i, "").split("/")[0] || "未设置 API";
+  }
+}
+
+async function fingerprintApiKey(key) {
+  const normalized = normalizeApiKeyForFingerprint(key);
+  if (!normalized) return "no-key";
+  if (!window.crypto?.subtle || typeof TextEncoder === "undefined") return fingerprintApiKeySync(normalized);
+  const bytes = new TextEncoder().encode(`api2image:key:v1:${normalized}`);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hex = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `k1-${hex.slice(0, 16)}`;
+}
+
+function fingerprintApiKeySync(key) {
+  const normalized = normalizeApiKeyForFingerprint(key);
+  if (!normalized) return "no-key";
+  let hash = 2166136261;
+  const scoped = `api2image:key:v1:${normalized}`;
+  for (let index = 0; index < scoped.length; index += 1) {
+    hash ^= scoped.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fp-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function normalizeApiKeyForFingerprint(key) {
+  return String(key || "").trim().replace(/^Bearer\s+/i, "");
+}
+
 function summarizeOptionsForLog(options) {
   return {
     mode: options.mode,
@@ -1917,6 +2702,10 @@ function requestStatusLabel(entry) {
 
 function multiModeLabel(mode) {
   return mode === "batch" ? "批量优先（不补单）" : "逐张稳定";
+}
+
+function modeLabel(mode) {
+  return mode === "image" ? "图生图" : "文生图";
 }
 
 function formatLogTime(timestamp) {

@@ -2,3 +2,7 @@
 node_modules/
 *.log
 verification-*.png
+data/
+.env
+.env.local
+payments/*.png

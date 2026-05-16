@@ -4,7 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Image2 Flow</title>
-    <link rel="stylesheet" href="./styles.css?v=16" />
+    <link rel="icon" type="image/png" href="./icon.png" />
+    <link rel="stylesheet" href="./styles.css?v=22" />
   </head>
   <body data-theme="dark">
     <div class="app">
@@ -12,12 +13,16 @@
         <div class="titlebar">
           <div>
             <h1>API 2 Image</h1>
+            <p>本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片，低至 0.08 元/张。</p>
           </div>
         </div>
 
         <div class="top-actions">
           <button class="icon-button" id="themeButton" title="浅色/深色" type="button">
             <i data-icon="moon"></i>
+          </button>
+          <button class="pill-button wallet-chip" id="walletToggle" type="button">
+            <i data-icon="wallet"></i><span id="walletBalance">余额 --</span>
           </button>
           <button class="icon-button" id="settingsToggle" title="API 设置" type="button">
             <i data-icon="settings"></i>
@@ -90,6 +95,10 @@
         </div>
 
         <div class="control-row">
+          <select id="apiProviderSelect" title="API 来源">
+            <option value="custom">自定义 API</option>
+            <option value="platform">推荐 API · 0.08 元/张</option>
+          </select>
           <select id="modeSelect" title="生成模式">
             <option value="text">文生图</option>
             <option value="image">图生图</option>
@@ -173,6 +182,150 @@
         </section>
       </aside>
 
+      <aside id="walletPanel" class="wallet-panel">
+        <div class="panel-header">
+          <div>
+            <h2>充值与余额</h2>
+            <p>选择推荐 API 生成图片时按张扣费；自定义 API 使用你自己的 Key，不消耗这里的余额。</p>
+          </div>
+          <button class="icon-button" id="closeWallet" title="关闭" type="button">
+            <i data-icon="x"></i>
+          </button>
+        </div>
+
+        <div class="wallet-summary">
+          <div>
+            <span>当前余额</span>
+            <strong id="walletPanelBalance">--</strong>
+          </div>
+          <div>
+            <span>单张价格</span>
+            <strong id="walletPrice">0.08 元</strong>
+          </div>
+        </div>
+
+        <div class="redeem-box">
+          <label class="field">
+            <span>兑换码充值</span>
+            <input id="redeemCodeInput" type="text" autocomplete="off" placeholder="输入从发卡网购买到的兑换码" />
+          </label>
+          <button class="pill-button primary" id="redeemCodeButton" type="button">
+            <i data-icon="check"></i><span>立即兑换</span>
+          </button>
+        </div>
+
+        <section class="wallet-history">
+          <div class="config-history-head">
+            <h3>兑换记录</h3>
+            <span id="walletCustomerId"></span>
+          </div>
+          <div id="redemptionList" class="wallet-list"></div>
+        </section>
+
+        <section class="wallet-history">
+          <div class="config-history-head">
+            <h3>扣费记录</h3>
+            <span>推荐 API</span>
+          </div>
+          <div id="usageList" class="wallet-list"></div>
+        </section>
+      </aside>
+
+      <aside id="codeAdminPanel" class="code-admin-panel">
+        <div class="panel-header">
+          <div>
+            <h2>站长后台</h2>
+            <p>生成兑换码，或配置推荐 API。所有操作都需要管理员密码。</p>
+          </div>
+          <button class="icon-button" id="closeCodeAdmin" title="关闭" type="button">
+            <i data-icon="x"></i>
+          </button>
+        </div>
+
+        <div class="redeem-box">
+          <label class="field">
+            <span>管理密码</span>
+            <input id="codeAdminPassword" type="password" autocomplete="off" placeholder="BILLING_ADMIN_PASSWORD" />
+          </label>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>金额（元）</span>
+              <input id="codeAdminAmount" type="number" min="0.01" step="0.01" value="5" />
+            </label>
+            <label class="field">
+              <span>数量</span>
+              <input id="codeAdminCount" type="number" min="1" max="1000" step="1" value="100" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>标签</span>
+            <input id="codeAdminLabel" type="text" value="5元充值码" />
+          </label>
+
+          <button class="pill-button primary" id="generateCodesButton" type="button">
+            <i data-icon="download"></i><span>生成并下载 CSV</span>
+          </button>
+        </div>
+
+        <section class="code-admin-result">
+          <div class="config-history-head">
+            <h3>本次生成</h3>
+            <span id="codeAdminStatus">等待生成</span>
+          </div>
+          <textarea id="codeAdminOutput" rows="9" readonly placeholder="生成后会显示兑换码，一行一个"></textarea>
+          <div class="code-admin-actions">
+            <button class="pill-button" id="copyCodesButton" type="button">
+              <i data-icon="check"></i><span>复制代码</span>
+            </button>
+            <button class="pill-button" id="downloadCodesButton" type="button">
+              <i data-icon="download"></i><span>下载上次 CSV</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="admin-section">
+          <div class="config-history-head">
+            <h3>推荐 API 配置</h3>
+            <span id="platformAdminStatus">仅站长可改</span>
+          </div>
+
+          <label class="field">
+            <span>文生图接口</span>
+            <input id="platformTextEndpoint" type="url" placeholder="https://.../v1/images/generations" />
+          </label>
+          <label class="field">
+            <span>图生图接口</span>
+            <input id="platformEditEndpoint" type="url" placeholder="https://.../v1/images/edits" />
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="platformApiKey" type="password" autocomplete="off" placeholder="sk-..." />
+          </label>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>售价（元/张）</span>
+              <input id="platformPriceYuan" type="number" min="0.01" step="0.01" value="0.08" />
+            </label>
+            <label class="field">
+              <span>成本（元/张）</span>
+              <input id="platformCostYuan" type="number" min="0" step="0.01" value="0.04" />
+            </label>
+          </div>
+
+          <div class="code-admin-actions">
+            <button class="pill-button" id="loadPlatformConfigButton" type="button">
+              <i data-icon="rotate"></i><span>读取配置</span>
+            </button>
+            <button class="pill-button primary" id="savePlatformConfigButton" type="button">
+              <i data-icon="check"></i><span>保存推荐 API</span>
+            </button>
+          </div>
+        </section>
+      </aside>
+
       <aside id="logsPanel" class="logs-panel">
         <div class="panel-header">
           <div>
@@ -189,6 +342,25 @@
           </button>
         </div>
         <div id="generationLogList" class="generation-log-list"></div>
+      </aside>
+
+      <aside id="statsPanel" class="stats-panel">
+        <div class="panel-header">
+          <div>
+            <h2>API 测试统计</h2>
+            <p>隐藏测试入口，仅记录本机浏览器里的请求次数和脱敏 Key 指纹，不保存完整 API Key。</p>
+          </div>
+          <button class="icon-button" id="closeStats" title="关闭" type="button">
+            <i data-icon="x"></i>
+          </button>
+        </div>
+        <div id="apiStatsSummary" class="api-stats-summary"></div>
+        <div class="logs-actions">
+          <button class="pill-button" id="clearStatsButton" type="button">
+            <i data-icon="trash"></i><span>清空统计</span>
+          </button>
+        </div>
+        <div id="apiStatsList" class="api-stats-list"></div>
       </aside>
     </div>
 
@@ -228,6 +400,6 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=24"></script>
+    <script src="./app.js?v=31"></script>
   </body>
 </html>
