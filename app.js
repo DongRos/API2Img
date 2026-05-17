@@ -99,6 +99,7 @@ const billingState = {
   priceCents: PLATFORM_PRICE_FALLBACK_CENTS,
   upstreamCostCents: 4,
   platformEnabled: false,
+  lastDirectConfig: null,
   orders: [],
   usage: [],
   redemptions: [],
@@ -292,6 +293,7 @@ async function generateImages(extra = {}) {
     generationId,
     abortSignal: generationAbortController.signal,
     apiProvider: usePlatformApi ? "platform" : "custom",
+    platformPriceCents: usePlatformApi ? billingState.priceCents : 0,
   };
   if (usePlatformApi) {
     const requiredCents = options.count * billingState.priceCents;
@@ -579,6 +581,7 @@ async function commitGeneratedImage(src, options, index, context) {
   if (!src || context?.seenSources?.has(src)) return null;
   context?.seenSources?.add(src);
   const result = await createResult(src, options, index);
+  applyPlatformRequestCost(options, index);
   await chargePlatformImageIfNeeded(options, index, context);
   state.latestGenerationId = options.generationId || "";
   state.results.unshift(result);
@@ -594,12 +597,6 @@ async function chargePlatformImageIfNeeded(options, index, context) {
   if (!context) return;
   context.chargedRequestIds ||= new Set();
   if (context.chargedRequestIds.has(requestId)) return;
-  const requestEntry = findRequestLogEntry(options, index);
-  if (requestEntry) {
-    requestEntry.costCents = 0;
-    saveGenerationLogs();
-    renderGenerationLogs();
-  }
   const response = await fetch("/api/billing/platform-usage", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -616,17 +613,32 @@ async function chargePlatformImageIfNeeded(options, index, context) {
     throw new Error(payload?.error?.message || payload?.message || `扣费失败：${response.status}`);
   }
   context.chargedRequestIds.add(requestId);
-  if (requestEntry) {
-    requestEntry.costCents = Number(payload.chargedCents || 0);
-    if (activeGenerationLog) activeGenerationLog.costCents = totalGenerationLogCost(activeGenerationLog);
-    saveGenerationLogs();
-    renderGenerationLogs();
-  }
   if (Number.isFinite(Number(payload.balanceCents))) {
     billingState.balanceCents = Number(payload.balanceCents);
     renderWallet();
   }
   refreshBilling();
+}
+
+function applyPlatformRequestCost(options, index) {
+  if (options.apiProvider !== "platform") return;
+  const requestEntry = findRequestLogEntry(options, index);
+  if (!requestEntry) return;
+  const priceCents = resolvePlatformPriceCents(options);
+  requestEntry.costCents = priceCents;
+  if (activeGenerationLog) activeGenerationLog.costCents = totalGenerationLogCost(activeGenerationLog);
+  saveGenerationLogs();
+  renderGenerationLogs();
+}
+
+function resolvePlatformPriceCents(options = {}) {
+  const configured = Number(
+    options.platformPriceCents ??
+      billingState.lastDirectConfig?.priceCents ??
+      billingState.priceCents ??
+      PLATFORM_PRICE_FALLBACK_CENTS,
+  );
+  return Math.max(0, Math.round(configured || 0));
 }
 
 function findRequestLogEntry(options, index) {
@@ -811,7 +823,7 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
 
 async function sendImageRequest(endpoint, request) {
   if (isPlatformApiSelected()) {
-    return fetchPlatformDirectImageRequest(request);
+    return fetchPlatformDirectImageRequest(endpoint, request);
   }
 
   if (config.transportMode === "direct") {
@@ -832,23 +844,15 @@ async function sendImageRequest(endpoint, request) {
   return proxyResponse;
 }
 
-async function fetchPlatformDirectImageRequest(request) {
+async function fetchPlatformDirectImageRequest(endpoint, request) {
   const { signal, billingCount, billingMode, billingModel } = request;
-  const configResponse = await fetch("/api/billing/platform-direct-config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      mode: billingMode || $("#modeSelect").value,
-      count: billingCount || 1,
-      model: billingModel || getModelName(),
-    }),
+  const platform = await readPlatformDirectConfig({
     signal,
+    mode: billingMode || $("#modeSelect").value,
+    count: billingCount || 1,
+    model: billingModel || getModelName(),
   });
-  const platform = await configResponse.json().catch(() => ({}));
-  if (!configResponse.ok) {
-    throw new Error(platform?.error?.message || platform?.message || `推荐 API 配置读取失败：${configResponse.status}`);
-  }
-
+  billingState.lastDirectConfig = platform;
   const directRequest = {
     ...request,
     headers: {
@@ -856,7 +860,48 @@ async function fetchPlatformDirectImageRequest(request) {
       Authorization: `Bearer ${platform.apiKey}`,
     },
   };
-  return fetchDirectImageRequest(platform.endpoint, directRequest);
+  const primaryEndpoint = platform.endpoint || endpoint;
+  const response = await fetchDirectImageRequest(primaryEndpoint, directRequest);
+  if (shouldRetryPlatformDirectWithFallback(response)) {
+    showToast("推荐 API 直连异常，正在切换服务端转发重试");
+    return fetchPlatformServerImageRequest(request);
+  }
+  return response;
+}
+
+async function readPlatformDirectConfig({ signal, mode, count, model }) {
+  const configResponse = await fetch("/api/billing/platform-direct-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, count, model }),
+    signal,
+  });
+  const platform = await configResponse.json().catch(() => ({}));
+  if (!configResponse.ok) {
+    throw new Error(platform?.error?.message || platform?.message || `推荐 API 配置读取失败：${configResponse.status}`);
+  }
+  return platform || {};
+}
+
+function shouldRetryPlatformDirectWithFallback(response) {
+  if (!response) return false;
+  if ([502, 503, 504].includes(Number(response.status))) return true;
+  return false;
+}
+
+function fetchPlatformServerImageRequest(request) {
+  const { signal, billingCount, billingMode, billingModel, ...upstreamRequest } = request;
+  return fetch("/api/billing/platform-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: billingMode || $("#modeSelect").value,
+      count: billingCount || 1,
+      model: billingModel || getModelName(),
+      request: upstreamRequest,
+    }),
+    signal,
+  });
 }
 
 function fetchDirectImageRequest(endpoint, request) {
@@ -1734,6 +1779,10 @@ function applyBillingDashboard(payload) {
   billingState.redemptions = Array.isArray(payload.redemptions) ? payload.redemptions : [];
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
+  billingState.lastDirectConfig = {
+    ...(billingState.lastDirectConfig || {}),
+    priceCents: billingState.priceCents,
+  };
 }
 
 function renderWallet() {
@@ -2386,7 +2435,6 @@ function renderGenerationLogs() {
             <span>${escapeHtml(summary)}</span>
             <span>请求 ${requestCount} 次</span>
             <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
-            <span>花费 ${formatMoney(log.costCents || 0)} 元</span>
             ${log.durationMs ? `<span>用时 ${Math.max(1, Math.round(log.durationMs / 1000))} 秒</span>` : ""}
           </div>
           ${log.message ? `<p class="log-message">${escapeHtml(log.message)}</p>` : ""}
@@ -2431,7 +2479,6 @@ function renderCurrentLogPreview() {
     <div class="current-log-meta">
       <span>请求 ${(log.requests || []).length} 次</span>
       <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
-      <span>花费 ${formatMoney(log.costCents || 0)} 元</span>
       <span>${escapeHtml(multiModeLabel(log.options?.multiImageMode))}</span>
     </div>
     ${log.error ? `<p class="current-log-error">${escapeHtml(log.error)}</p>` : ""}
