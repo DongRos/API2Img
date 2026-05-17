@@ -791,21 +791,7 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
 
 async function sendImageRequest(endpoint, request) {
   if (isPlatformApiSelected()) {
-    const { signal, billingCount, billingMode, billingModel, billingGenerationId, ...platformRequest } = request;
-    const response = await fetch("/api/billing/platform-image", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: billingMode || $("#modeSelect").value,
-        count: billingCount || 1,
-        model: billingModel || getModelName(),
-        generationId: billingGenerationId || "",
-        request: platformRequest,
-      }),
-      signal,
-    });
-    updateBillingFromGenerationResponse(response);
-    return response;
+    return fetchPlatformDirectImageRequest(request);
   }
 
   if (config.transportMode === "direct") {
@@ -826,6 +812,33 @@ async function sendImageRequest(endpoint, request) {
   return proxyResponse;
 }
 
+async function fetchPlatformDirectImageRequest(request) {
+  const { signal, billingCount, billingMode, billingModel } = request;
+  const configResponse = await fetch("/api/billing/platform-direct-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: billingMode || $("#modeSelect").value,
+      count: billingCount || 1,
+      model: billingModel || getModelName(),
+    }),
+    signal,
+  });
+  const platform = await configResponse.json().catch(() => ({}));
+  if (!configResponse.ok) {
+    throw new Error(platform?.error?.message || platform?.message || `推荐 API 配置读取失败：${configResponse.status}`);
+  }
+
+  const directRequest = {
+    ...request,
+    headers: {
+      ...sanitizePlatformBrowserHeaders(request.headers || {}),
+      Authorization: `Bearer ${platform.apiKey}`,
+    },
+  };
+  return fetchDirectImageRequest(platform.endpoint, directRequest);
+}
+
 function fetchDirectImageRequest(endpoint, request) {
   if (request.bodyType === "multipart") {
     const form = new FormData();
@@ -834,6 +847,16 @@ function fetchDirectImageRequest(endpoint, request) {
     return fetch(endpoint, { method: request.method, headers: request.headers, body: form, signal: request.signal });
   }
   return fetch(endpoint, { method: request.method, headers: request.headers, body: request.body, signal: request.signal });
+}
+
+function sanitizePlatformBrowserHeaders(headers) {
+  const clean = {};
+  Object.entries(headers).forEach(([key, value]) => {
+    if (!value) return;
+    if (key.toLowerCase() !== "content-type") return;
+    clean[key] = String(value);
+  });
+  return clean;
 }
 
 function shouldFallbackToDirect(response) {

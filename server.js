@@ -138,6 +138,11 @@ async function handleBillingRequest(req, res) {
     return;
   }
 
+  if (req.method === "POST" && route === "/api/billing/platform-direct-config") {
+    await platformDirectConfigRequest(req, res, session.customerId);
+    return;
+  }
+
   if (req.method === "POST" && route === "/api/billing/platform-usage") {
     await platformUsageRequest(req, res, session.customerId);
     return;
@@ -239,6 +244,43 @@ async function platformImageRequest(req, res, customerId) {
     "Cache-Control": "no-store",
   });
   res.end(responseBody);
+}
+
+async function platformDirectConfigRequest(req, res, customerId) {
+  const platform = await platformConfig();
+  if (!platform.enabled) {
+    sendJson(res, 503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } });
+    return;
+  }
+
+  const payload = await readJson(req);
+  const mode = payload.mode === "image" ? "image" : "text";
+  const requestedCount = Math.max(1, Math.min(20, Math.round(Number(payload.count || 1))));
+  const requiredCents = requestedCount * platform.priceCents;
+  const hasBalance = await billingStore.hasEnoughBalance(customerId, requiredCents);
+  if (!hasBalance) {
+    sendJson(res, 402, {
+      error: {
+        code: "insufficient_balance",
+        message: `余额不足，本次预计需要 ${formatMoney(requiredCents)} 元`,
+      },
+    });
+    return;
+  }
+
+  const endpoint = mode === "image" ? platform.editEndpoint || inferEditEndpoint(platform.textEndpoint) : platform.textEndpoint;
+  if (!endpoint) {
+    sendJson(res, 503, { error: { message: "推荐 API 图生图接口还没有配置" } });
+    return;
+  }
+
+  sendJson(res, 200, {
+    ok: true,
+    endpoint,
+    apiKey: platform.apiKey,
+    priceCents: platform.priceCents,
+    mode,
+  });
 }
 
 async function platformUsageRequest(req, res, customerId) {

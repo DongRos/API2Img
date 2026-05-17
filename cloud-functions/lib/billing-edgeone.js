@@ -333,6 +333,47 @@ export async function platformImage(context) {
   return new Response(responseBytes, { status: upstream.status, headers });
 }
 
+export async function platformDirectConfig(context) {
+  const session = await resolveSession(context);
+  const platform = await getPlatformConfig(context);
+  if (!platform.enabled) {
+    return jsonResponse(503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } }, session);
+  }
+
+  const payload = await readJson(context.request);
+  const mode = payload.mode === "image" ? "image" : "text";
+  const requestedCount = Math.max(1, Math.min(20, Math.round(Number(payload.count || 1))));
+  const requiredCents = requestedCount * platform.priceCents;
+  const dashboard = await getDashboard(context, session.customerId);
+  if (dashboard.customer.balanceCents < requiredCents) {
+    return jsonResponse(
+      402,
+      {
+        error: {
+          code: "insufficient_balance",
+          message: `余额不足，本次预计需要 ${formatMoney(requiredCents)} 元`,
+        },
+      },
+      session,
+    );
+  }
+
+  const endpoint = mode === "image" ? platform.editEndpoint || inferEditEndpoint(platform.textEndpoint) : platform.textEndpoint;
+  if (!endpoint) return jsonResponse(503, { error: { message: "推荐 API 图生图接口还没有配置" } }, session);
+
+  return jsonResponse(
+    200,
+    {
+      ok: true,
+      endpoint,
+      apiKey: platform.apiKey,
+      priceCents: platform.priceCents,
+      mode,
+    },
+    session,
+  );
+}
+
 export async function platformUsage(context) {
   const session = await resolveSession(context);
   const platform = await getPlatformConfig(context);
