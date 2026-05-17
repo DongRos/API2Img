@@ -630,7 +630,8 @@ async function chargePlatformImageIfNeeded(options, index, context) {
 }
 
 function findRequestLogEntry(options, index) {
-  const label = options.batchTotal > 1 ? `第 ${index + 1}/${options.batchTotal} 张` : options.count > 1 ? `批量 ${options.count} 张` : "单图请求";
+  const currentIndex = Number(options.batchIndex) || index + 1;
+  const label = options.batchTotal > 1 ? `第 ${currentIndex}/${options.batchTotal} 张` : options.count > 1 ? `批量 ${options.count} 张` : "单图请求";
   const log = activeGenerationLog || generationLogs[0];
   if (!log?.requests?.length) return null;
   return [...log.requests].reverse().find((entry) => String(entry.label || "").startsWith(label)) || null;
@@ -705,7 +706,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
           const source = normalizeImages(payload)[0] || "";
           if (!source) throw new Error("接口没有返回图片");
           images[index] = source;
-          await commitGeneratedImage(source, options, absoluteIndex, context);
+          await commitGeneratedImage(source, oneOptions, absoluteIndex, context);
           break;
         } catch (error) {
           lastError = cleanErrorMessage(error);
@@ -2416,6 +2417,7 @@ function renderCurrentLogPreview() {
           <span>${escapeHtml(entry.label || "请求")}</span>
           <strong>${escapeHtml(status)}</strong>
           <small>${escapeHtml(entry.durationMs ? `${entry.durationMs}ms` : "进行中")}</small>
+          <small class="log-cost">${escapeHtml(formatMoney(entry.costCents || 0))} 元</small>
         </div>
       `;
     })
@@ -2446,6 +2448,7 @@ function renderRequestLog(entry) {
         <span>${escapeHtml(entry.label || "请求")}</span>
         <strong>${escapeHtml(status)}</strong>
         <small>${escapeHtml(entry.durationMs ? `${entry.durationMs}ms` : "进行中")}</small>
+        <small class="log-cost">${escapeHtml(formatMoney(entry.costCents || 0))} 元</small>
       </summary>
       <pre>${escapeHtml(text)}</pre>
     </details>

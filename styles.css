@@ -547,7 +547,7 @@ svg {
 
 .current-log-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   min-height: 32px;
   padding: 7px 9px;
   border: 1px solid var(--glass-border);
@@ -570,6 +570,12 @@ svg {
 .current-log-row small,
 .current-log-empty {
   color: var(--muted);
+}
+
+.log-cost {
+  justify-self: end;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .current-log-error {
@@ -1115,7 +1121,7 @@ button:disabled {
 }
 
 .log-request > summary {
-  grid-template-columns: minmax(90px, auto) auto auto;
+  grid-template-columns: minmax(90px, auto) auto auto auto;
 }
 
 .log-entry summary::marker,
