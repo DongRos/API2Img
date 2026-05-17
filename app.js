@@ -1765,7 +1765,7 @@ function applyBillingDashboard(payload) {
 function renderWallet() {
   $("#walletBalance").textContent = `余额 ${formatMoney(billingState.balanceCents)} 元`;
   $("#walletPanelBalance").textContent = `${formatMoney(billingState.balanceCents)} 元`;
-  $("#walletPrice").textContent = `${formatMoney(billingState.priceCents)} 元/张`;
+  $("#walletPrice").textContent = formatPlatformPriceLabel(billingState.priceCents);
   updateRecommendedApiLabels();
   $("#walletCustomerId").textContent = billingState.customerId ? `用户 ${billingState.customerId.slice(-8)}` : "";
   renderRedemptionList();
@@ -2043,9 +2043,19 @@ function setPlatformAdminStatus(text) {
 }
 
 function updateRecommendedApiLabels() {
-  const label = `推荐 API · ${formatMoney(billingState.priceCents)} 元/张`;
+  const priceLabel = formatPlatformPriceLabel(billingState.priceCents);
+  const label = `推荐 API · ${priceLabel}`;
   const option = $('#apiProviderSelect option[value="platform"]');
   if (option) option.textContent = label;
+  const intro = $("#platformPriceIntro");
+  if (intro) intro.textContent = `本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片，当前 ${priceLabel}。`;
+}
+
+function formatPlatformPriceLabel(cents) {
+  const value = Math.max(0, Number(cents || 0));
+  if (value === 10) return "1毛/张";
+  if (value % 10 === 0 && value < 100) return `${value / 10}毛/张`;
+  return `${formatMoney(value)} 元/张`;
 }
 
 function makeRedeemCode() {

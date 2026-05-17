@@ -13,7 +13,7 @@
         <div class="titlebar">
           <div>
             <h1>API 2 Image</h1>
-            <p>本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片，低至 1毛/张。</p>
+            <p id="platformPriceIntro">本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片。</p>
           </div>
         </div>
 
@@ -97,7 +97,7 @@
         <div class="control-row">
           <select id="apiProviderSelect" title="API 来源">
             <option value="custom">自定义 API</option>
-            <option value="platform">推荐 API · 1毛/张</option>
+            <option value="platform">推荐 API</option>
           </select>
           <select id="modeSelect" title="生成模式">
             <option value="text">文生图</option>
@@ -200,7 +200,7 @@
           </div>
           <div>
             <span>单张价格</span>
-            <strong id="walletPrice">1毛</strong>
+            <strong id="walletPrice">--</strong>
           </div>
         </div>
 
