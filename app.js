@@ -573,13 +573,14 @@ function createGenerationContext(options) {
   return {
     options,
     created: [],
-    seenSources: new Set(),
+    committedIndexes: new Set(),
   };
 }
 
 async function commitGeneratedImage(src, options, index, context) {
-  if (!src || context?.seenSources?.has(src)) return null;
-  context?.seenSources?.add(src);
+  if (!src) return null;
+  if (context?.committedIndexes?.has(index)) return null;
+  context?.committedIndexes?.add(index);
   const result = await createResult(src, options, index);
   applyPlatformRequestCost(options, index);
   await chargePlatformImageIfNeeded(options, index, context);
