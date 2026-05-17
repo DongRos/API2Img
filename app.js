@@ -10,7 +10,7 @@ const GENERATION_LOG_LIMIT = 30;
 const API_STATS_LIMIT = 80;
 const API_STATS_OPEN_PHRASE = "apistats";
 const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
-const SINGLE_IMAGE_MAX_ATTEMPTS = 1;
+const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 8;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
 const FLOW_DB_NAME = "image2.flow.history";
@@ -727,6 +727,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
             generated: offset + images.filter(Boolean).length,
             total,
           });
+          await wait(900);
         }
       }
       if (!images[index] && lastError) errors.push(`第 ${absoluteIndex + 1}/${total} 张：${lastError}`);
@@ -770,8 +771,7 @@ function isFatalImageError(message) {
 function shouldRetrySingleImageError(message) {
   return (
     !isFatalImageError(message) &&
-    !isUncertainChargedError(message) &&
-    /\b(500|502|503|504|520|522|524)\b|timeout|timed out|bad gateway|gateway|temporar|network|failed to fetch|没有返回图片|no image/i.test(
+    /\b(500|502|503|504|520|522|524)\b|timeout|timed out|bad gateway|gateway|temporar|network|failed to fetch|没有返回图片|no image|internal_error|server_error|stream error|received from peer|rst_stream|reset/i.test(
       message,
     )
   );
@@ -860,13 +860,7 @@ async function fetchPlatformDirectImageRequest(endpoint, request) {
       Authorization: `Bearer ${platform.apiKey}`,
     },
   };
-  const primaryEndpoint = platform.endpoint || endpoint;
-  const response = await fetchDirectImageRequest(primaryEndpoint, directRequest);
-  if (shouldRetryPlatformDirectWithFallback(response)) {
-    showToast("推荐 API 直连异常，正在切换服务端转发重试");
-    return fetchPlatformServerImageRequest(request);
-  }
-  return response;
+  return fetchDirectImageRequest(platform.endpoint || endpoint, directRequest);
 }
 
 async function readPlatformDirectConfig({ signal, mode, count, model }) {
@@ -881,27 +875,6 @@ async function readPlatformDirectConfig({ signal, mode, count, model }) {
     throw new Error(platform?.error?.message || platform?.message || `推荐 API 配置读取失败：${configResponse.status}`);
   }
   return platform || {};
-}
-
-function shouldRetryPlatformDirectWithFallback(response) {
-  if (!response) return false;
-  if ([502, 503, 504].includes(Number(response.status))) return true;
-  return false;
-}
-
-function fetchPlatformServerImageRequest(request) {
-  const { signal, billingCount, billingMode, billingModel, ...upstreamRequest } = request;
-  return fetch("/api/billing/platform-image", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      mode: billingMode || $("#modeSelect").value,
-      count: billingCount || 1,
-      model: billingModel || getModelName(),
-      request: upstreamRequest,
-    }),
-    signal,
-  });
 }
 
 function fetchDirectImageRequest(endpoint, request) {
@@ -1032,6 +1005,10 @@ async function runLimited(items, limit, worker) {
     }
   });
   await Promise.all(runners);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function dedupe(items) {
