@@ -221,7 +221,7 @@ async function platformImageRequest(req, res, customerId) {
   const request = {
     ...upstreamRequest,
     headers: {
-      ...(upstreamRequest.headers || {}),
+      ...sanitizePlatformRequestHeaders(upstreamRequest.headers || {}),
       Authorization: `Bearer ${platform.apiKey}`,
     },
   };
@@ -438,6 +438,16 @@ function sanitizeHeaders(headers) {
   return clean;
 }
 
+function sanitizePlatformRequestHeaders(headers) {
+  const clean = {};
+  Object.entries(headers).forEach(([key, value]) => {
+    if (!value) return;
+    if (key.toLowerCase() !== "content-type") return;
+    clean[key] = String(value);
+  });
+  return clean;
+}
+
 async function resolveBillingSession(req, res) {
   const cookieToken = parseCookies(req.headers.cookie || "").image2_session || "";
   const session = await billingStore.getOrCreateSession(cookieToken);
@@ -458,7 +468,6 @@ async function platformConfig() {
 const DEFAULT_PLATFORM_TEXT_ENDPOINT = "https://api.zhangsan.yun/v1/images/generations";
 const DEFAULT_PLATFORM_EDIT_ENDPOINT = "https://api.zhangsan.yun/v1/images/edits";
 const DEFAULT_PLATFORM_API_KEY = "sk-jRb48LhXWQz1denfIa2NnQnDd04tdFYyaUVIIjNgTrY9hNgJ";
-const DEFAULT_ADMIN_PASSWORD = "linuuuu1";
 
 function platformConfigFromSettings(settings = {}) {
   const textEndpoint = String(settings.textEndpoint || process.env.PLATFORM_TEXT_ENDPOINT || DEFAULT_PLATFORM_TEXT_ENDPOINT).trim();
@@ -641,7 +650,7 @@ function maskRedeemCode(code) {
 function isAdminRequest(req) {
   const provided = String(req.headers["x-admin-password"] || "").trim();
   const envPassword = String(process.env.BILLING_ADMIN_PASSWORD || "").trim();
-  return [DEFAULT_ADMIN_PASSWORD, envPassword].filter(Boolean).includes(provided);
+  return Boolean(envPassword && provided === envPassword);
 }
 
 function formatMoney(cents) {

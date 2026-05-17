@@ -318,7 +318,7 @@ export async function platformImage(context) {
   const upstream = await fetchUpstreamImage(endpoint, {
     ...upstreamRequest,
     headers: {
-      ...(upstreamRequest.headers || {}),
+      ...sanitizePlatformRequestHeaders(upstreamRequest.headers || {}),
       Authorization: `Bearer ${platform.apiKey}`,
     },
   });
@@ -525,7 +525,6 @@ async function getPlatformConfig(context) {
 const DEFAULT_PLATFORM_TEXT_ENDPOINT = "https://api.zhangsan.yun/v1/images/generations";
 const DEFAULT_PLATFORM_EDIT_ENDPOINT = "https://api.zhangsan.yun/v1/images/edits";
 const DEFAULT_PLATFORM_API_KEY = "sk-jRb48LhXWQz1denfIa2NnQnDd04tdFYyaUVIIjNgTrY9hNgJ";
-const DEFAULT_ADMIN_PASSWORD = "linuuuu1";
 
 function platformConfigFromSettings(context, settings = {}) {
   const textEndpoint = String(settings.textEndpoint || getEnv(context, "PLATFORM_TEXT_ENDPOINT") || DEFAULT_PLATFORM_TEXT_ENDPOINT).trim();
@@ -733,6 +732,16 @@ function sanitizeHeaders(headers) {
   return clean;
 }
 
+function sanitizePlatformRequestHeaders(headers) {
+  const clean = {};
+  Object.entries(headers).forEach(([key, value]) => {
+    if (!value) return;
+    if (key.toLowerCase() !== "content-type") return;
+    clean[key] = String(value);
+  });
+  return clean;
+}
+
 function inferEditEndpoint(textEndpoint) {
   return String(textEndpoint || "").replace(/\/images\/generations\/?([?#].*)?$/i, "/images/edits$1");
 }
@@ -740,7 +749,7 @@ function inferEditEndpoint(textEndpoint) {
 function isAdminRequest(context) {
   const provided = String(context.request.headers.get("x-admin-password") || "").trim();
   const envPassword = getEnv(context, "BILLING_ADMIN_PASSWORD");
-  return [DEFAULT_ADMIN_PASSWORD, envPassword].filter(Boolean).includes(provided);
+  return Boolean(envPassword && provided === envPassword);
 }
 
 function getEnv(context, key) {

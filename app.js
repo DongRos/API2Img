@@ -12,6 +12,7 @@ const API_STATS_OPEN_PHRASE = "apistats";
 const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
 const SINGLE_IMAGE_MAX_ATTEMPTS = 1;
 const PLATFORM_PRICE_FALLBACK_CENTS = 8;
+const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
 const FLOW_META_STORE = "meta";
@@ -597,7 +598,7 @@ async function commitGeneratedImages(sources, options, startIndex, context) {
 
 async function requestImageBatch(endpoint, options, context) {
   const desired = Math.max(1, options.count || 1);
-  if (desired > 1 && options.multiImageMode === "single") {
+  if (shouldUseSingleImageRequests(options, desired)) {
     updateProgress("逐张生成中", `正在精确生成 ${desired} 张图片`, 30, { generated: 0, total: desired });
     return requestSingleImages(endpoint, options, desired, 0, desired, context);
   }
@@ -691,6 +692,11 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
 
 function getSingleRequestConcurrency() {
   return 1;
+}
+
+function shouldUseSingleImageRequests(options, desired) {
+  if (desired <= PLATFORM_MAX_BATCH_REQUEST_COUNT) return false;
+  return options.apiProvider === "platform" || options.multiImageMode === "single";
 }
 
 function isFatalImageError(message) {
