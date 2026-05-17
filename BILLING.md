@@ -11,10 +11,10 @@ PLATFORM_API_KEY=sk-你的上游key
 BILLING_ADMIN_PASSWORD=换成你自己的管理密码
 ```
 
-价格默认是 `0.08 元/张`：
+价格默认是 `1毛/张`：
 
 ```env
-PLATFORM_PRICE_CENTS=8
+PLATFORM_PRICE_CENTS=10
 PLATFORM_UPSTREAM_COST_CENTS=4
 ```
 
@@ -102,7 +102,7 @@ node scripts/billing-admin.js reject ord_xxxxx 未收到款
 
 ## 扣费逻辑
 
-用户选择“推荐 API · 0.08 元/张”时，请求会走 `/api/billing/platform-image`。服务端先检查余额，余额足够才调用你配置的推荐 API 上游；上游返回图片后，按实际返回图片数扣费。
+用户选择“推荐 API · 1毛/张”时，请求会走 `/api/billing/platform-image`。服务端先检查余额，余额足够才调用你配置的推荐 API 上游；上游返回图片后，按实际返回图片数扣费。
 
 用户选择“自定义 API”时仍然走原来的配置，不扣你的余额。
 

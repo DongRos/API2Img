@@ -11,7 +11,7 @@ const API_STATS_LIMIT = 80;
 const API_STATS_OPEN_PHRASE = "apistats";
 const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
 const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
-const PLATFORM_PRICE_FALLBACK_CENTS = 8;
+const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
@@ -2019,7 +2019,7 @@ function hydratePlatformAdminForm(platform) {
   $("#platformEditEndpoint").value = platform.editEndpoint || "";
   $("#platformApiKey").value = "";
   $("#platformApiKey").placeholder = platform.apiKeyConfigured ? "已配置，留空表示保持不变" : "sk-...";
-  $("#platformPriceYuan").value = formatCodeAdminAmount((Number(platform.priceCents || billingState.priceCents) || 8) / 100);
+  $("#platformPriceYuan").value = formatCodeAdminAmount((Number(platform.priceCents || billingState.priceCents) || 10) / 100);
   $("#platformCostYuan").value = formatCodeAdminAmount((Number(platform.upstreamCostCents || billingState.upstreamCostCents) || 0) / 100);
 }
 

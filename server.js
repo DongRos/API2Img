@@ -532,7 +532,7 @@ function platformConfigFromSettings(settings = {}) {
   const textEndpoint = String(process.env.PLATFORM_TEXT_ENDPOINT || settings.textEndpoint || "").trim();
   const editEndpoint = String(process.env.PLATFORM_EDIT_ENDPOINT || settings.editEndpoint || "").trim();
   const apiKey = String(process.env.PLATFORM_API_KEY || settings.apiKey || "").trim();
-  const priceCents = Math.max(1, Math.round(Number(process.env.PLATFORM_PRICE_CENTS || settings.priceCents || 8)));
+  const priceCents = Math.max(1, Math.round(Number(process.env.PLATFORM_PRICE_CENTS || settings.priceCents || 10)));
   const upstreamCostCents = Math.max(0, Math.round(Number(process.env.PLATFORM_UPSTREAM_COST_CENTS || settings.upstreamCostCents || 4)));
   return {
     textEndpoint,
