@@ -582,13 +582,17 @@ async function commitGeneratedImage(src, options, index, context) {
   if (context?.committedIndexes?.has(index)) return null;
   context?.committedIndexes?.add(index);
   const result = await createResult(src, options, index);
-  applyPlatformRequestCost(options, index);
-  await chargePlatformImageIfNeeded(options, index, context);
   state.latestGenerationId = options.generationId || "";
   state.results.unshift(result);
   if (context) context.created.push(result);
-  await persistState();
   renderResults();
+  applyPlatformRequestCost(options, index);
+  await persistState();
+  try {
+    await chargePlatformImageIfNeeded(options, index, context);
+  } catch (error) {
+    console.warn("平台计费同步失败，但图片已保留", error);
+  }
   return result;
 }
 
