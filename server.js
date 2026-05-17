@@ -8,7 +8,9 @@ const port = Number(process.env.PORT || 4173);
 const host = "127.0.0.1";
 loadEnvFile(path.join(root, ".env"));
 
-const billingStore = new BillingStore(path.join(root, "data", "billing.json"));
+const billingDataFile = resolveBillingDataFile();
+migrateLegacyBillingData(path.join(root, "data", "billing.json"), billingDataFile);
+const billingStore = new BillingStore(billingDataFile);
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -437,6 +439,10 @@ function serveStatic(req, res) {
     sendText(res, 403, "Forbidden");
     return;
   }
+  if (isBlockedStaticPath(relativePath)) {
+    sendText(res, 403, "Forbidden");
+    return;
+  }
 
   fs.readFile(filePath, (error, data) => {
     if (error) {
@@ -584,6 +590,53 @@ function normalizeRechargeAmount(amountCents) {
   const cents = Math.round(Number(amountCents || 0));
   if (!Number.isFinite(cents) || cents < 100) return 0;
   return Math.min(cents, 500000);
+}
+
+function resolveBillingDataFile() {
+  const configured = String(process.env.BILLING_DATA_FILE || "").trim();
+  if (configured) {
+    return path.isAbsolute(configured) ? configured : path.resolve(root, configured);
+  }
+  return path.join(root, ".data", "billing.json");
+}
+
+function migrateLegacyBillingData(legacyFile, targetFile) {
+  const legacyPath = path.resolve(legacyFile);
+  const targetPath = path.resolve(targetFile);
+  if (legacyPath === targetPath) return;
+  if (!fs.existsSync(legacyPath) || fs.existsSync(targetPath)) return;
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  try {
+    fs.renameSync(legacyPath, targetPath);
+  } catch {
+    fs.copyFileSync(legacyPath, targetPath);
+    try {
+      fs.unlinkSync(legacyPath);
+    } catch {}
+  }
+}
+
+function isBlockedStaticPath(relativePath) {
+  const normalized = String(relativePath || "").replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (!parts.length) return false;
+  if (parts.some((part) => part === "." || part === ".." || part.startsWith("."))) return true;
+  const blockedNames = new Set([
+    "data",
+    ".data",
+    "lib",
+    "scripts",
+    "cloud-functions",
+    "node_modules",
+    "server.js",
+    "package.json",
+    "package-lock.json",
+    ".env",
+    ".env.example",
+    "billing.md",
+    "deploy_edgeone.md",
+  ]);
+  return parts.some((part) => blockedNames.has(part.toLowerCase()));
 }
 
 function inferEditEndpoint(textEndpoint) {
