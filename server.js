@@ -138,6 +138,11 @@ async function handleBillingRequest(req, res) {
     return;
   }
 
+  if (req.method === "POST" && route === "/api/billing/platform-usage") {
+    await platformUsageRequest(req, res, session.customerId);
+    return;
+  }
+
   sendJson(res, 404, { error: { message: "Billing route not found" } });
 }
 
@@ -228,30 +233,46 @@ async function platformImageRequest(req, res, customerId) {
   const upstream = await fetchUpstreamImage(endpoint, request);
   const responseBody = Buffer.from(await upstream.arrayBuffer());
   const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
-  let charged = null;
-
-  if (upstream.ok) {
-    const imageCount = inferGeneratedImageCount(contentType, responseBody);
-    if (imageCount > 0) {
-      const chargeCount = Math.min(requestedCount, imageCount);
-      charged = await billingStore.recordUsage(customerId, {
-        amountCents: chargeCount * platform.priceCents,
-        imageCount: chargeCount,
-        mode,
-        model: payload.model || "",
-        endpoint,
-        requestId: payload.generationId || "",
-      });
-    }
-  }
 
   writeHead(res, upstream.status, {
     "Content-Type": contentType,
     "Cache-Control": "no-store",
-    "X-Platform-Charged-Cents": String(charged?.usage?.amountCents || 0),
-    "X-Platform-Balance-Cents": String(charged?.customer?.balanceCents ?? ""),
   });
   res.end(responseBody);
+}
+
+async function platformUsageRequest(req, res, customerId) {
+  const platform = await platformConfig();
+  if (!platform.enabled) {
+    sendJson(res, 503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } });
+    return;
+  }
+
+  const payload = await readJson(req);
+  const imageCount = Math.max(0, Math.min(20, Math.round(Number(payload.imageCount || 0))));
+  if (!imageCount) {
+    sendJson(res, 400, { error: { message: "没有可扣费的图片" } });
+    return;
+  }
+
+  const mode = payload.mode === "image" ? "image" : "text";
+  const endpoint = mode === "image" ? platform.editEndpoint || inferEditEndpoint(platform.textEndpoint) : platform.textEndpoint;
+  const charged = await billingStore.recordUsage(customerId, {
+    amountCents: imageCount * platform.priceCents,
+    imageCount,
+    mode,
+    model: payload.model || "",
+    endpoint,
+    requestId: payload.requestId || payload.generationId || "",
+  });
+
+  sendJson(res, 200, {
+    ok: true,
+    chargedCents: charged.usage.amountCents,
+    balanceCents: charged.customer.balanceCents,
+    usage: publicUsage(charged.usage),
+    customer: publicCustomer(charged.customer),
+  });
 }
 
 async function handleBillingAdminRequest(req, res, route) {
@@ -465,14 +486,10 @@ async function platformConfig() {
   return platformConfigFromSettings(await billingStore.getPlatformSettings());
 }
 
-const DEFAULT_PLATFORM_TEXT_ENDPOINT = "https://api.zhangsan.yun/v1/images/generations";
-const DEFAULT_PLATFORM_EDIT_ENDPOINT = "https://api.zhangsan.yun/v1/images/edits";
-const DEFAULT_PLATFORM_API_KEY = "sk-jRb48LhXWQz1denfIa2NnQnDd04tdFYyaUVIIjNgTrY9hNgJ";
-
 function platformConfigFromSettings(settings = {}) {
-  const textEndpoint = String(settings.textEndpoint || process.env.PLATFORM_TEXT_ENDPOINT || DEFAULT_PLATFORM_TEXT_ENDPOINT).trim();
-  const editEndpoint = String(settings.editEndpoint || process.env.PLATFORM_EDIT_ENDPOINT || DEFAULT_PLATFORM_EDIT_ENDPOINT).trim();
-  const apiKey = String(settings.apiKey || process.env.PLATFORM_API_KEY || DEFAULT_PLATFORM_API_KEY).trim();
+  const textEndpoint = String(settings.textEndpoint || process.env.PLATFORM_TEXT_ENDPOINT || "").trim();
+  const editEndpoint = String(settings.editEndpoint || process.env.PLATFORM_EDIT_ENDPOINT || "").trim();
+  const apiKey = String(settings.apiKey || process.env.PLATFORM_API_KEY || "").trim();
   const priceCents = Math.max(1, Math.round(Number(settings.priceCents || process.env.PLATFORM_PRICE_CENTS || 8)));
   const upstreamCostCents = Math.max(0, Math.round(Number(settings.upstreamCostCents || process.env.PLATFORM_UPSTREAM_COST_CENTS || 4)));
   return {
@@ -524,46 +541,6 @@ function normalizeRechargeAmount(amountCents) {
   const cents = Math.round(Number(amountCents || 0));
   if (!Number.isFinite(cents) || cents < 100) return 0;
   return Math.min(cents, 500000);
-}
-
-function inferGeneratedImageCount(contentType, body) {
-  if (contentType.startsWith("image/")) return 1;
-  try {
-    const payload = JSON.parse(body.toString("utf8"));
-    return collectImageCount(payload, new Set(), 0, "");
-  } catch {
-    return 0;
-  }
-}
-
-function collectImageCount(value, seen, depth, keyPath) {
-  if (value == null || depth > 8) return 0;
-  if (typeof value === "string") {
-    if (isImageLikeString(value, keyPath) && !seen.has(value)) {
-      seen.add(value);
-      return 1;
-    }
-    return 0;
-  }
-  if (Array.isArray(value)) {
-    return value.reduce((total, item, index) => total + collectImageCount(item, seen, depth + 1, `${keyPath}[${index}]`), 0);
-  }
-  if (typeof value === "object") {
-    return Object.entries(value).reduce(
-      (total, [key, nested]) => total + collectImageCount(nested, seen, depth + 1, keyPath ? `${keyPath}.${key}` : key),
-      0,
-    );
-  }
-  return 0;
-}
-
-function isImageLikeString(value, keyPath) {
-  const text = String(value || "").trim();
-  if (!text) return false;
-  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(text)) return true;
-  if (/^https?:\/\/.+\.(png|jpe?g|webp|gif)([?#].*)?$/i.test(text)) return true;
-  if (/^[A-Za-z0-9+/=\s]{400,}$/.test(text) && /(^|\.)(b64_json|base64|image|url)$/i.test(keyPath)) return true;
-  return false;
 }
 
 function inferEditEndpoint(textEndpoint) {

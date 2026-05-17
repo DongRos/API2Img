@@ -579,12 +579,42 @@ async function commitGeneratedImage(src, options, index, context) {
   if (!src || context?.seenSources?.has(src)) return null;
   context?.seenSources?.add(src);
   const result = await createResult(src, options, index);
+  await chargePlatformImageIfNeeded(options, index, context);
   state.latestGenerationId = options.generationId || "";
   state.results.unshift(result);
   if (context) context.created.push(result);
   await persistState();
   renderResults();
   return result;
+}
+
+async function chargePlatformImageIfNeeded(options, index, context) {
+  if (options.apiProvider !== "platform") return;
+  const requestId = `${options.generationId || makeId()}:${index + 1}`;
+  if (!context) return;
+  context.chargedRequestIds ||= new Set();
+  if (context.chargedRequestIds.has(requestId)) return;
+  const response = await fetch("/api/billing/platform-usage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requestId,
+      generationId: options.generationId || "",
+      imageCount: 1,
+      mode: options.mode || "text",
+      model: options.model || "",
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || payload?.message || `扣费失败：${response.status}`);
+  }
+  context.chargedRequestIds.add(requestId);
+  if (Number.isFinite(Number(payload.balanceCents))) {
+    billingState.balanceCents = Number(payload.balanceCents);
+    renderWallet();
+  }
+  refreshBilling();
 }
 
 async function commitGeneratedImages(sources, options, startIndex, context) {
@@ -2164,7 +2194,7 @@ function idbGetAll(db, storeName) {
 
 async function persistableImageSource(src) {
   if (!src || src.startsWith("data:")) return src;
-  if (config.transportMode === "proxy" && /^https?:\/\//i.test(src)) {
+  if ((config.transportMode === "proxy" || isPlatformApiSelected()) && /^https?:\/\//i.test(src)) {
     try {
       const response = await fetch("/api/cache-image", {
         method: "POST",
@@ -2843,12 +2873,29 @@ function tryParseJsonString(value) {
 
 function tryParseJsonValue(value) {
   const text = String(value || "").trim();
-  if (!/^[{\[]/.test(text)) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
+  const candidates = [text];
+  const unescapedJson = unwrapEscapedJsonText(text);
+  if (unescapedJson && unescapedJson !== text) candidates.push(unescapedJson);
+
+  for (const candidate of candidates) {
+    if (!/^[{\["]/.test(candidate)) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed === "string" && parsed.trim() !== candidate) {
+        return tryParseJsonValue(parsed) ?? parsed;
+      }
+      return parsed;
+    } catch {
+      // Try the next normalized candidate.
+    }
   }
+  return null;
+}
+
+function unwrapEscapedJsonText(value) {
+  const text = String(value || "").trim();
+  const normalized = text.replace(/^(?:\\[rnt]\s*)+/, "").replace(/\\"/g, '"').replace(/\\\//g, "/");
+  return /^[{\[]/.test(normalized) ? normalized : "";
 }
 
 function clamp(value, min, max) {
