@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>API2image</title>
     <link rel="icon" type="image/png" href="./icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=22" />
+    <link rel="stylesheet" href="./styles.css?v=23" />
   </head>
   <body data-theme="dark">
     <div class="app">
@@ -186,7 +186,7 @@
         <div class="panel-header">
           <div>
             <h2>充值与余额</h2>
-            <p>选择推荐 API 生成图片时按张扣费；自定义 API 使用你自己的 Key，不消耗这里的余额。</p>
+            <p>推荐 API 按张扣费，充值后即可使用；自定义 API 使用你自己的 Key，不消耗这里的余额。</p>
           </div>
           <button class="icon-button" id="closeWallet" title="关闭" type="button">
             <i data-icon="x"></i>
@@ -205,6 +205,16 @@
         </div>
 
         <div class="redeem-box">
+          <div class="recharge-guide">
+            <div>
+              <strong>购买充值卡密</strong>
+              <p>点击下方按钮前往发卡网购买卡密，付款后复制兑换码，回到这里粘贴兑换即可到账。若页面偶尔打不开或加载较慢，请刷新一下，或多打开几次再试。</p>
+            </div>
+            <a class="pill-button primary wallet-recharge-link" href="http://api2img.shop/" target="_blank" rel="noopener">
+              <i data-icon="external-link"></i><span>去充值</span>
+            </a>
+          </div>
+
           <label class="field">
             <span>兑换码充值</span>
             <input id="redeemCodeInput" type="text" autocomplete="off" placeholder="输入从发卡网购买到的兑换码" />
