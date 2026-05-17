@@ -529,11 +529,11 @@ async function platformConfig() {
 }
 
 function platformConfigFromSettings(settings = {}) {
-  const textEndpoint = String(settings.textEndpoint || process.env.PLATFORM_TEXT_ENDPOINT || "").trim();
-  const editEndpoint = String(settings.editEndpoint || process.env.PLATFORM_EDIT_ENDPOINT || "").trim();
-  const apiKey = String(settings.apiKey || process.env.PLATFORM_API_KEY || "").trim();
-  const priceCents = Math.max(1, Math.round(Number(settings.priceCents || process.env.PLATFORM_PRICE_CENTS || 8)));
-  const upstreamCostCents = Math.max(0, Math.round(Number(settings.upstreamCostCents || process.env.PLATFORM_UPSTREAM_COST_CENTS || 4)));
+  const textEndpoint = String(process.env.PLATFORM_TEXT_ENDPOINT || settings.textEndpoint || "").trim();
+  const editEndpoint = String(process.env.PLATFORM_EDIT_ENDPOINT || settings.editEndpoint || "").trim();
+  const apiKey = String(process.env.PLATFORM_API_KEY || settings.apiKey || "").trim();
+  const priceCents = Math.max(1, Math.round(Number(process.env.PLATFORM_PRICE_CENTS || settings.priceCents || 8)));
+  const upstreamCostCents = Math.max(0, Math.round(Number(process.env.PLATFORM_UPSTREAM_COST_CENTS || settings.upstreamCostCents || 4)));
   return {
     textEndpoint,
     editEndpoint,
@@ -549,7 +549,8 @@ function adminPlatformConfig(platform) {
   return {
     textEndpoint: platform.textEndpoint,
     editEndpoint: platform.editEndpoint,
-    apiKey: platform.apiKey,
+    apiKey: "",
+    apiKeyConfigured: Boolean(platform.apiKey),
     priceCents: platform.priceCents,
     upstreamCostCents: platform.upstreamCostCents,
     enabled: platform.enabled,

@@ -594,6 +594,12 @@ async function chargePlatformImageIfNeeded(options, index, context) {
   if (!context) return;
   context.chargedRequestIds ||= new Set();
   if (context.chargedRequestIds.has(requestId)) return;
+  const requestEntry = findRequestLogEntry(options, index);
+  if (requestEntry) {
+    requestEntry.costCents = 0;
+    saveGenerationLogs();
+    renderGenerationLogs();
+  }
   const response = await fetch("/api/billing/platform-usage", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -610,11 +616,24 @@ async function chargePlatformImageIfNeeded(options, index, context) {
     throw new Error(payload?.error?.message || payload?.message || `扣费失败：${response.status}`);
   }
   context.chargedRequestIds.add(requestId);
+  if (requestEntry) {
+    requestEntry.costCents = Number(payload.chargedCents || 0);
+    if (activeGenerationLog) activeGenerationLog.costCents = totalGenerationLogCost(activeGenerationLog);
+    saveGenerationLogs();
+    renderGenerationLogs();
+  }
   if (Number.isFinite(Number(payload.balanceCents))) {
     billingState.balanceCents = Number(payload.balanceCents);
     renderWallet();
   }
   refreshBilling();
+}
+
+function findRequestLogEntry(options, index) {
+  const label = options.batchTotal > 1 ? `第 ${index + 1}/${options.batchTotal} 张` : options.count > 1 ? `批量 ${options.count} 张` : "单图请求";
+  const log = activeGenerationLog || generationLogs[0];
+  if (!log?.requests?.length) return null;
+  return [...log.requests].reverse().find((entry) => String(entry.label || "").startsWith(label)) || null;
 }
 
 async function commitGeneratedImages(sources, options, startIndex, context) {
@@ -1971,7 +1990,8 @@ async function savePlatformAdminConfig() {
 function hydratePlatformAdminForm(platform) {
   $("#platformTextEndpoint").value = platform.textEndpoint || "";
   $("#platformEditEndpoint").value = platform.editEndpoint || "";
-  $("#platformApiKey").value = platform.apiKey || "";
+  $("#platformApiKey").value = "";
+  $("#platformApiKey").placeholder = platform.apiKeyConfigured ? "已配置，留空表示保持不变" : "sk-...";
   $("#platformPriceYuan").value = formatCodeAdminAmount((Number(platform.priceCents || billingState.priceCents) || 8) / 100);
   $("#platformCostYuan").value = formatCodeAdminAmount((Number(platform.upstreamCostCents || billingState.upstreamCostCents) || 0) / 100);
 }
@@ -2270,6 +2290,7 @@ function startGenerationLog(endpoint, options) {
     endpoint,
     options: summarizeOptionsForLog(options),
     imageCount: 0,
+    costCents: 0,
     message: "",
     error: "",
     requests: [],
@@ -2286,6 +2307,7 @@ function finishGenerationLog(status, details = {}) {
   activeGenerationLog.endedAt = Date.now();
   activeGenerationLog.durationMs = activeGenerationLog.endedAt - activeGenerationLog.startedAt;
   activeGenerationLog.imageCount = Number(details.imageCount) || 0;
+  activeGenerationLog.costCents = totalGenerationLogCost(activeGenerationLog);
   activeGenerationLog.message = details.message || "";
   activeGenerationLog.error = details.error || "";
   saveGenerationLogs();
@@ -2310,6 +2332,7 @@ function startRequestLog(endpoint, request, options, meta = {}) {
     ok: false,
     contentType: "",
     imageCount: 0,
+    costCents: 0,
     responsePreview: "",
     error: "",
     completed: false,
@@ -2326,6 +2349,8 @@ function completeRequestLog(entry, details = {}) {
   entry.endedAt = Date.now();
   entry.durationMs = entry.endedAt - entry.startedAt;
   Object.assign(entry, details);
+  if (!Number.isFinite(Number(entry.costCents))) entry.costCents = 0;
+  if (activeGenerationLog) activeGenerationLog.costCents = totalGenerationLogCost(activeGenerationLog);
   saveGenerationLogs();
   renderGenerationLogs();
 }
@@ -2360,6 +2385,7 @@ function renderGenerationLogs() {
             <span>${escapeHtml(summary)}</span>
             <span>请求 ${requestCount} 次</span>
             <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
+            <span>花费 ${formatMoney(log.costCents || 0)} 元</span>
             ${log.durationMs ? `<span>用时 ${Math.max(1, Math.round(log.durationMs / 1000))} 秒</span>` : ""}
           </div>
           ${log.message ? `<p class="log-message">${escapeHtml(log.message)}</p>` : ""}
@@ -2403,6 +2429,7 @@ function renderCurrentLogPreview() {
     <div class="current-log-meta">
       <span>请求 ${(log.requests || []).length} 次</span>
       <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
+      <span>花费 ${formatMoney(log.costCents || 0)} 元</span>
       <span>${escapeHtml(multiModeLabel(log.options?.multiImageMode))}</span>
     </div>
     ${log.error ? `<p class="current-log-error">${escapeHtml(log.error)}</p>` : ""}
@@ -2431,8 +2458,13 @@ function requestLogText(entry) {
     `请求变体:\n${entry.variant || "-"}`,
     `参数:\n${summarizeLogValue(entry.params)}`,
     `请求:\n${summarizeLogValue(entry.request)}`,
+    `本张花费:\n${formatMoney(entry.costCents || 0)} 元`,
     `API 返回:\nHTTP ${entry.httpStatus || "-"} · ${entry.contentType || "unknown"} · 图片 ${entry.imageCount || 0} 张\n${entry.responsePreview || entry.error || "暂无返回"}`,
   ].join("\n\n");
+}
+
+function totalGenerationLogCost(log) {
+  return (log?.requests || []).reduce((sum, entry) => sum + Math.max(0, Number(entry.costCents || 0)), 0);
 }
 
 function clearGenerationLogs() {

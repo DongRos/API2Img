@@ -271,11 +271,12 @@ export async function updatePlatformAdminConfig(context) {
   const payload = await readJson(context.request);
   const settings = await mutateDb(context, (db) => {
     const existing = db.settings.platform || {};
+    const incomingApiKey = String(payload.apiKey || "").trim();
     const next = {
       ...existing,
       textEndpoint: String(payload.textEndpoint || "").trim(),
       editEndpoint: String(payload.editEndpoint || "").trim(),
-      apiKey: String(payload.apiKey || "").trim(),
+      apiKey: incomingApiKey || existing.apiKey || "",
       priceCents: Math.max(1, Math.round(Number(payload.priceCents || 8))),
       upstreamCostCents: Math.max(0, Math.round(Number(payload.upstreamCostCents || 0))),
       updatedAt: Date.now(),
@@ -586,11 +587,11 @@ async function getPlatformConfig(context) {
 }
 
 function platformConfigFromSettings(context, settings = {}) {
-  const textEndpoint = String(settings.textEndpoint || getEnv(context, "PLATFORM_TEXT_ENDPOINT") || "").trim();
-  const editEndpoint = String(settings.editEndpoint || getEnv(context, "PLATFORM_EDIT_ENDPOINT") || "").trim();
-  const apiKey = String(settings.apiKey || getEnv(context, "PLATFORM_API_KEY") || "").trim();
-  const priceCents = Math.max(1, Number(settings.priceCents || getEnv(context, "PLATFORM_PRICE_CENTS") || 8));
-  const upstreamCostCents = Math.max(0, Number(settings.upstreamCostCents || getEnv(context, "PLATFORM_UPSTREAM_COST_CENTS") || 4));
+  const textEndpoint = String(getEnv(context, "PLATFORM_TEXT_ENDPOINT") || settings.textEndpoint || "").trim();
+  const editEndpoint = String(getEnv(context, "PLATFORM_EDIT_ENDPOINT") || settings.editEndpoint || "").trim();
+  const apiKey = String(getEnv(context, "PLATFORM_API_KEY") || settings.apiKey || "").trim();
+  const priceCents = Math.max(1, Number(getEnv(context, "PLATFORM_PRICE_CENTS") || settings.priceCents || 8));
+  const upstreamCostCents = Math.max(0, Number(getEnv(context, "PLATFORM_UPSTREAM_COST_CENTS") || settings.upstreamCostCents || 4));
   return {
     textEndpoint,
     editEndpoint,
@@ -606,7 +607,8 @@ function adminPlatformConfig(platform) {
   return {
     textEndpoint: platform.textEndpoint,
     editEndpoint: platform.editEndpoint,
-    apiKey: platform.apiKey,
+    apiKey: "",
+    apiKeyConfigured: Boolean(platform.apiKey),
     priceCents: platform.priceCents,
     upstreamCostCents: platform.upstreamCostCents,
     enabled: platform.enabled,
