@@ -3577,7 +3577,7 @@ function renderAnnouncements() {
             <article class="announcement-item${unreadClass}">
               <div class="announcement-head">
                 <strong>${escapeHtml(item.title)}</strong>
-                <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
+                <small>${escapeHtml(announcementMetaLabel(item, stamp))}</small>
               </div>
               <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
             </article>
@@ -3597,7 +3597,7 @@ function renderAnnouncements() {
               <article class="announcement-item">
                 <div class="announcement-head">
                   <strong>${escapeHtml(item.title)}</strong>
-                  <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
+                  <small>${escapeHtml(announcementMetaLabel(item, stamp))}</small>
                 </div>
                 <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
               </article>
@@ -3618,7 +3618,7 @@ function renderAnnouncements() {
                 <div class="announcement-admin-main">
                   <div class="announcement-head">
                     <strong>${escapeHtml(item.title)}</strong>
-                    <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
+                    <small>${escapeHtml(announcementMetaLabel(item, stamp))}</small>
                   </div>
                   <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
                 </div>
@@ -3643,6 +3643,11 @@ function renderAnnouncementBadge() {
   const unread = Number(announcementState.unreadCount || 0);
   badge.hidden = unread <= 0;
   badge.textContent = unread > 9 ? "9+" : String(unread);
+}
+
+function announcementMetaLabel(item, timestamp) {
+  const time = formatAnnouncementTime(timestamp);
+  return item?.pinned ? `置顶${time ? ` · ${time}` : ""}` : time;
 }
 
 function maybeShowAnnouncements(force = false) {
