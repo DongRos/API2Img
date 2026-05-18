@@ -1,4 +1,10 @@
-import { createAnnouncement, guarded, listAdminAnnouncements, optionsResponse } from "../../../lib/billing-edgeone.js";
+import {
+  createAnnouncement,
+  deleteAnnouncement,
+  guarded,
+  listAdminAnnouncements,
+  optionsResponse,
+} from "../../../lib/billing-edgeone.js";
 
 export async function onRequestOptions() {
   return optionsResponse();
@@ -10,6 +16,10 @@ export async function onRequestGet(context) {
 
 export async function onRequestPost(context) {
   return guarded(createAnnouncement, context);
+}
+
+export async function onRequestDelete(context) {
+  return guarded(deleteAnnouncement, context);
 }
 
 export async function onRequest() {

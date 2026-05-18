@@ -234,6 +234,7 @@ function bindEvents() {
   $("#closeAnnouncement").addEventListener("click", closeAnnouncementPopup);
   $("#openAnnouncementAdmin")?.addEventListener("click", openAnnouncementAdminPanel);
   $("#publishAnnouncementButton").addEventListener("click", publishAnnouncementFromPanel);
+  $("#announcementAdminList")?.addEventListener("click", onAnnouncementAdminClick);
   $("#closeLogs").addEventListener("click", () => $("#logsPanel").classList.remove("open"));
   $("#clearLogsButton").addEventListener("click", clearGenerationLogs);
   $("#clearStatsButton").addEventListener("click", clearApiStats);
@@ -3456,20 +3457,48 @@ function renderAnnouncements() {
 
   const popupList = $("#announcementPopupList");
   if (popupList) {
-    popupList.innerHTML = announcementState.items
-      .map((item) => {
-        const stamp = Number(item.updatedAt || item.createdAt || 0);
-        return `
-          <article class="announcement-item">
-            <div class="announcement-head">
-              <strong>${escapeHtml(item.title)}</strong>
-              <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
-            </div>
-            <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
-          </article>
-        `;
-      })
-      .join("");
+    popupList.innerHTML = announcementState.items.length
+      ? announcementState.items
+          .map((item) => {
+            const stamp = Number(item.updatedAt || item.createdAt || 0);
+            return `
+              <article class="announcement-item">
+                <div class="announcement-head">
+                  <strong>${escapeHtml(item.title)}</strong>
+                  <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
+                </div>
+                <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
+              </article>
+            `;
+          })
+          .join("")
+      : `<div class="log-empty">暂无公告</div>`;
+  }
+
+  const adminList = $("#announcementAdminList");
+  if (adminList) {
+    adminList.innerHTML = announcementState.items.length
+      ? announcementState.items
+          .map((item) => {
+            const stamp = Number(item.updatedAt || item.createdAt || 0);
+            return `
+              <article class="announcement-admin-item" data-announcement-id="${escapeHtml(item.id)}">
+                <div class="announcement-admin-main">
+                  <div class="announcement-head">
+                    <strong>${escapeHtml(item.title)}</strong>
+                    <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
+                  </div>
+                  <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
+                </div>
+                <button class="icon-button announcement-delete-button" type="button" data-action="delete-announcement" title="删除公告">
+                  <i data-icon="trash"></i>
+                </button>
+              </article>
+            `;
+          })
+          .join("")
+      : `<div class="log-empty">暂无已发布公告</div>`;
+    renderIcons();
   }
 }
 
@@ -3572,6 +3601,41 @@ async function publishAnnouncementFromPanel() {
     button.disabled = false;
     button.innerHTML = `<i data-icon="check"></i><span>发布公告</span>`;
     renderIcons();
+  }
+}
+
+function onAnnouncementAdminClick(event) {
+  const button = event.target.closest("[data-action='delete-announcement']");
+  const item = event.target.closest("[data-announcement-id]");
+  if (!button || !item) return;
+  deleteAnnouncementFromPanel(item.dataset.announcementId, button);
+}
+
+async function deleteAnnouncementFromPanel(id, button = null) {
+  const announcementId = String(id || "").trim();
+  if (!announcementId) return;
+  const password = $("#codeAdminPassword").value.trim();
+  if (!password) {
+    showToast("请输入管理密码");
+    return;
+  }
+  if (!window.confirm("确定删除这条公告吗？删除后前台将不再展示。")) return;
+
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/billing/admin/announcements?id=${encodeURIComponent(announcementId)}`, {
+      method: "DELETE",
+      headers: { "X-Admin-Password": password },
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "删除公告失败");
+    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
+    await loadAnnouncements({ silent: true });
+    showToast("公告已删除，前台已同步更新");
+  } catch (error) {
+    showToast(error.message || "删除公告失败");
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 

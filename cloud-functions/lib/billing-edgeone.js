@@ -358,6 +358,23 @@ export async function listAdminAnnouncements(context) {
   return jsonResponse(200, { ok: true, announcements: announcements.map(publicAnnouncement) });
 }
 
+export async function deleteAnnouncement(context) {
+  if (!isAdminRequest(context)) return jsonResponse(401, { error: { message: "管理员密码不正确" } });
+  const url = new URL(context.request.url);
+  const payload = await readJson(context.request);
+  const announcementId = String(url.searchParams.get("id") || payload.id || "").trim();
+  if (!announcementId) return jsonResponse(400, { error: { message: "公告 ID 缺失" } });
+
+  const announcement = await mutateDb(context, (db) => {
+    if (!isRecord(db.announcements)) db.announcements = {};
+    if (!db.announcements[announcementId]) throw new Error("公告不存在或已删除");
+    const deleted = { ...db.announcements[announcementId] };
+    delete db.announcements[announcementId];
+    return deleted;
+  });
+  return jsonResponse(200, { ok: true, announcement: publicAnnouncement(announcement) });
+}
+
 export async function getPlatformAdminConfig(context) {
   if (!isAdminRequest(context)) return jsonResponse(401, { error: { message: "管理员密码不正确" } });
   return jsonResponse(200, { ok: true, platform: adminPlatformConfig(await getPlatformConfig(context)) });
@@ -719,6 +736,7 @@ function normalizeSiteStats(value) {
 }
 
 function normalizeAnnouncements(value) {
+  if (isRecord(value) && !Object.keys(value).length) return {};
   const records = isRecord(value) ? Object.values(value) : Array.isArray(value) ? value : [];
   const announcements = {};
   for (const item of records) {

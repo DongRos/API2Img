@@ -418,6 +418,14 @@ async function handleBillingAdminRequest(req, res, route) {
     return;
   }
 
+  if (req.method === "DELETE" && route === "/api/billing/admin/announcements") {
+    const url = new URL(req.url, `http://${host}:${port}`);
+    const payload = await readJson(req);
+    const announcement = await billingStore.deleteAnnouncement(url.searchParams.get("id") || payload.id);
+    sendJson(res, 200, { ok: true, announcement: publicAnnouncement(announcement) });
+    return;
+  }
+
   if (req.method === "GET" && route === "/api/billing/admin/platform") {
     sendJson(res, 200, { ok: true, platform: adminPlatformConfig(await platformConfig()) });
     return;
