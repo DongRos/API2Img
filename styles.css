@@ -1603,6 +1603,7 @@ body[data-theme="light"] .detail-modal {
   display: grid;
   grid-template-rows: 64px minmax(0, 1fr);
   height: 100%;
+  min-height: 0;
 }
 
 .detail-top {
@@ -1619,6 +1620,12 @@ body[data-theme="light"] .detail-modal {
 .detail-top > div:nth-child(2) {
   min-width: 0;
   flex: 1;
+}
+
+.detail-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .detail-top h2 {
@@ -1834,6 +1841,69 @@ body[data-theme="light"] .wallet-panel {
     height: 36px;
   }
 
+  .detail-modal {
+    overflow: hidden;
+  }
+
+  .detail-stage {
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .detail-top {
+    min-height: calc(56px + env(safe-area-inset-top));
+    align-items: flex-start;
+    gap: 8px;
+    padding: calc(8px + env(safe-area-inset-top)) 8px 8px;
+  }
+
+  .detail-top > .icon-button {
+    flex: 0 0 36px;
+  }
+
+  .detail-top > div:nth-child(2) {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-top: 1px;
+  }
+
+  .detail-top h2 {
+    font-size: 16px;
+    line-height: 1.18;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .detail-top span {
+    max-width: none;
+    font-size: 12px;
+    line-height: 1.28;
+    display: -webkit-box;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .detail-actions {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: repeat(2, 36px);
+    gap: 6px;
+  }
+
+  .detail-actions .icon-button {
+    width: 36px;
+    height: 36px;
+  }
+
+  .detail-actions .pill-button {
+    display: none;
+  }
+
   .badge-dot {
     top: 4px;
     right: 4px;
@@ -1875,16 +1945,34 @@ body[data-theme="light"] .wallet-panel {
 
   .detail-body {
     grid-template-columns: 1fr;
-    overflow: auto;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+    min-height: 0;
+    padding: 10px;
+    overflow: hidden;
   }
 
   .detail-viewport {
-    height: min(62vh, 560px);
+    align-self: stretch;
+    justify-self: stretch;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .detail-viewport img {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
   }
 
   .detail-side {
+    max-height: 34vh;
     align-self: auto;
-    padding-bottom: 120px;
+    overflow: auto;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
   }
 
   .composer {
