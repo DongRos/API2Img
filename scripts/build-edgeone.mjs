@@ -11,7 +11,7 @@ await rm(outDir, { recursive: true, force: true });
 await mkdir(assetsDir, { recursive: true });
 await mkdir(join(functionsDir, "api"), { recursive: true });
 
-for (const file of ["index.html", "app.js", "styles.css"]) {
+for (const file of ["index.html", "app.js", "styles.css", "icon.png"]) {
   await copyFile(join(root, file), join(assetsDir, file));
 }
 
