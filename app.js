@@ -280,6 +280,9 @@ function bindEvents() {
   window.addEventListener("pointermove", onDetailPointerMove);
   window.addEventListener("pointerup", onDetailPointerUp);
   window.addEventListener("keydown", onGlobalKeyDown);
+  document.addEventListener("input", onHiddenPhraseInput, true);
+  document.addEventListener("compositionend", onHiddenPhraseInput, true);
+  document.addEventListener("paste", () => setTimeout(() => onHiddenPhraseInput(), 0), true);
   $("#promptInput").addEventListener("input", (event) => autoGrow(event.target));
   $("#promptInput").addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -1473,30 +1476,69 @@ function onDetailPointerUp() {
 
 function onGlobalKeyDown(event) {
   if (event.key === "Escape" && !$("#detailModal").hidden) closeDetail();
+  if (isTextEntryField(document.activeElement)) return;
   if (event.ctrlKey || event.metaKey || event.altKey || event.key.length !== 1) return;
   const key = event.key.toLowerCase();
   statsOpenBuffer = `${statsOpenBuffer}${key}`.slice(-API_STATS_OPEN_PHRASE.length);
   codeAdminOpenBuffer = `${codeAdminOpenBuffer}${key}`.slice(-CODE_ADMIN_OPEN_PHRASE.length);
-  if (statsOpenBuffer === API_STATS_OPEN_PHRASE) {
+  const action = resolveHiddenPhraseAction();
+  if (action) {
     event.preventDefault();
-    statsOpenBuffer = "";
-    removeOpenPhraseFromActiveField(API_STATS_OPEN_PHRASE);
-    openStatsPanelWithPassword();
-  } else if (codeAdminOpenBuffer === CODE_ADMIN_OPEN_PHRASE) {
-    event.preventDefault();
-    codeAdminOpenBuffer = "";
-    removeOpenPhraseFromActiveField(CODE_ADMIN_OPEN_PHRASE);
-    openCodeAdminPanel();
+    runHiddenPhraseAction(action);
   }
+}
+
+function onHiddenPhraseInput(event) {
+  const field = event?.target || document.activeElement;
+  if (!isTextEntryField(field)) return;
+  const value = String(field.value || "").toLowerCase();
+  let action = null;
+  if (value.endsWith(CODE_ADMIN_OPEN_PHRASE)) action = { phrase: CODE_ADMIN_OPEN_PHRASE, open: () => openCodeAdminPanel() };
+  else if (value.endsWith(API_STATS_OPEN_PHRASE)) action = { phrase: API_STATS_OPEN_PHRASE, open: () => openStatsPanelWithPassword() };
+  if (!action) return;
+  removeOpenPhraseFromField(field, action.phrase);
+  resetHiddenPhraseBuffers();
+  action.open();
+}
+
+function resolveHiddenPhraseAction() {
+  if (statsOpenBuffer === API_STATS_OPEN_PHRASE) {
+    return { phrase: API_STATS_OPEN_PHRASE, open: () => openStatsPanelWithPassword() };
+  }
+  if (codeAdminOpenBuffer === CODE_ADMIN_OPEN_PHRASE) {
+    return { phrase: CODE_ADMIN_OPEN_PHRASE, open: () => openCodeAdminPanel() };
+  }
+  return null;
+}
+
+function runHiddenPhraseAction(action) {
+  resetHiddenPhraseBuffers();
+  removeOpenPhraseFromActiveField(action.phrase);
+  action.open();
+}
+
+function resetHiddenPhraseBuffers() {
+  statsOpenBuffer = "";
+  codeAdminOpenBuffer = "";
 }
 
 function removeOpenPhraseFromActiveField(phrase) {
   const field = document.activeElement;
-  if (!field || !["INPUT", "TEXTAREA"].includes(field.tagName || "")) return;
+  removeOpenPhraseFromField(field, phrase);
+}
+
+function removeOpenPhraseFromField(field, phrase) {
+  if (!isTextEntryField(field)) return;
   const value = field.value || "";
   if (!value.toLowerCase().endsWith(phrase)) return;
   field.value = value.slice(0, -phrase.length);
   field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function isTextEntryField(field) {
+  if (!field || !["INPUT", "TEXTAREA"].includes(field.tagName || "")) return false;
+  const type = String(field.type || "text").toLowerCase();
+  return !["button", "checkbox", "file", "hidden", "radio", "range", "submit"].includes(type);
 }
 
 async function openStatsPanelWithPassword() {
