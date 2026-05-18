@@ -149,6 +149,17 @@ body[data-theme="light"] select option:checked {
   min-width: 0;
 }
 
+.brand-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: block;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.95);
+  object-fit: cover;
+}
+
 .titlebar p {
   max-width: min(760px, 52vw);
   margin-top: 4px;
