@@ -1,5 +1,5 @@
 {
-  "buildCommand": "node -e \"console.log('Deploy static root')\"",
-  "outputDirectory": ".",
+  "buildCommand": "node scripts/build-edgeone.mjs",
+  "outputDirectory": ".edgeone",
   "nodeVersion": "22.11.0"
 }
