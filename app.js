@@ -1024,13 +1024,26 @@ function cleanErrorMessage(error) {
   return formatHttpError(0, error?.message || String(error));
 }
 
+function isBalanceError(text = "") {
+  return /余额不足|剩余额度|可用余额|预扣费额度失败|预扣费失败|预扣费不足|insufficient balance|not enough balance|available balance|wallet balance|balance too low|pre[- ]?charge|predebit|debit failed/i.test(
+    String(text || ""),
+  );
+}
+
 function addApiGuidance(message, extra = "") {
   const base = String(message || "").replace(/\s+/g, " ").trim();
-  const intro = base ? (/[。！？.!?]$/.test(base) ? base : `${base}。`) : "";
-  const guidance =
-    "常见原因是上游 API 未正确配置、地址/Key/模型/通道参数填错，或供应商接口临时异常。请先按供应商文档重新检查并保存配置；如果仍然失败，建议切换到“推荐API”重试。";
-  const suffix = extra ? `${extra} ` : "";
-  return `${intro}${suffix}${guidance}`.trim();
+  if (!base) return "";
+  const intro = /[。！？.!?]$/.test(base) ? base : `${base}。`;
+  const parts = [];
+  if (extra) parts.push(String(extra).replace(/\s+/g, " ").trim());
+  parts.push("常见原因是上游 API 未正确配置，或地址/Key/模型/通道参数填错，也可能是供应商接口临时异常。");
+  parts.push("请先按供应商文档重新检查并保存配置。");
+  if (isPlatformApiSelected()) {
+    parts.push("如果当前已经在用推荐API，请重点核对推荐 API 的地址、Key、模型/通道参数是否与文档一致。");
+  } else {
+    parts.push("如果当前用的是自定义 API，仍失败时可以临时切到“推荐API”对比排查。");
+  }
+  return `${intro}${parts.join(" ")}`.trim();
 }
 
 function formatHttpError(status, message) {
@@ -1038,6 +1051,9 @@ function formatHttpError(status, message) {
   const text = rawText.replace(/\s+/g, " ").trim();
   const code = text.match(/Error code\s*(\d{3})/i)?.[1] || (status ? String(status) : "");
   const title = text.match(/<title>(.*?)<\/title>/i)?.[1];
+  if (isBalanceError(text)) {
+    return text.slice(0, 260) || `请求失败${code ? `：${code}` : ""}`;
+  }
   if (/openai_error|bad_response_status_code/i.test(text)) {
     return addApiGuidance(
       "API 返回 openai_error，响应里没有图片数据。网页无法取回已在上游生成但未返回的图片，已停止自动补单以避免重复扣费。",
@@ -2159,7 +2175,7 @@ function updateApiProviderUi() {
 }
 
 function isPlatformApiSelected() {
-  return $("#apiProviderSelect")?.value === "platform";
+  return ($("#apiProviderSelect")?.value || config.apiProvider || "platform") === "platform";
 }
 
 function updateBillingFromGenerationResponse(response) {
