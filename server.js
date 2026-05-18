@@ -130,11 +130,33 @@ async function handleBillingRequest(req, res) {
 
   if (req.method === "POST" && route === "/api/billing/redeem") {
     const payload = await readJson(req);
-    const result = await billingStore.redeemCode(session.customerId, payload.code);
+    const result = await billingStore.redeemCode(session.customerId, payload.code, payload.email);
     sendJson(res, 200, {
       ok: true,
       customer: publicCustomer(result.customer),
       redemption: publicRedemption(result.redemption),
+    });
+    return;
+  }
+
+  if (req.method === "POST" && route === "/api/billing/restore") {
+    const payload = await readJson(req);
+    const restored = await billingStore.restoreByEmailAndCode(session.sessionToken, payload.email, payload.code);
+    appendSetCookie(res, "image2_session", restored.sessionToken, {
+      httpOnly: true,
+      sameSite: "Lax",
+      maxAge: 60 * 60 * 24 * 365,
+    });
+    const dashboard = await billingStore.getDashboard(restored.customer.id);
+    sendJson(res, 200, {
+      ok: true,
+      customerId: restored.customer.id,
+      customer: publicCustomer(dashboard.customer),
+      orders: dashboard.orders.map(publicOrder),
+      usage: dashboard.usage.map(publicUsage),
+      redemptions: dashboard.redemptions.map(publicRedemption),
+      priceCents: (await platformConfig()).priceCents,
+      currency: "CNY",
     });
     return;
   }
@@ -757,6 +779,7 @@ function publicRedemption(redemption) {
   return {
     id: redemption.id,
     code: maskRedeemCode(redemption.code),
+    contactEmail: redemption.contactEmailMasked || maskEmail(redemption.contactEmail || ""),
     amountCents: Number(redemption.amountCents || 0),
     label: redemption.label || "",
     createdAt: Number(redemption.createdAt || 0),
@@ -800,6 +823,14 @@ function maskRedeemCode(code) {
   const normalized = String(code || "");
   if (normalized.length <= 8) return normalized;
   return `${normalized.slice(0, 4)}...${normalized.slice(-4)}`;
+}
+
+function maskEmail(email) {
+  const normalized = String(email || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return "";
+  const [name, domain] = normalized.split("@");
+  const safeName = name.length <= 2 ? `${name[0] || "*"}*` : `${name.slice(0, 2)}***${name.slice(-1)}`;
+  return `${safeName}@${domain}`;
 }
 
 function isAdminRequest(req) {

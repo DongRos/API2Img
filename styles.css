@@ -1133,6 +1133,18 @@ svg {
   line-height: 1.55;
 }
 
+.recovery-box > div:first-child strong {
+  display: block;
+  font-size: 14px;
+}
+
+.recovery-box > div:first-child p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .wallet-recharge-link {
   text-decoration: none;
   white-space: nowrap;
@@ -1924,6 +1936,14 @@ body[data-theme="light"] .wallet-panel {
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+
+  .recharge-guide {
+    grid-template-columns: 1fr;
+  }
+
+  .wallet-recharge-link {
+    width: 100%;
   }
 
   .prompt-card {

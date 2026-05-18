@@ -190,8 +190,11 @@ export async function redeemCode(context) {
   const session = await resolveSession(context);
   const payload = await readJson(context.request);
   const code = normalizeRedeemCode(payload.code);
+  const email = normalizeEmail(payload.email);
   if (!code) return jsonResponse(400, { error: { message: "请输入兑换码" } }, session);
+  if (!email) return jsonResponse(400, { error: { message: "请输入购买时填写的邮箱" } }, session);
 
+  const contactEmailHash = await hashContactEmail(email);
   const result = await mutateDb(context, (db) => {
     const customer = ensureCustomerRecord(db, session.customerId);
     const record = db.redeemCodes[code];
@@ -203,6 +206,8 @@ export async function redeemCode(context) {
       id: makeId("rdm"),
       code,
       customerId: session.customerId,
+      contactEmailHash,
+      contactEmailMasked: maskEmail(email),
       amountCents: Number(record.amountCents || 0),
       label: record.label || "",
       createdAt: now,
@@ -227,6 +232,60 @@ export async function redeemCode(context) {
       redemption: publicRedemption(result.redemption),
     },
     session,
+  );
+}
+
+export async function restoreBalance(context) {
+  const session = await resolveSession(context);
+  const payload = await readJson(context.request);
+  const email = normalizeEmail(payload.email);
+  const code = normalizeRedeemCode(payload.code);
+  if (!email) return jsonResponse(400, { error: { message: "请输入购买时填写的邮箱" } }, session);
+  if (!code) return jsonResponse(400, { error: { message: "请输入邮件里的兑换码" } }, session);
+
+  const contactEmailHash = await hashContactEmail(email);
+  const result = await mutateDb(context, async (db) => {
+    const record = db.redeemCodes[code];
+    if (!record || !record.usedBy || !record.redemptionId) throw new Error("没有找到这张卡密的兑换记录");
+    const redemption = db.redemptions[record.redemptionId];
+    if (!redemption || redemption.customerId !== record.usedBy) throw new Error("兑换记录不完整，请联系站长处理");
+    const storedHash = redemption.contactEmailHash || (await hashContactEmail(redemption.contactEmail || ""));
+    if (!storedHash || storedHash !== contactEmailHash) throw new Error("邮箱和卡密不匹配");
+
+    const customer = ensureCustomerRecord(db, redemption.customerId);
+    const now = Date.now();
+    const current = db.sessions[session.sessionToken];
+    if (current) {
+      current.customerId = customer.id;
+      current.lastSeenAt = now;
+      current.restoredAt = now;
+    }
+    customer.updatedAt = now;
+    return {
+      customer: { ...customer },
+      session: {
+        ...session,
+        customerId: customer.id,
+      },
+    };
+  });
+
+  const platform = await getPlatformConfig(context);
+  const dashboard = await getDashboard(context, result.customer.id);
+  return jsonResponse(
+    200,
+    {
+      ok: true,
+      customerId: result.customer.id,
+      customer: publicCustomer(dashboard.customer),
+      orders: dashboard.orders.map(publicOrder),
+      usage: dashboard.usage.map(publicUsage),
+      redemptions: dashboard.redemptions.map(publicRedemption),
+      priceCents: platform.priceCents,
+      upstreamCostCents: platform.upstreamCostCents,
+      currency: "CNY",
+    },
+    result.session,
   );
 }
 
@@ -915,6 +974,7 @@ function publicRedemption(redemption) {
   return {
     id: redemption.id,
     code: maskRedeemCode(redemption.code),
+    contactEmail: redemption.contactEmailMasked || maskEmail(redemption.contactEmail || ""),
     amountCents: Number(redemption.amountCents || 0),
     label: redemption.label || "",
     createdAt: Number(redemption.createdAt || 0),
@@ -959,6 +1019,46 @@ function normalizeRedeemCode(code) {
     .toUpperCase()
     .replace(/\s+/g, "")
     .replace(/[^\w-]/g, "");
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email || email.length > 254) return "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "";
+  return email;
+}
+
+async function hashContactEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return "";
+  return sha256Hex(`api2image:contact-email:v1:${normalized}`);
+}
+
+async function sha256Hex(value) {
+  if (globalThis.crypto?.subtle) {
+    const bytes = new TextEncoder().encode(value);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  if (typeof require === "function") {
+    try {
+      return require("crypto").createHash("sha256").update(value).digest("hex");
+    } catch {}
+  }
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+function maskEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return "";
+  const [name, domain] = normalized.split("@");
+  const safeName = name.length <= 2 ? `${name[0] || "*"}*` : `${name.slice(0, 2)}***${name.slice(-1)}`;
+  return `${safeName}@${domain}`;
 }
 
 function maskRedeemCode(code) {

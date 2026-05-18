@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>API2image</title>
     <link rel="icon" type="image/png" href="./icon.png?v=2" />
-    <link rel="stylesheet" href="./styles.css?v=29" />
+    <link rel="stylesheet" href="./styles.css?v=30" />
   </head>
   <body data-theme="dark">
     <script>
@@ -223,7 +223,7 @@
           <div class="recharge-guide">
             <div>
               <strong>购买充值卡密</strong>
-              <p>点击下方按钮前往发卡网购买卡密，付款后复制兑换码，回到这里粘贴兑换即可到账。若页面偶尔打不开或加载较慢，请刷新一下，或多打开几次再试。</p>
+              <p>点击下方按钮前往发卡网购买卡密，请填写邮箱接收卡密。回到这里输入同一邮箱和兑换码即可到账，后续也可用它们找回余额。</p>
             </div>
             <a class="pill-button primary wallet-recharge-link" href="http://api2img.shop/" target="_blank" rel="noopener">
               <i data-icon="external-link"></i><span>去充值</span>
@@ -231,11 +231,33 @@
           </div>
 
           <label class="field">
-            <span>兑换码充值</span>
-            <input id="redeemCodeInput" type="text" autocomplete="off" placeholder="输入从发卡网购买到的兑换码" />
+            <span>购买邮箱</span>
+            <input id="redeemEmailInput" type="email" autocomplete="email" placeholder="填写购买时接收卡密的邮箱" />
+          </label>
+          <label class="field">
+            <span>兑换码</span>
+            <input id="redeemCodeInput" type="text" autocomplete="off" placeholder="输入邮件里收到的兑换码" />
           </label>
           <button class="pill-button primary" id="redeemCodeButton" type="button">
             <i data-icon="check"></i><span>立即兑换</span>
+          </button>
+        </div>
+
+        <div class="redeem-box recovery-box">
+          <div>
+            <strong>余额找回</strong>
+            <p>换浏览器、清缓存后余额不见了？输入购买邮箱和已兑换过的卡密，即可恢复原余额账户。</p>
+          </div>
+          <label class="field">
+            <span>购买邮箱</span>
+            <input id="restoreEmailInput" type="email" autocomplete="email" placeholder="填写购买时接收卡密的邮箱" />
+          </label>
+          <label class="field">
+            <span>已兑换卡密</span>
+            <input id="restoreCodeInput" type="text" autocomplete="off" placeholder="输入邮件里收到的兑换码" />
+          </label>
+          <button class="pill-button" id="restoreBalanceButton" type="button">
+            <i data-icon="rotate"></i><span>找回余额</span>
           </button>
         </div>
 

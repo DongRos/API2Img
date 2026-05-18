@@ -213,12 +213,16 @@ function bindEvents() {
   $("#closeWallet").addEventListener("click", () => $("#walletPanel").classList.remove("open"));
   $("#apiProviderSelect").addEventListener("change", onApiProviderChange);
   $("#redeemCodeButton").addEventListener("click", redeemCode);
+  $("#restoreBalanceButton").addEventListener("click", restoreBalance);
+  $("#redeemEmailInput").addEventListener("keydown", submitOnEnter(redeemCode));
   $("#redeemCodeInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       redeemCode();
     }
   });
+  $("#restoreEmailInput").addEventListener("keydown", submitOnEnter(restoreBalance));
+  $("#restoreCodeInput").addEventListener("keydown", submitOnEnter(restoreBalance));
   $("#saveConfigButton").addEventListener("click", saveConfigFromForm);
   $("#themeButton").addEventListener("click", toggleTheme);
   $("#uploadButton").addEventListener("click", () => $("#imageInput").click());
@@ -293,6 +297,14 @@ function bindEvents() {
   window.addEventListener("resize", debounce(layoutResultMasonry, 120));
   if (new URLSearchParams(location.search).has("admin")) openCodeAdminPanel();
   if (new URLSearchParams(location.search).has("announce")) openAnnouncementAdminPanel();
+}
+
+function submitOnEnter(callback) {
+  return (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    callback();
+  };
 }
 
 function onModelSelect() {
@@ -2095,7 +2107,7 @@ function renderRedemptionList() {
         <article class="wallet-item">
           <div>
             <strong>+${formatMoney(item.amountCents)} 元</strong>
-            <span>${escapeHtml(item.label || "兑换码充值")}</span>
+            <span>${escapeHtml(item.label || "兑换码充值")}${item.contactEmail ? ` · ${escapeHtml(item.contactEmail)}` : ""}</span>
           </div>
           <small>${escapeHtml(item.code || "-")} · ${formatWalletTime(item.createdAt)}</small>
         </article>
@@ -2105,24 +2117,63 @@ function renderRedemptionList() {
 }
 
 async function redeemCode() {
+  const email = normalizeContactEmail($("#redeemEmailInput").value);
   const code = $("#redeemCodeInput").value.trim();
+  if (!email) {
+    showToast("请输入购买时填写的邮箱");
+    $("#redeemEmailInput").focus();
+    return;
+  }
   if (!code) {
     showToast("请输入兑换码");
+    $("#redeemCodeInput").focus();
     return;
   }
   try {
     const response = await fetch("/api/billing/redeem", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ email, code }),
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error?.message || "兑换失败");
+    $("#redeemEmailInput").value = email;
     $("#redeemCodeInput").value = "";
     await refreshBilling();
     showToast(`兑换成功，已到账 ${formatMoney(payload.redemption?.amountCents || 0)} 元`);
   } catch (error) {
     showToast(error.message || "兑换失败");
+  }
+}
+
+async function restoreBalance() {
+  const email = normalizeContactEmail($("#restoreEmailInput").value);
+  const code = $("#restoreCodeInput").value.trim();
+  if (!email) {
+    showToast("请输入购买时填写的邮箱");
+    $("#restoreEmailInput").focus();
+    return;
+  }
+  if (!code) {
+    showToast("请输入邮件里的兑换码");
+    $("#restoreCodeInput").focus();
+    return;
+  }
+  try {
+    const response = await fetch("/api/billing/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, code }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error?.message || "找回失败");
+    applyBillingDashboard(payload);
+    renderWallet();
+    $("#restoreEmailInput").value = email;
+    $("#restoreCodeInput").value = "";
+    showToast(`余额已找回：${formatMoney(payload.customer?.balanceCents || 0)} 元`);
+  } catch (error) {
+    showToast(error.message || "找回失败");
   }
 }
 
@@ -2519,6 +2570,12 @@ function maskApiKey(key) {
   if (!key) return "";
   if (key.length <= 10) return `${key.slice(0, 3)}***`;
   return `${key.slice(0, 6)}...${key.slice(-4)}`;
+}
+
+function normalizeContactEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email || email.length > 254) return "";
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
 }
 
 async function loadState() {
