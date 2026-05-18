@@ -328,7 +328,7 @@ async function generateImages(extra = {}) {
       imageCount: created.length,
       message: finalMessage,
     });
-    updateProgress(generationCancelled ? "生成已取消" : "生成完成", `${finalMessage}，用时 ${elapsedSeconds()} 秒`, 100, {
+    updateProgress(generationCancelled ? "生成已取消" : "生成完成", `${finalMessage}，用时 ${formatDurationLabel(Date.now() - progressStartedAt)}`, 100, {
       generated: created.length,
       total: options.count,
     });
@@ -2488,7 +2488,7 @@ function renderGenerationLogs() {
             <span>${escapeHtml(summary)}</span>
             <span>请求 ${requestCount} 次</span>
             <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
-            ${log.durationMs ? `<span>用时 ${Math.max(1, Math.round(log.durationMs / 1000))} 秒</span>` : ""}
+            ${log.durationMs ? `<span>用时 ${formatDurationLabel(log.durationMs)}</span>` : ""}
           </div>
           ${log.message ? `<p class="log-message">${escapeHtml(log.message)}</p>` : ""}
           ${log.error ? `<p class="log-error">${escapeHtml(log.error)}</p>` : ""}
@@ -2517,7 +2517,7 @@ function renderCurrentLogPreview() {
         <div class="current-log-row ${escapeHtml(entry.status || "")}">
           <span>${escapeHtml(entry.label || "请求")}</span>
           <strong>${escapeHtml(status)}</strong>
-          <small>${escapeHtml(entry.durationMs ? `${entry.durationMs}ms` : "进行中")}</small>
+          <small>${escapeHtml(entry.durationMs ? `${formatDurationLabel(entry.durationMs)}` : "进行中")}</small>
           <small class="log-cost">${escapeHtml(formatMoney(entry.costCents || 0))} 元</small>
         </div>
       `;
@@ -2547,7 +2547,7 @@ function renderRequestLog(entry) {
       <summary>
         <span>${escapeHtml(entry.label || "请求")}</span>
         <strong>${escapeHtml(status)}</strong>
-        <small>${escapeHtml(entry.durationMs ? `${entry.durationMs}ms` : "进行中")}</small>
+        <small>${escapeHtml(entry.durationMs ? `${formatDurationLabel(entry.durationMs)}` : "进行中")}</small>
         <small class="log-cost">${escapeHtml(formatMoney(entry.costCents || 0))} 元</small>
       </summary>
       <pre>${escapeHtml(text)}</pre>
@@ -2964,7 +2964,7 @@ function startProgress(title, detail, percent, counts = {}) {
     if (currentProgress >= 92) return;
     const elapsed = (Date.now() - progressStartedAt) / 1000;
     const eased = Math.min(92, 28 + Math.log2(elapsed + 1) * 18);
-    applyProgress("等待模型生成", `仍在生成中，已等待 ${Math.floor(elapsed)} 秒`, Math.max(currentProgress, eased));
+    applyProgress("等待模型生成", `仍在生成中，已等待 ${formatDurationLabel(elapsed * 1000)}`, Math.max(currentProgress, eased));
   }, 800);
 }
 
@@ -3001,8 +3001,11 @@ function hideProgress() {
   renderResults();
 }
 
-function elapsedSeconds() {
-  return Math.max(1, Math.round((Date.now() - progressStartedAt) / 1000));
+function formatDurationLabel(milliseconds) {
+  const totalSeconds = Math.max(1, Math.round(Number(milliseconds || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}\u5206${seconds}\u79d2`;
 }
 
 function ensureModelOption(model) {
