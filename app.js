@@ -2098,7 +2098,7 @@ function updateRecommendedApiLabels() {
   const option = $('#apiProviderSelect option[value="platform"]');
   if (option) option.textContent = label;
   const intro = $("#platformPriceIntro");
-  if (intro) intro.textContent = `本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片，当前 ${priceLabel}。`;
+  if (intro) intro.textContent = "本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片。";
 }
 
 function formatPlatformPriceLabel(cents) {
