@@ -418,6 +418,14 @@ async function handleBillingAdminRequest(req, res, route) {
     return;
   }
 
+  if (req.method === "PATCH" && route === "/api/billing/admin/announcements") {
+    const url = new URL(req.url, `http://${host}:${port}`);
+    const payload = await readJson(req);
+    const announcement = await billingStore.updateAnnouncement(url.searchParams.get("id") || payload.id, payload);
+    sendJson(res, 200, { ok: true, announcement: publicAnnouncement(announcement) });
+    return;
+  }
+
   if (req.method === "DELETE" && route === "/api/billing/admin/announcements") {
     const url = new URL(req.url, `http://${host}:${port}`);
     const payload = await readJson(req);

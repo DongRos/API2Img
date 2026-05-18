@@ -843,7 +843,7 @@ svg {
 }
 
 .code-admin-panel {
-  width: min(520px, calc(100vw - 32px));
+  width: min(620px, calc(100vw - 32px));
 }
 
 .wallet-panel {
@@ -900,7 +900,7 @@ svg {
 
 .announcement-admin-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px;
+  grid-template-columns: minmax(0, 1fr) 40px 40px;
   gap: 10px;
   align-items: stretch;
   padding: 10px;
@@ -913,13 +913,23 @@ svg {
   min-width: 0;
 }
 
+.announcement-pin-button,
 .announcement-delete-button {
   width: 40px;
   height: 100%;
   min-height: 40px;
+}
+
+.announcement-pin-button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.announcement-delete-button {
   color: var(--danger);
 }
 
+.announcement-pin-button:disabled,
 .announcement-delete-button:disabled {
   cursor: wait;
   opacity: 0.55;
@@ -1006,7 +1016,9 @@ svg {
 
 .logs-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
+  gap: 8px;
 }
 
 .wallet-chip.active {
@@ -1049,6 +1061,65 @@ svg {
   flex-direction: column;
   gap: 10px;
   padding: 12px;
+}
+
+.redeem-box.compact {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.admin-login {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+}
+
+.admin-auth-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.admin-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-nav {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.admin-nav-button {
+  min-height: 40px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+  color: var(--text);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.admin-nav-button.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 84%);
+  color: var(--text);
+}
+
+.admin-section-view {
+  display: none;
+}
+
+.admin-section-view.active {
+  display: flex;
 }
 
 .recharge-guide {
@@ -1238,6 +1309,13 @@ button:disabled {
   white-space: nowrap;
 }
 
+.api-stat-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
 .api-stat-head span {
   flex: 0 0 auto;
   min-height: 24px;
@@ -1247,6 +1325,17 @@ button:disabled {
   background: var(--glass-strong);
   color: var(--muted);
   font-size: 12px;
+}
+
+.api-stat-delete {
+  width: 28px;
+  height: 28px;
+  color: var(--danger);
+}
+
+.api-stat-delete svg {
+  width: 15px;
+  height: 15px;
 }
 
 .api-stat-endpoint {
@@ -1858,6 +1947,14 @@ body[data-theme="light"] .wallet-panel {
   .wallet-summary,
   .amount-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .announcement-admin-item {
+    grid-template-columns: minmax(0, 1fr) 38px 38px;
   }
 
   .recharge-guide {

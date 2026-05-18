@@ -358,6 +358,27 @@ export async function listAdminAnnouncements(context) {
   return jsonResponse(200, { ok: true, announcements: announcements.map(publicAnnouncement) });
 }
 
+export async function updateAnnouncement(context) {
+  if (!isAdminRequest(context)) return jsonResponse(401, { error: { message: "管理员密码不正确" } });
+  const url = new URL(context.request.url);
+  const payload = await readJson(context.request);
+  const announcementId = String(url.searchParams.get("id") || payload.id || "").trim();
+  if (!announcementId) return jsonResponse(400, { error: { message: "公告 ID 缺失" } });
+
+  const announcement = await mutateDb(context, (db) => {
+    if (!isRecord(db.announcements)) db.announcements = {};
+    if (!db.announcements[announcementId]) throw new Error("公告不存在或已删除");
+    const next = {
+      ...db.announcements[announcementId],
+      pinned: Boolean(payload.pinned),
+      updatedAt: Date.now(),
+    };
+    db.announcements[announcementId] = next;
+    return { ...next };
+  });
+  return jsonResponse(200, { ok: true, announcement: publicAnnouncement(announcement) });
+}
+
 export async function deleteAnnouncement(context) {
   if (!isAdminRequest(context)) return jsonResponse(401, { error: { message: "管理员密码不正确" } });
   const url = new URL(context.request.url);
@@ -1018,7 +1039,7 @@ function jsonResponse(status, payload, session = null) {
 function corsResponse(body, init = {}) {
   const headers = new Headers(init.headers || {});
   headers.set("Access-Control-Allow-Origin", "*");
-  headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  headers.set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Admin-Password");
   appendSessionCookie(headers, init.session);
   return new Response(body, { ...init, headers });

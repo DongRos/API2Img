@@ -70,6 +70,7 @@ const iconPaths = {
   check: '<path d="m20 6-11 11-5-5"/>',
   trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  pin: '<path d="M12 17v5"/><path d="M5 17h14"/><path d="m7 9 5-5 5 5"/><path d="M12 4v13"/>',
   heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/>',
   rotate: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>',
   sparkles: '<path d="m12 3-1.8 5.4L5 10.2l5.2 1.8L12 17l1.8-5 5.2-1.8-5.2-1.8Z"/><path d="M5 3v4"/><path d="M3 5h4"/>',
@@ -127,6 +128,11 @@ const announcementState = {
   latestAt: 0,
   unreadCount: 0,
   lastAutoPopupAt: 0,
+};
+const codeAdminState = {
+  authenticated: false,
+  activeSection: "codes",
+  pendingSection: "codes",
 };
 
 let toastTimer = null;
@@ -233,10 +239,21 @@ function bindEvents() {
   });
   $("#closeAnnouncement").addEventListener("click", closeAnnouncementPopup);
   $("#openAnnouncementAdmin")?.addEventListener("click", openAnnouncementAdminPanel);
+  $("#unlockCodeAdminButton").addEventListener("click", unlockCodeAdminPanel);
+  $("#codeAdminPassword").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    unlockCodeAdminPanel();
+  });
+  $$(".admin-nav-button").forEach((button) => {
+    button.addEventListener("click", () => selectCodeAdminSection(button.dataset.adminSection || "codes"));
+  });
   $("#publishAnnouncementButton").addEventListener("click", publishAnnouncementFromPanel);
   $("#announcementAdminList")?.addEventListener("click", onAnnouncementAdminClick);
   $("#closeLogs").addEventListener("click", () => $("#logsPanel").classList.remove("open"));
   $("#clearLogsButton").addEventListener("click", clearGenerationLogs);
+  $("#apiStatsList")?.addEventListener("click", onApiStatsListClick);
+  $("#refreshStatsButton")?.addEventListener("click", refreshSiteStatsFromPanel);
   $("#clearStatsButton").addEventListener("click", clearApiStats);
   $("#closeCodeAdmin").addEventListener("click", closeCodeAdminPanel);
   $("#generateCodesButton").addEventListener("click", generateRedeemCodesFromPanel);
@@ -1483,22 +1500,7 @@ function removeOpenPhraseFromActiveField(phrase) {
 }
 
 async function openStatsPanelWithPassword() {
-  const password = prompt("请输入管理员密码");
-  if (password == null) return;
-  const response = await fetch("/api/billing/admin/platform", {
-    headers: { "X-Admin-Password": password },
-  });
-  if (!response.ok) {
-    showToast("管理员密码不正确");
-    return;
-  }
-  await loadSiteStats({ silent: true });
-  renderApiStats();
-  openCodeAdminPanel();
-  $("#statsAdminSection")?.classList.add("highlight");
-  setTimeout(() => $("#statsAdminSection")?.classList.remove("highlight"), 1800);
-  setTimeout(() => $("#statsAdminSection")?.scrollIntoView({ block: "start", behavior: "smooth" }), 120);
-  startSiteStatsPolling();
+  openCodeAdminPanel("stats");
 }
 
 function resetDetailView() {
@@ -2082,23 +2084,104 @@ async function redeemCode() {
   }
 }
 
-function openCodeAdminPanel() {
+function openCodeAdminPanel(section = "codes") {
   const savedPassword = localStorage.getItem(CODE_ADMIN_PASSWORD_KEY) || "";
   $("#codeAdminPassword").value = savedPassword;
+  codeAdminState.authenticated = false;
+  codeAdminState.pendingSection = section || "codes";
   syncCodeAdminLabel();
   hydratePlatformAdminPriceDefaults();
+  applyCodeAdminAuthState();
   $("#codeAdminPanel").classList.add("open");
   $("#walletPanel").classList.remove("open");
   $("#settingsPanel").classList.remove("open");
   $("#logsPanel").classList.remove("open");
-  startSiteStatsPolling();
   setTimeout(() => $("#codeAdminPassword")?.focus(), 0);
-  if (savedPassword) loadPlatformAdminConfig({ silent: true });
 }
 
 function closeCodeAdminPanel() {
   $("#codeAdminPanel").classList.remove("open");
+  codeAdminState.authenticated = false;
+  codeAdminState.pendingSection = "codes";
+  applyCodeAdminAuthState();
   stopSiteStatsPolling();
+}
+
+async function unlockCodeAdminPanel() {
+  const password = $("#codeAdminPassword").value.trim();
+  if (!password) {
+    setCodeAdminAuthStatus("请输入管理密码");
+    showToast("请输入管理密码");
+    return;
+  }
+
+  const button = $("#unlockCodeAdminButton");
+  button.disabled = true;
+  button.textContent = "验证中...";
+  setCodeAdminAuthStatus("正在验证管理员密码");
+  try {
+    const response = await fetch("/api/billing/admin/platform", {
+      headers: { "X-Admin-Password": password },
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "管理员密码不正确");
+    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
+    codeAdminState.authenticated = true;
+    hydratePlatformAdminForm(payload.platform || {});
+    setPlatformAdminStatus(payload.platform?.enabled ? "已启用" : "未启用");
+    applyCodeAdminAuthState();
+    selectCodeAdminSection(codeAdminState.pendingSection || "codes");
+    await loadSiteStats({ silent: true });
+    renderApiStats();
+    startSiteStatsPolling();
+    setCodeAdminAuthStatus("已进入站长后台");
+    showToast("已进入站长后台");
+  } catch (error) {
+    codeAdminState.authenticated = false;
+    applyCodeAdminAuthState();
+    setCodeAdminAuthStatus(error.message || "管理员密码不正确");
+    showToast(error.message || "管理员密码不正确");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="check"></i><span>进入后台</span>`;
+    renderIcons();
+  }
+}
+
+function applyCodeAdminAuthState() {
+  const login = $("#codeAdminLogin");
+  const workspace = $("#codeAdminWorkspace");
+  if (login) login.hidden = Boolean(codeAdminState.authenticated);
+  if (workspace) workspace.hidden = !codeAdminState.authenticated;
+  if (codeAdminState.authenticated) selectCodeAdminSection(codeAdminState.activeSection || codeAdminState.pendingSection || "codes");
+}
+
+function setCodeAdminAuthStatus(text) {
+  const status = $("#codeAdminAuthStatus");
+  if (status) status.textContent = text;
+}
+
+function selectCodeAdminSection(section) {
+  const next = ["codes", "platform", "announcements", "stats"].includes(section) ? section : "codes";
+  codeAdminState.activeSection = next;
+  if (!codeAdminState.authenticated) {
+    codeAdminState.pendingSection = next;
+    return;
+  }
+
+  $$(".admin-nav-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.adminSection === next);
+  });
+  $$(".admin-section-view").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.adminPanel === next);
+  });
+  if (next === "platform") loadPlatformAdminConfig({ silent: true });
+  if (next === "stats") {
+    loadSiteStats({ silent: true });
+    renderApiStats();
+    startSiteStatsPolling();
+  }
+  if (next === "announcements") loadAnnouncements({ silent: true });
 }
 
 function syncCodeAdminLabel() {
@@ -2271,12 +2354,11 @@ function hydratePlatformAdminForm(platform) {
   $("#platformApiKey").value = "";
   $("#platformApiKey").placeholder = platform.apiKeyConfigured ? "已配置，留空表示保持不变" : "sk-...";
   $("#platformPriceYuan").value = formatCodeAdminAmount((Number(platform.priceCents || billingState.priceCents) || 10) / 100);
-  $("#platformCostYuan").value = formatCodeAdminAmount((Number(platform.upstreamCostCents || billingState.upstreamCostCents) || 0) / 100);
+  billingState.upstreamCostCents = Number(platform.upstreamCostCents || billingState.upstreamCostCents || 0);
 }
 
 function hydratePlatformAdminPriceDefaults() {
   if (!$("#platformPriceYuan").value) $("#platformPriceYuan").value = formatCodeAdminAmount(billingState.priceCents / 100);
-  if (!$("#platformCostYuan").value) $("#platformCostYuan").value = formatCodeAdminAmount(billingState.upstreamCostCents / 100);
 }
 
 function readPlatformAdminForm() {
@@ -2285,7 +2367,7 @@ function readPlatformAdminForm() {
     editEndpoint: $("#platformEditEndpoint").value.trim(),
     apiKey: $("#platformApiKey").value.trim(),
     priceCents: Math.max(1, Math.round(Number($("#platformPriceYuan").value || 0) * 100)),
-    upstreamCostCents: Math.max(0, Math.round(Number($("#platformCostYuan").value || 0) * 100)),
+    upstreamCostCents: Math.max(0, Math.round(Number(billingState.upstreamCostCents || 0))),
   };
 }
 
@@ -2907,10 +2989,15 @@ function renderApiStats() {
     .map((item) => {
       const okRate = item.total ? Math.round((item.success / item.total) * 100) : 0;
       return `
-        <article class="api-stat-card">
+        <article class="api-stat-card" data-api-stat-id="${escapeHtml(item.id)}">
           <div class="api-stat-head">
             <strong>${escapeHtml(item.endpointHost || "未知 API")}</strong>
-            <span>${escapeHtml(item.lastStatus === "success" ? "成功" : item.lastStatus === "failed" ? "失败" : "记录")}</span>
+            <div class="api-stat-actions">
+              <span>${escapeHtml(item.lastStatus === "success" ? "成功" : item.lastStatus === "failed" ? "失败" : "记录")}</span>
+              <button class="icon-button api-stat-delete" type="button" data-action="delete-api-stat" title="删除此记录">
+                <i data-icon="x"></i>
+              </button>
+            </div>
           </div>
           <div class="api-stat-endpoint">${escapeHtml(item.endpoint || "")}</div>
           <div class="api-stat-grid">
@@ -2928,6 +3015,7 @@ function renderApiStats() {
       `;
     })
     .join("");
+  renderIcons();
 }
 
 function clearApiStats() {
@@ -2935,6 +3023,43 @@ function clearApiStats() {
   saveApiStats();
   renderApiStats();
   showToast("API 统计已清空");
+}
+
+function onApiStatsListClick(event) {
+  const button = event.target.closest("[data-action='delete-api-stat']");
+  const item = event.target.closest("[data-api-stat-id]");
+  if (!button || !item) return;
+  deleteApiStat(item.dataset.apiStatId);
+}
+
+function deleteApiStat(id) {
+  const statId = String(id || "").trim();
+  if (!statId) return;
+  const before = apiStats.length;
+  apiStats = apiStats.filter((item) => item.id !== statId);
+  if (apiStats.length === before) return;
+  saveApiStats();
+  renderApiStats();
+  showToast("该 API 统计记录已删除");
+}
+
+async function refreshSiteStatsFromPanel() {
+  const button = $("#refreshStatsButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "刷新中...";
+  }
+  try {
+    await loadSiteStats({ silent: false });
+    renderApiStats();
+    showToast("统计已刷新");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.innerHTML = `<i data-icon="rotate"></i><span>刷新统计</span>`;
+      renderIcons();
+    }
+  }
 }
 
 function endpointHostLabel(endpoint) {
@@ -3490,6 +3615,9 @@ function renderAnnouncements() {
                   </div>
                   <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
                 </div>
+                <button class="icon-button announcement-pin-button${item.pinned ? " active" : ""}" type="button" data-action="toggle-announcement-pin" data-pinned="${item.pinned ? "1" : "0"}" title="${item.pinned ? "取消置顶" : "置顶公告"}">
+                  <i data-icon="pin"></i>
+                </button>
                 <button class="icon-button announcement-delete-button" type="button" data-action="delete-announcement" title="删除公告">
                   <i data-icon="trash"></i>
                 </button>
@@ -3552,7 +3680,7 @@ function stopAnnouncementPolling() {
 
 function openAnnouncementAdminPanel() {
   closeAnnouncementPopup();
-  openCodeAdminPanel();
+  openCodeAdminPanel("announcements");
   $("#walletPanel").classList.remove("open");
   $("#settingsPanel").classList.remove("open");
   $("#logsPanel").classList.remove("open");
@@ -3605,10 +3733,46 @@ async function publishAnnouncementFromPanel() {
 }
 
 function onAnnouncementAdminClick(event) {
-  const button = event.target.closest("[data-action='delete-announcement']");
+  const button = event.target.closest("[data-action]");
   const item = event.target.closest("[data-announcement-id]");
   if (!button || !item) return;
-  deleteAnnouncementFromPanel(item.dataset.announcementId, button);
+  const action = button.dataset.action;
+  if (action === "delete-announcement") {
+    deleteAnnouncementFromPanel(item.dataset.announcementId, button);
+  } else if (action === "toggle-announcement-pin") {
+    toggleAnnouncementPinnedFromPanel(item.dataset.announcementId, button.dataset.pinned !== "1", button);
+  }
+}
+
+async function toggleAnnouncementPinnedFromPanel(id, pinned, button = null) {
+  const announcementId = String(id || "").trim();
+  if (!announcementId) return;
+  const password = $("#codeAdminPassword").value.trim();
+  if (!password) {
+    showToast("请输入管理密码");
+    return;
+  }
+
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(`/api/billing/admin/announcements?id=${encodeURIComponent(announcementId)}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify({ pinned }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "更新公告失败");
+    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
+    await loadAnnouncements({ silent: true });
+    showToast(pinned ? "公告已置顶" : "公告已取消置顶");
+  } catch (error) {
+    showToast(error.message || "更新公告失败");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function deleteAnnouncementFromPanel(id, button = null) {

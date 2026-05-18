@@ -260,57 +260,80 @@
         <div class="panel-header">
           <div>
             <h2>站长后台</h2>
-            <p>生成兑换码，或配置推荐 API。所有操作都需要管理员密码。</p>
+            <p>输入管理员密码后进入对应功能。</p>
           </div>
           <button class="icon-button" id="closeCodeAdmin" title="关闭" type="button">
             <i data-icon="x"></i>
           </button>
         </div>
 
-        <div class="redeem-box">
+        <div id="codeAdminLogin" class="admin-login">
           <label class="field">
             <span>管理密码</span>
             <input id="codeAdminPassword" type="password" autocomplete="off" placeholder="BILLING_ADMIN_PASSWORD" />
           </label>
-
-          <div class="field-grid">
-            <label class="field">
-              <span>金额（元）</span>
-              <input id="codeAdminAmount" type="number" min="0.01" step="0.01" value="5" />
-            </label>
-            <label class="field">
-              <span>数量</span>
-              <input id="codeAdminCount" type="number" min="1" max="1000" step="1" value="100" />
-            </label>
+          <div class="code-admin-actions">
+            <button class="pill-button primary" id="unlockCodeAdminButton" type="button">
+              <i data-icon="check"></i><span>进入后台</span>
+            </button>
           </div>
-
-          <label class="field">
-            <span>标签</span>
-            <input id="codeAdminLabel" type="text" value="5元充值码" />
-          </label>
-
-          <button class="pill-button primary" id="generateCodesButton" type="button">
-            <i data-icon="download"></i><span>生成并下载 CSV</span>
-          </button>
+          <p id="codeAdminAuthStatus" class="admin-auth-status">验证通过后可使用兑换码、推荐 API、公告和统计功能。</p>
         </div>
 
-        <section class="code-admin-result">
-          <div class="config-history-head">
-            <h3>本次生成</h3>
-            <span id="codeAdminStatus">等待生成</span>
+        <div id="codeAdminWorkspace" class="admin-workspace" hidden>
+          <div class="admin-nav" role="tablist" aria-label="站长后台功能">
+            <button class="admin-nav-button active" type="button" data-admin-section="codes">兑换码</button>
+            <button class="admin-nav-button" type="button" data-admin-section="platform">推荐 API</button>
+            <button class="admin-nav-button" type="button" data-admin-section="announcements">公告</button>
+            <button class="admin-nav-button" type="button" data-admin-section="stats">统计</button>
           </div>
-          <textarea id="codeAdminOutput" rows="9" readonly placeholder="生成后会显示兑换码，一行一个"></textarea>
-          <div class="code-admin-actions">
-            <button class="pill-button" id="copyCodesButton" type="button">
-              <i data-icon="check"></i><span>复制代码</span>
-            </button>
-            <button class="pill-button" id="downloadCodesButton" type="button">
-              <i data-icon="download"></i><span>下载上次 CSV</span>
-            </button>
-          </div>
-        </section>
 
-        <section class="admin-section">
+          <section id="codesAdminSection" class="admin-section admin-section-view active" data-admin-panel="codes">
+            <div class="config-history-head">
+              <h3>兑换码生成</h3>
+              <span>生成后自动下载 CSV</span>
+            </div>
+
+            <div class="redeem-box compact">
+              <div class="field-grid">
+                <label class="field">
+                  <span>金额（元）</span>
+                  <input id="codeAdminAmount" type="number" min="0.01" step="0.01" value="5" />
+                </label>
+                <label class="field">
+                  <span>数量</span>
+                  <input id="codeAdminCount" type="number" min="1" max="1000" step="1" value="100" />
+                </label>
+              </div>
+
+              <label class="field">
+                <span>标签</span>
+                <input id="codeAdminLabel" type="text" value="5元充值码" />
+              </label>
+
+              <button class="pill-button primary" id="generateCodesButton" type="button">
+                <i data-icon="download"></i><span>生成并下载 CSV</span>
+              </button>
+            </div>
+
+            <section class="code-admin-result">
+              <div class="config-history-head">
+                <h3>本次生成</h3>
+                <span id="codeAdminStatus">等待生成</span>
+              </div>
+              <textarea id="codeAdminOutput" rows="9" readonly placeholder="生成后会显示兑换码，一行一个"></textarea>
+              <div class="code-admin-actions">
+                <button class="pill-button" id="copyCodesButton" type="button">
+                  <i data-icon="check"></i><span>复制代码</span>
+                </button>
+                <button class="pill-button" id="downloadCodesButton" type="button">
+                  <i data-icon="download"></i><span>下载上次 CSV</span>
+                </button>
+              </div>
+            </section>
+          </section>
+
+        <section id="platformAdminSection" class="admin-section admin-section-view" data-admin-panel="platform">
           <div class="config-history-head">
             <h3>推荐 API 配置</h3>
             <span id="platformAdminStatus">仅站长可改</span>
@@ -329,16 +352,10 @@
             <input id="platformApiKey" type="password" autocomplete="off" placeholder="sk-..." />
           </label>
 
-          <div class="field-grid">
-            <label class="field">
-              <span>售价（元/张）</span>
-              <input id="platformPriceYuan" type="number" min="0.01" step="0.01" value="0.10" />
-            </label>
-            <label class="field">
-              <span>成本（元/张）</span>
-              <input id="platformCostYuan" type="number" min="0" step="0.01" value="0.04" />
-            </label>
-          </div>
+          <label class="field">
+            <span>售价（元/张）</span>
+            <input id="platformPriceYuan" type="number" min="0.01" step="0.01" value="0.10" />
+          </label>
 
           <div class="code-admin-actions">
             <button class="pill-button" id="loadPlatformConfigButton" type="button">
@@ -350,7 +367,7 @@
           </div>
         </section>
 
-        <section id="announcementAdminSection" class="admin-section">
+        <section id="announcementAdminSection" class="admin-section admin-section-view" data-admin-panel="announcements">
           <div class="config-history-head">
             <h3>公告发布</h3>
             <span>发布后立即生效</span>
@@ -382,7 +399,7 @@
           </div>
         </section>
 
-        <section id="statsAdminSection" class="admin-section">
+        <section id="statsAdminSection" class="admin-section admin-section-view" data-admin-panel="stats">
           <div class="config-history-head">
             <h3>实时统计</h3>
             <span>隐藏面板</span>
@@ -390,12 +407,16 @@
           <div id="siteStatsSummary" class="api-stats-summary"></div>
           <div id="apiStatsSummary" class="api-stats-summary"></div>
           <div class="logs-actions">
+            <button class="pill-button" id="refreshStatsButton" type="button">
+              <i data-icon="rotate"></i><span>刷新统计</span>
+            </button>
             <button class="pill-button" id="clearStatsButton" type="button">
               <i data-icon="trash"></i><span>清空统计</span>
             </button>
           </div>
           <div id="apiStatsList" class="api-stats-list"></div>
         </section>
+        </div>
       </aside>
 
       <aside id="logsPanel" class="logs-panel">
