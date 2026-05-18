@@ -25,6 +25,10 @@ const mimeTypes = {
 
 const server = http.createServer(async (req, res) => {
   try {
+    if (req.url.startsWith("/api/site")) {
+      await handleSiteRequest(req, res);
+      return;
+    }
     if (req.url.startsWith("/api/billing")) {
       await handleBillingRequest(req, res);
       return;
@@ -151,6 +155,42 @@ async function handleBillingRequest(req, res) {
   }
 
   sendJson(res, 404, { error: { message: "Billing route not found" } });
+}
+
+async function handleSiteRequest(req, res) {
+  const url = new URL(req.url, `http://${host}:${port}`);
+  const route = url.pathname.replace(/\/+$/, "") || "/";
+  const session = await resolveBillingSession(req, res);
+
+  if (req.method === "GET" && route === "/api/site/announcements") {
+    const limit = Math.max(1, Number(url.searchParams.get("limit") || 20));
+    sendJson(res, 200, {
+      ok: true,
+      announcements: (await billingStore.listAnnouncements(limit)).map(publicAnnouncement),
+    });
+    return;
+  }
+
+  if (req.method === "POST" && route === "/api/site/track") {
+    const payload = await readJson(req);
+    const kind = String(payload.kind || "visit").trim().toLowerCase() === "heartbeat" ? "heartbeat" : "visit";
+    await billingStore.recordSiteTrack(session.sessionToken, kind);
+    sendJson(res, 200, {
+      ok: true,
+      siteStats: await billingStore.getSiteStats(),
+    });
+    return;
+  }
+
+  if (req.method === "GET" && route === "/api/site/stats") {
+    sendJson(res, 200, {
+      ok: true,
+      siteStats: await billingStore.getSiteStats(),
+    });
+    return;
+  }
+
+  sendJson(res, 404, { error: { message: "Site route not found" } });
 }
 
 async function proxyImageRequest(req, res) {
@@ -361,6 +401,20 @@ async function handleBillingAdminRequest(req, res, route) {
     const payload = await readJson(req);
     const codes = await billingStore.createRedeemCodes(payload.codes || []);
     sendJson(res, 200, { ok: true, codes: codes.map(publicRedeemCode) });
+    return;
+  }
+
+  if (req.method === "GET" && route === "/api/billing/admin/announcements") {
+    const limit = Math.max(1, Number(new URL(req.url, `http://${host}:${port}`).searchParams.get("limit") || 20));
+    const announcements = await billingStore.listAnnouncements(limit);
+    sendJson(res, 200, { ok: true, announcements: announcements.map(publicAnnouncement) });
+    return;
+  }
+
+  if (req.method === "POST" && route === "/api/billing/admin/announcements") {
+    const payload = await readJson(req);
+    const announcement = await billingStore.createAnnouncement(payload);
+    sendJson(res, 200, { ok: true, announcement: publicAnnouncement(announcement) });
     return;
   }
 
@@ -703,6 +757,17 @@ function publicRedeemCode(code) {
     updatedAt: Number(code.updatedAt || 0),
     usedAt: Number(code.usedAt || 0),
     usedBy: code.usedBy || "",
+  };
+}
+
+function publicAnnouncement(announcement) {
+  return {
+    id: String(announcement?.id || ""),
+    title: String(announcement?.title || "").trim(),
+    body: String(announcement?.body || "").trim(),
+    pinned: Boolean(announcement?.pinned),
+    createdAt: Number(announcement?.createdAt || 0),
+    updatedAt: Number(announcement?.updatedAt || announcement?.createdAt || 0),
   };
 }
 

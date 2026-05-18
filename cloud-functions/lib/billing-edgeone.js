@@ -9,6 +9,23 @@ const DEFAULT_DB = {
   redeemCodes: {},
   redemptions: {},
   settings: {},
+  announcements: {
+    ann_welcome: {
+      id: "ann_welcome",
+      title: "隐私说明",
+      body: "本站的 API 配置仅保存在你的本地浏览器，不会上传到服务器；生成的图片也会保存在本地，方便查看和管理。",
+      pinned: true,
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  },
+  siteStats: {
+    totalVisits: 0,
+    totalVisitors: 0,
+    dailyVisits: {},
+    lastVisitAt: 0,
+    updatedAt: 0,
+  },
 };
 
 export async function billingConfig(context) {
@@ -48,6 +65,56 @@ export async function billingMe(context) {
     },
     session,
   );
+}
+
+export async function siteTrack(context) {
+  const session = await resolveSession(context);
+  const payload = await readJson(context.request);
+  const kind = normalizeSiteTrackKind(payload.kind);
+  await mutateDb(context, (db) => {
+    const sessionRecord = db.sessions[session.sessionToken];
+    if (!sessionRecord) return;
+    const now = Date.now();
+    const siteStats = normalizeSiteStats(db.siteStats);
+    sessionRecord.lastSeenAt = now;
+    if (kind === "visit") {
+      const todayKey = getDateKey(now);
+      siteStats.totalVisits += 1;
+      siteStats.dailyVisits[todayKey] = Number(siteStats.dailyVisits[todayKey] || 0) + 1;
+      siteStats.lastVisitAt = now;
+    }
+    siteStats.updatedAt = now;
+    db.siteStats = siteStats;
+  });
+  return jsonResponse(200, { ok: true, siteStats: await getSiteStats(context) }, session);
+}
+
+export async function siteStats(context) {
+  const session = await resolveSession(context);
+  return jsonResponse(200, { ok: true, siteStats: await getSiteStats(context) }, session);
+}
+
+export async function siteAnnouncements(context) {
+  const session = await resolveSession(context);
+  const url = new URL(context.request.url);
+  const limit = Math.max(1, Number(url.searchParams.get("limit") || 20));
+  const announcements = await listAnnouncements(context, limit);
+  return jsonResponse(200, { ok: true, announcements: announcements.map(publicAnnouncement) }, session);
+}
+
+export async function listAnnouncements(context, limit = 20) {
+  const db = await readDb(context);
+  return Object.values(db.announcements || {})
+    .map((item) => normalizeAnnouncementRecord(item))
+    .filter((item) => item.id)
+    .sort((a, b) => {
+      const pinnedDelta = Number(b.pinned) - Number(a.pinned);
+      if (pinnedDelta) return pinnedDelta;
+      const createdDelta = Number(b.createdAt || 0) - Number(a.createdAt || 0);
+      if (createdDelta) return createdDelta;
+      return String(b.id || "").localeCompare(String(a.id || ""));
+    })
+    .slice(0, Math.max(1, Number(limit || 20)));
 }
 
 export async function createOrder(context) {
@@ -261,6 +328,36 @@ export async function createRedeemCodes(context) {
   return jsonResponse(200, { ok: true, codes: created.map(publicRedeemCode) });
 }
 
+export async function createAnnouncement(context) {
+  if (!isAdminRequest(context)) return jsonResponse(401, { error: { message: "绠＄悊鍛樺瘑鐮佷笉姝ｇ‘" } });
+  const payload = await readJson(context.request);
+  const announcement = await mutateDb(context, (db) => {
+    const body = String(payload.body || payload.content || payload.text || "").trim().slice(0, 4000);
+    if (!body) throw new Error("公告内容不能为空");
+    const now = Date.now();
+    const record = {
+      id: makeId("ann"),
+      title: String(payload.title || "").trim().slice(0, 120) || deriveAnnouncementTitle(body),
+      body,
+      pinned: Boolean(payload.pinned),
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (!isRecord(db.announcements)) db.announcements = {};
+    db.announcements[record.id] = record;
+    return { ...record };
+  });
+  return jsonResponse(200, { ok: true, announcement: publicAnnouncement(announcement) });
+}
+
+export async function listAdminAnnouncements(context) {
+  if (!isAdminRequest(context)) return jsonResponse(401, { error: { message: "管理员密码不正确" } });
+  const url = new URL(context.request.url);
+  const limit = Math.max(1, Number(url.searchParams.get("limit") || 20));
+  const announcements = await listAnnouncements(context, limit);
+  return jsonResponse(200, { ok: true, announcements: announcements.map(publicAnnouncement) });
+}
+
 export async function getPlatformAdminConfig(context) {
   if (!isAdminRequest(context)) return jsonResponse(401, { error: { message: "管理员密码不正确" } });
   return jsonResponse(200, { ok: true, platform: adminPlatformConfig(await getPlatformConfig(context)) });
@@ -439,6 +536,7 @@ async function resolveSession(context) {
     const customerId = makeId("cus");
     const sessionToken = makeId("sess");
     const now = Date.now();
+    const siteStats = normalizeSiteStats(db.siteStats);
     db.customers[customerId] = {
       id: customerId,
       balanceCents: 0,
@@ -453,6 +551,9 @@ async function resolveSession(context) {
       createdAt: now,
       lastSeenAt: now,
     };
+    siteStats.totalVisitors += 1;
+    siteStats.updatedAt = now;
+    db.siteStats = siteStats;
     return { sessionToken, customerId, isNew: true };
   });
 }
@@ -465,6 +566,27 @@ async function getDashboard(context, customerId) {
     orders: valuesByCustomer(db.orders, customerId).slice(0, 10),
     usage: valuesByCustomer(db.usage, customerId).slice(0, 12),
     redemptions: valuesByCustomer(db.redemptions, customerId).slice(0, 12),
+  };
+}
+
+async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000) {
+  const db = await readDb(context);
+  const siteStats = normalizeSiteStats(db.siteStats);
+  const now = Date.now();
+  let onlineCount = 0;
+  for (const session of Object.values(db.sessions)) {
+    if (now - Number(session.lastSeenAt || 0) <= onlineWindowMs) onlineCount += 1;
+  }
+  const totalVisitors = Math.max(Number(siteStats.totalVisitors || 0), Object.keys(db.sessions).length);
+  const todayKey = getDateKey(now);
+  return {
+    onlineCount,
+    totalVisits: Number(siteStats.totalVisits || 0),
+    todayVisits: Number(siteStats.dailyVisits?.[todayKey] || 0),
+    totalVisitors,
+    lastVisitAt: Number(siteStats.lastVisitAt || 0),
+    updatedAt: Number(siteStats.updatedAt || 0),
+    onlineWindowMs,
   };
 }
 
@@ -560,6 +682,8 @@ function normalizeDb(value) {
     redeemCodes: isRecord(value?.redeemCodes) ? value.redeemCodes : { ...DEFAULT_DB.redeemCodes },
     redemptions: isRecord(value?.redemptions) ? value.redemptions : { ...DEFAULT_DB.redemptions },
     settings: isRecord(value?.settings) ? value.settings : { ...DEFAULT_DB.settings },
+    announcements: normalizeAnnouncements(value?.announcements),
+    siteStats: normalizeSiteStats(value?.siteStats),
   };
 }
 
@@ -579,6 +703,62 @@ function valuesByCustomer(record, customerId) {
     .filter((item) => item.customerId === customerId)
     .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0))
     .map((item) => ({ ...item }));
+}
+
+function normalizeSiteStats(value) {
+  const dailyVisits = isRecord(value?.dailyVisits) ? value.dailyVisits : {};
+  return {
+    totalVisits: Math.max(0, Number(value?.totalVisits || 0)),
+    totalVisitors: Math.max(0, Number(value?.totalVisitors || 0)),
+    dailyVisits: Object.fromEntries(
+      Object.entries(dailyVisits).map(([key, count]) => [key, Math.max(0, Number(count || 0))]),
+    ),
+    lastVisitAt: Math.max(0, Number(value?.lastVisitAt || 0)),
+    updatedAt: Math.max(0, Number(value?.updatedAt || 0)),
+  };
+}
+
+function normalizeAnnouncements(value) {
+  const records = isRecord(value) ? Object.values(value) : Array.isArray(value) ? value : [];
+  const announcements = {};
+  for (const item of records) {
+    const record = normalizeAnnouncementRecord(item);
+    if (!record.id) continue;
+    announcements[record.id] = record;
+  }
+  if (!Object.keys(announcements).length) {
+    announcements[DEFAULT_DB.announcements.ann_welcome.id] = { ...DEFAULT_DB.announcements.ann_welcome };
+  }
+  return announcements;
+}
+
+function normalizeAnnouncementRecord(value) {
+  const body = String(value?.body || value?.content || value?.text || "").trim().slice(0, 4000);
+  if (!body) return { id: "", title: "", body: "", pinned: false, createdAt: 0, updatedAt: 0 };
+  return {
+    id: String(value?.id || "").trim() || makeId("ann"),
+    title: String(value?.title || "").trim().slice(0, 120) || deriveAnnouncementTitle(body),
+    body,
+    pinned: Boolean(value?.pinned),
+    createdAt: Math.max(0, Number(value?.createdAt || 0)),
+    updatedAt: Math.max(0, Number(value?.updatedAt || value?.createdAt || 0)),
+  };
+}
+
+function deriveAnnouncementTitle(body) {
+  const firstLine = String(body || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  return (firstLine || "站点公告").slice(0, 24);
+}
+
+function normalizeSiteTrackKind(value) {
+  return String(value || "visit").trim().toLowerCase() === "heartbeat" ? "heartbeat" : "visit";
+}
+
+function getDateKey(timestamp) {
+  return new Date(timestamp).toISOString().slice(0, 10);
 }
 
 async function getPlatformConfig(context) {
@@ -689,6 +869,17 @@ function publicRedemption(redemption) {
     amountCents: Number(redemption.amountCents || 0),
     label: redemption.label || "",
     createdAt: Number(redemption.createdAt || 0),
+  };
+}
+
+function publicAnnouncement(announcement) {
+  return {
+    id: String(announcement?.id || ""),
+    title: String(announcement?.title || "").trim(),
+    body: String(announcement?.body || "").trim(),
+    pinned: Boolean(announcement?.pinned),
+    createdAt: Number(announcement?.createdAt || 0),
+    updatedAt: Number(announcement?.updatedAt || announcement?.createdAt || 0),
   };
 }
 

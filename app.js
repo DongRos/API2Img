@@ -10,6 +10,10 @@ const GENERATION_LOG_LIMIT = 30;
 const API_STATS_LIMIT = 80;
 const API_STATS_OPEN_PHRASE = "apistats";
 const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
+const ANNOUNCEMENTS_SEEN_KEY = "image2.announcements.seenAt.v1";
+const SITE_VISIT_TRACK_KEY = "image2.site.visit.tracked.v1";
+const SITE_HEARTBEAT_INTERVAL_MS = 30000;
+const ANNOUNCEMENTS_REFRESH_INTERVAL_MS = 45000;
 const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
@@ -69,6 +73,7 @@ const iconPaths = {
   heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/>',
   rotate: '<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/>',
   sparkles: '<path d="m12 3-1.8 5.4L5 10.2l5.2 1.8L12 17l1.8-5 5.2-1.8-5.2-1.8Z"/><path d="M5 3v4"/><path d="M3 5h4"/>',
+  bell: '<path d="M6 8a6 6 0 1 1 12 0c0 7 3 7 3 10H3c0-3 3-3 3-10"/><path d="M10 19a2 2 0 0 0 4 0"/>',
 };
 
 const config = {
@@ -106,6 +111,24 @@ const billingState = {
   activeOrder: null,
 };
 
+const siteStatsState = {
+  onlineCount: 0,
+  totalVisits: 0,
+  todayVisits: 0,
+  totalVisitors: 0,
+  lastVisitAt: 0,
+  updatedAt: 0,
+  onlineWindowMs: 3 * 60 * 1000,
+};
+
+const announcementState = {
+  items: [],
+  seenAt: 0,
+  latestAt: 0,
+  unreadCount: 0,
+  lastAutoPopupAt: 0,
+};
+
 let toastTimer = null;
 let progressTimer = null;
 let progressStartedAt = 0;
@@ -122,6 +145,12 @@ let generationCancelled = false;
 let flowDbPromise = null;
 let statsOpenBuffer = "";
 let codeAdminOpenBuffer = "";
+let siteStatsRefreshTimer = null;
+let siteHeartbeatTimer = null;
+let siteHeartbeatInFlight = false;
+let siteVisitTracked = false;
+let announcementRefreshTimer = null;
+let announcementAutoOpenTimer = null;
 let lastCodeAdminCsv = "";
 let lastCodeAdminFilename = "";
 const detailView = {
@@ -143,16 +172,22 @@ async function init() {
   loadApiStats();
   await loadBilling();
   await loadState();
+  await trackSiteVisit();
+  await loadSiteStats({ silent: true });
+  await loadAnnouncements({ silent: true });
   hydrateConfig();
   renderConfigHistory();
   renderGenerationLogs();
   renderApiStats();
+  renderSiteStats();
+  renderAnnouncements();
   renderWallet();
   bindEvents();
   renderReferences();
   renderResults();
   renderIcons();
   autoGrow($("#promptInput"));
+  startSiteHeartbeat();
 }
 
 function fillControls() {
@@ -189,11 +224,20 @@ function bindEvents() {
     $("#logsPanel").classList.toggle("open");
     renderGenerationLogs();
   });
+  $("#announcementToggle").addEventListener("click", () => {
+    const popup = $("#announcementPopup");
+    if (!popup) return;
+    const willOpen = popup.hidden;
+    popup.hidden = !willOpen;
+    if (willOpen) markAnnouncementsSeen();
+  });
+  $("#closeAnnouncement").addEventListener("click", closeAnnouncementPopup);
+  $("#openAnnouncementAdmin")?.addEventListener("click", openAnnouncementAdminPanel);
+  $("#publishAnnouncementButton").addEventListener("click", publishAnnouncementFromPanel);
   $("#closeLogs").addEventListener("click", () => $("#logsPanel").classList.remove("open"));
   $("#clearLogsButton").addEventListener("click", clearGenerationLogs);
-  $("#closeStats").addEventListener("click", () => $("#statsPanel").classList.remove("open"));
   $("#clearStatsButton").addEventListener("click", clearApiStats);
-  $("#closeCodeAdmin").addEventListener("click", () => $("#codeAdminPanel").classList.remove("open"));
+  $("#closeCodeAdmin").addEventListener("click", closeCodeAdminPanel);
   $("#generateCodesButton").addEventListener("click", generateRedeemCodesFromPanel);
   $("#copyCodesButton").addEventListener("click", copyGeneratedCodes);
   $("#downloadCodesButton").addEventListener("click", downloadLastCodeCsv);
@@ -227,6 +271,7 @@ function bindEvents() {
   });
   window.addEventListener("resize", debounce(layoutResultMasonry, 120));
   if (new URLSearchParams(location.search).has("admin")) openCodeAdminPanel();
+  if (new URLSearchParams(location.search).has("announce")) openAnnouncementAdminPanel();
 }
 
 function onModelSelect() {
@@ -1446,8 +1491,13 @@ async function openStatsPanelWithPassword() {
     showToast("管理员密码不正确");
     return;
   }
+  await loadSiteStats({ silent: true });
   renderApiStats();
-  $("#statsPanel").classList.add("open");
+  openCodeAdminPanel();
+  $("#statsAdminSection")?.classList.add("highlight");
+  setTimeout(() => $("#statsAdminSection")?.classList.remove("highlight"), 1800);
+  setTimeout(() => $("#statsAdminSection")?.scrollIntoView({ block: "start", behavior: "smooth" }), 120);
+  startSiteStatsPolling();
 }
 
 function resetDetailView() {
@@ -1797,13 +1847,14 @@ function deleteConfigHistory(id) {
 
 async function loadBilling() {
   try {
-    const [configResponse, meResponse] = await Promise.all([fetch("/api/billing/config"), fetch("/api/billing/me")]);
+    const configResponse = await fetch("/api/billing/config");
     if (configResponse.ok) {
       const info = await configResponse.json();
       billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
       billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
       billingState.platformEnabled = Boolean(info.platformEnabled);
     }
+    const meResponse = await fetch("/api/billing/me");
     if (meResponse.ok) applyBillingDashboard(await meResponse.json());
   } catch (error) {
     console.warn("充值信息读取失败", error);
@@ -1818,6 +1869,127 @@ async function refreshBilling() {
     renderWallet();
   } catch (error) {
     console.warn("余额刷新失败", error);
+  }
+}
+
+async function trackSiteVisit() {
+  try {
+    if (siteVisitTracked) return false;
+    try {
+      if (sessionStorage.getItem(SITE_VISIT_TRACK_KEY) === "1") {
+        siteVisitTracked = true;
+        return false;
+      }
+    } catch {}
+
+    const response = await fetch("/api/site/track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "visit" }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "杩囩▼涓婃姤澶辫触");
+    siteVisitTracked = true;
+    try {
+      sessionStorage.setItem(SITE_VISIT_TRACK_KEY, "1");
+    } catch {}
+    applySiteStats(payload.siteStats || payload);
+    return true;
+  } catch (error) {
+    console.warn("站点访问上报失败", error);
+    return false;
+  }
+}
+
+async function loadSiteStats(options = {}) {
+  try {
+    const response = await fetch("/api/site/stats");
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "缁熻璇诲彇澶辫触");
+    applySiteStats(payload.siteStats || payload);
+    renderSiteStats();
+    return payload.siteStats || payload;
+  } catch (error) {
+    if (!options.silent) showToast(error.message || "缁熻璇诲彇澶辫触");
+    console.warn("站点统计读取失败", error);
+    return null;
+  }
+}
+
+function applySiteStats(payload = {}) {
+  siteStatsState.onlineCount = Math.max(0, Number(payload.onlineCount || 0));
+  siteStatsState.totalVisits = Math.max(0, Number(payload.totalVisits || 0));
+  siteStatsState.todayVisits = Math.max(0, Number(payload.todayVisits || 0));
+  siteStatsState.totalVisitors = Math.max(0, Number(payload.totalVisitors || 0));
+  siteStatsState.lastVisitAt = Math.max(0, Number(payload.lastVisitAt || 0));
+  siteStatsState.updatedAt = Math.max(0, Number(payload.updatedAt || 0));
+  siteStatsState.onlineWindowMs = Math.max(0, Number(payload.onlineWindowMs || siteStatsState.onlineWindowMs || 0));
+}
+
+function renderSiteStats() {
+  updateStatsPanelCopy();
+  const summary = $("#siteStatsSummary");
+  if (!summary) return;
+  summary.innerHTML = `
+    <div><strong>${formatCount(siteStatsState.onlineCount)}</strong><span>当前在线</span></div>
+    <div><strong>${formatCount(siteStatsState.totalVisits)}</strong><span>累计访问</span></div>
+    <div><strong>${formatCount(siteStatsState.todayVisits)}</strong><span>今日访问</span></div>
+    <div><strong>${formatCount(siteStatsState.totalVisitors)}</strong><span>累计访客</span></div>
+  `;
+}
+
+function updateStatsPanelCopy() {
+  const title = $("#statsAdminSection .config-history-head h3");
+  const desc = $("#statsAdminSection .config-history-head span");
+  const clearLabel = $("#clearStatsButton span");
+  if (title) title.textContent = "实时统计";
+  if (desc) desc.textContent = "在线人数按最近 3 分钟心跳统计";
+  if (clearLabel) clearLabel.textContent = "清空 API 统计";
+}
+
+function startSiteStatsPolling() {
+  stopSiteStatsPolling();
+  siteStatsRefreshTimer = setInterval(() => {
+    if (!$("#codeAdminPanel")?.classList.contains("open")) return;
+    loadSiteStats({ silent: true });
+  }, SITE_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopSiteStatsPolling() {
+  if (siteStatsRefreshTimer) clearInterval(siteStatsRefreshTimer);
+  siteStatsRefreshTimer = null;
+}
+
+function startSiteHeartbeat() {
+  stopSiteHeartbeat();
+  sendSiteHeartbeat();
+  siteHeartbeatTimer = setInterval(() => {
+    sendSiteHeartbeat();
+  }, SITE_HEARTBEAT_INTERVAL_MS);
+}
+
+function stopSiteHeartbeat() {
+  if (siteHeartbeatTimer) clearInterval(siteHeartbeatTimer);
+  siteHeartbeatTimer = null;
+}
+
+async function sendSiteHeartbeat() {
+  if (siteHeartbeatInFlight) return;
+  siteHeartbeatInFlight = true;
+  try {
+    const response = await fetch("/api/site/track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "heartbeat" }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) return;
+    applySiteStats(payload.siteStats || payload);
+    renderSiteStats();
+  } catch (error) {
+    console.warn("站点心跳失败", error);
+  } finally {
+    siteHeartbeatInFlight = false;
   }
 }
 
@@ -1918,9 +2090,14 @@ function openCodeAdminPanel() {
   $("#walletPanel").classList.remove("open");
   $("#settingsPanel").classList.remove("open");
   $("#logsPanel").classList.remove("open");
-  $("#statsPanel").classList.remove("open");
+  startSiteStatsPolling();
   setTimeout(() => $("#codeAdminPassword")?.focus(), 0);
   if (savedPassword) loadPlatformAdminConfig({ silent: true });
+}
+
+function closeCodeAdminPanel() {
+  $("#codeAdminPanel").classList.remove("open");
+  stopSiteStatsPolling();
 }
 
 function syncCodeAdminLabel() {
@@ -2195,6 +2372,10 @@ function updateBillingFromGenerationResponse(response) {
 
 function formatMoney(cents) {
   return (Number(cents || 0) / 100).toFixed(2);
+}
+
+function formatCount(value) {
+  return Number(value || 0).toLocaleString("zh-CN");
 }
 
 function formatWalletTime(timestamp) {
@@ -3176,6 +3357,231 @@ function renderIcons() {
     svg.setAttribute("aria-hidden", "true");
     svg.innerHTML = iconPaths[icon.dataset.icon] || iconPaths.sparkles;
     icon.replaceWith(svg);
+  });
+}
+
+async function loadAnnouncements(options = {}) {
+  try {
+    const response = await fetch("/api/site/announcements?limit=20");
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "公告加载失败");
+    announcementState.items = normalizeAnnouncements(Array.isArray(payload.announcements) ? payload.announcements : []);
+    announcementState.latestAt = announcementState.items.reduce(
+      (max, item) => Math.max(max, Number(item.updatedAt || item.createdAt || 0)),
+      0,
+    );
+    announcementState.seenAt = getAnnouncementsSeenAt();
+    renderAnnouncements();
+    maybeShowAnnouncements(Boolean(options.forceOpen));
+    startAnnouncementPolling();
+    scheduleAnnouncementAutoOpen();
+    return announcementState.items;
+  } catch (error) {
+    console.warn("公告加载失败", error);
+    if (!options.silent) showToast(error.message || "公告加载失败");
+    return [];
+  }
+}
+
+function normalizeAnnouncements(items) {
+  return [...items]
+    .map((item) => ({
+      id: String(item.id || ""),
+      title: String(item.title || "").trim() || "站点公告",
+      body: String(item.body || "").trim(),
+      pinned: Boolean(item.pinned),
+      createdAt: Number(item.createdAt || 0),
+      updatedAt: Number(item.updatedAt || item.createdAt || 0),
+    }))
+    .filter((item) => item.id && item.body)
+    .sort((a, b) => {
+      if (a.pinned !== b.pinned) return Number(b.pinned) - Number(a.pinned);
+      const delta = Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0);
+      if (delta) return delta;
+      return String(b.id).localeCompare(String(a.id));
+    });
+}
+
+function getAnnouncementsSeenAt() {
+  try {
+    return Math.max(0, Number(localStorage.getItem(ANNOUNCEMENTS_SEEN_KEY) || 0));
+  } catch {
+    return 0;
+  }
+}
+
+function markAnnouncementsSeen(timestamp = announcementState.latestAt || Date.now()) {
+  const seenAt = Math.max(0, Number(timestamp || 0));
+  if (!seenAt) return;
+  announcementState.seenAt = Math.max(Number(announcementState.seenAt || 0), seenAt);
+  try {
+    localStorage.setItem(ANNOUNCEMENTS_SEEN_KEY, String(announcementState.seenAt));
+  } catch {}
+  announcementState.unreadCount = countUnreadAnnouncements();
+  renderAnnouncements();
+}
+
+function countUnreadAnnouncements() {
+  const seenAt = Number(announcementState.seenAt || 0);
+  return announcementState.items.filter((item) => Number(item.updatedAt || item.createdAt || 0) > seenAt).length;
+}
+
+function renderAnnouncements() {
+  const unread = countUnreadAnnouncements();
+  announcementState.unreadCount = unread;
+  renderAnnouncementBadge();
+
+  const list = $("#announcementList");
+  if (list) {
+    if (!announcementState.items.length) {
+      list.innerHTML = `<div class="log-empty">暂无公告</div>`;
+    } else {
+      list.innerHTML = announcementState.items
+        .map((item) => {
+          const stamp = Number(item.updatedAt || item.createdAt || 0);
+          const unreadClass = stamp > Number(announcementState.seenAt || 0) ? " unread" : "";
+          return `
+            <article class="announcement-item${unreadClass}">
+              <div class="announcement-head">
+                <strong>${escapeHtml(item.title)}</strong>
+                <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
+              </div>
+              <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
+            </article>
+          `;
+        })
+        .join("");
+    }
+  }
+
+  const popupList = $("#announcementPopupList");
+  if (popupList) {
+    popupList.innerHTML = announcementState.items
+      .map((item) => {
+        const stamp = Number(item.updatedAt || item.createdAt || 0);
+        return `
+          <article class="announcement-item">
+            <div class="announcement-head">
+              <strong>${escapeHtml(item.title)}</strong>
+              <small>${item.pinned ? "置顶" : formatAnnouncementTime(stamp)}</small>
+            </div>
+            <p>${escapeHtml(item.body).replace(/\n/g, "<br />")}</p>
+          </article>
+        `;
+      })
+      .join("");
+  }
+}
+
+function renderAnnouncementBadge() {
+  const badge = $("#announcementBadge");
+  if (!badge) return;
+  const unread = Number(announcementState.unreadCount || 0);
+  badge.hidden = unread <= 0;
+  badge.textContent = unread > 9 ? "9+" : String(unread);
+}
+
+function maybeShowAnnouncements(force = false) {
+  const popup = $("#announcementPopup");
+  if (!popup || !announcementState.items.length) return;
+  const seenAt = Number(announcementState.seenAt || 0);
+  const hasUnread = announcementState.items.some((item) => Number(item.updatedAt || item.createdAt || 0) > seenAt);
+  const shouldShow = force || (hasUnread && Number(announcementState.latestAt || 0) > Number(announcementState.lastAutoPopupAt || 0));
+  if (!shouldShow) return;
+  popup.hidden = false;
+  announcementState.lastAutoPopupAt = Number(announcementState.latestAt || Date.now());
+  markAnnouncementsSeen(announcementState.latestAt || Date.now());
+}
+
+function scheduleAnnouncementAutoOpen() {
+  if (announcementAutoOpenTimer) clearTimeout(announcementAutoOpenTimer);
+  const seenAt = Number(announcementState.seenAt || 0);
+  const hasUnread = announcementState.items.some((item) => Number(item.updatedAt || item.createdAt || 0) > seenAt);
+  if (!announcementState.items.length || (!hasUnread && seenAt > 0)) return;
+  announcementAutoOpenTimer = setTimeout(() => {
+    announcementAutoOpenTimer = null;
+    maybeShowAnnouncements(false);
+  }, 450);
+}
+
+function closeAnnouncementPopup() {
+  const popup = $("#announcementPopup");
+  if (popup) popup.hidden = true;
+}
+
+function startAnnouncementPolling() {
+  if (announcementRefreshTimer) return;
+  announcementRefreshTimer = setInterval(() => {
+    loadAnnouncements({ silent: true });
+  }, ANNOUNCEMENTS_REFRESH_INTERVAL_MS);
+}
+
+function stopAnnouncementPolling() {
+  if (announcementRefreshTimer) clearInterval(announcementRefreshTimer);
+  announcementRefreshTimer = null;
+}
+
+function openAnnouncementAdminPanel() {
+  closeAnnouncementPopup();
+  openCodeAdminPanel();
+  $("#walletPanel").classList.remove("open");
+  $("#settingsPanel").classList.remove("open");
+  $("#logsPanel").classList.remove("open");
+  $("#announcementAdminSection")?.classList.add("highlight");
+  setTimeout(() => $("#announcementAdminSection")?.classList.remove("highlight"), 1800);
+  setTimeout(() => $("#announcementTitle")?.focus(), 150);
+}
+
+async function publishAnnouncementFromPanel() {
+  const password = $("#codeAdminPassword").value.trim();
+  const title = $("#announcementTitle").value.trim();
+  const body = $("#announcementBody").value.trim();
+  const pinned = $("#announcementPinned").checked;
+  if (!password) {
+    showToast("请输入管理密码");
+    return;
+  }
+  if (!body) {
+    showToast("请填写公告内容");
+    return;
+  }
+
+  const button = $("#publishAnnouncementButton");
+  button.disabled = true;
+  button.textContent = "发布中...";
+  try {
+    const response = await fetch("/api/billing/admin/announcements", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify({ title, body, pinned }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "发布公告失败");
+    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
+    $("#announcementTitle").value = "";
+    $("#announcementBody").value = "";
+    $("#announcementPinned").checked = false;
+    await loadAnnouncements({ silent: true, forceOpen: true });
+    showToast("公告已发布，前台立即生效");
+  } catch (error) {
+    showToast(error.message || "发布公告失败");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="check"></i><span>发布公告</span>`;
+    renderIcons();
+  }
+}
+
+function formatAnnouncementTime(timestamp) {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 

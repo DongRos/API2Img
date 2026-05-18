@@ -5,9 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>API2image</title>
     <link rel="icon" type="image/png" href="./icon.png?v=2" />
-    <link rel="stylesheet" href="./styles.css?v=24" />
+    <link rel="stylesheet" href="./styles.css?v=28" />
   </head>
   <body data-theme="dark">
+    <script>
+      (() => {
+        try {
+          const saved = JSON.parse(localStorage.getItem("image2.flow.state.v1") || "{}");
+          document.body.dataset.theme = saved.theme === "light" ? "light" : "dark";
+        } catch {
+          document.body.dataset.theme = "dark";
+        }
+      })();
+    </script>
     <div class="app">
       <header class="topbar">
         <div class="titlebar">
@@ -19,6 +29,10 @@
         </div>
 
         <div class="top-actions">
+          <button class="icon-button" id="announcementToggle" title="公告" type="button">
+            <i data-icon="bell"></i>
+            <span id="announcementBadge" class="badge-dot" hidden></span>
+          </button>
           <button class="icon-button" id="themeButton" title="浅色/深色" type="button">
             <i data-icon="moon"></i>
           </button>
@@ -335,6 +349,46 @@
             </button>
           </div>
         </section>
+
+        <section id="announcementAdminSection" class="admin-section">
+          <div class="config-history-head">
+            <h3>公告发布</h3>
+            <span>发布后立即生效</span>
+          </div>
+
+          <label class="field">
+            <span>公告标题</span>
+            <input id="announcementTitle" type="text" placeholder="例如：系统维护通知" />
+          </label>
+          <label class="field">
+            <span>公告内容</span>
+            <textarea id="announcementBody" rows="6" placeholder="输入公告内容，发布后前台自动可见"></textarea>
+          </label>
+          <label class="check-line">
+            <input id="announcementPinned" type="checkbox" />
+            <span>置顶公告</span>
+          </label>
+          <div class="code-admin-actions">
+            <button class="pill-button primary" id="publishAnnouncementButton" type="button">
+              <i data-icon="check"></i><span>发布公告</span>
+            </button>
+          </div>
+        </section>
+
+        <section id="statsAdminSection" class="admin-section">
+          <div class="config-history-head">
+            <h3>实时统计</h3>
+            <span>隐藏面板</span>
+          </div>
+          <div id="siteStatsSummary" class="api-stats-summary"></div>
+          <div id="apiStatsSummary" class="api-stats-summary"></div>
+          <div class="logs-actions">
+            <button class="pill-button" id="clearStatsButton" type="button">
+              <i data-icon="trash"></i><span>清空统计</span>
+            </button>
+          </div>
+          <div id="apiStatsList" class="api-stats-list"></div>
+        </section>
       </aside>
 
       <aside id="logsPanel" class="logs-panel">
@@ -355,24 +409,6 @@
         <div id="generationLogList" class="generation-log-list"></div>
       </aside>
 
-      <aside id="statsPanel" class="stats-panel">
-        <div class="panel-header">
-          <div>
-            <h2>API 测试统计</h2>
-            <p>隐藏测试入口，仅记录本机浏览器里的请求次数和脱敏 Key 指纹，不保存完整 API Key。</p>
-          </div>
-          <button class="icon-button" id="closeStats" title="关闭" type="button">
-            <i data-icon="x"></i>
-          </button>
-        </div>
-        <div id="apiStatsSummary" class="api-stats-summary"></div>
-        <div class="logs-actions">
-          <button class="pill-button" id="clearStatsButton" type="button">
-            <i data-icon="trash"></i><span>清空统计</span>
-          </button>
-        </div>
-        <div id="apiStatsList" class="api-stats-list"></div>
-      </aside>
     </div>
 
     <section id="detailModal" class="detail-modal" hidden>
@@ -409,8 +445,23 @@
       </div>
     </section>
 
+    <section id="announcementPopup" class="announcement-popup" hidden>
+      <div class="announcement-popup-shell">
+        <div class="panel-header">
+          <div>
+            <h2>站点公告</h2>
+            <p>首次进入或有新公告时自动展示</p>
+          </div>
+          <button class="icon-button" id="closeAnnouncement" title="关闭" type="button">
+            <i data-icon="x"></i>
+          </button>
+        </div>
+        <div id="announcementPopupList" class="announcement-list"></div>
+      </div>
+    </section>
+
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=31"></script>
+    <script src="./app.js?v=38"></script>
   </body>
 </html>

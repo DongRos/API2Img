@@ -30,6 +30,7 @@ const config = {
     { src: "^/api/proxy-image/?$", methods: ["POST", "OPTIONS"] },
     { src: "^/api/cache-image/?$", methods: ["POST", "OPTIONS"] },
     { src: "^/api/billing/(.*)$", methods: ["GET", "POST", "OPTIONS"] },
+    { src: "^/api/site/(.*)$", methods: ["GET", "POST", "OPTIONS"] },
     { handle: "filesystem" },
     { src: "^/$", dest: "/index.html" },
     { src: "^/(.*)$", dest: "/index.html" },
