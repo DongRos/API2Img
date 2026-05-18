@@ -1024,24 +1024,69 @@ function cleanErrorMessage(error) {
   return formatHttpError(0, error?.message || String(error));
 }
 
+function addApiGuidance(message, extra = "") {
+  const base = String(message || "").replace(/\s+/g, " ").trim();
+  const intro = base ? (/[。！？.!?]$/.test(base) ? base : `${base}。`) : "";
+  const guidance =
+    "常见原因是上游 API 未正确配置、地址/Key/模型/通道参数填错，或供应商接口临时异常。请先按供应商文档重新检查并保存配置；如果仍然失败，建议切换到“推荐API”重试。";
+  const suffix = extra ? `${extra} ` : "";
+  return `${intro}${suffix}${guidance}`.trim();
+}
+
 function formatHttpError(status, message) {
   const rawText = typeof message === "object" ? JSON.stringify(message) : String(message || "");
   const text = rawText.replace(/\s+/g, " ").trim();
   const code = text.match(/Error code\s*(\d{3})/i)?.[1] || (status ? String(status) : "");
   const title = text.match(/<title>(.*?)<\/title>/i)?.[1];
   if (/openai_error|bad_response_status_code/i.test(text)) {
-    return "API 返回 openai_error，响应里没有图片数据。网页无法取回已在上游生成但未返回的图片，已停止自动补单以避免重复扣费。";
+    return addApiGuidance(
+      "API 返回 openai_error，响应里没有图片数据。网页无法取回已在上游生成但未返回的图片，已停止自动补单以避免重复扣费。",
+      "这通常说明供应商返回格式和当前接口解析不一致。",
+    );
   }
   if (code === "524" || /524: A timeout occurred|A timeout occurred/i.test(text)) {
-    return "上游接口超时（Cloudflare 524）。本次没有自动追加请求，请减少数量或稍后重试。";
+    return addApiGuidance(
+      "上游接口超时（Cloudflare 524）。本次没有自动追加请求，请减少数量或稍后重试。",
+      "这一般是供应商响应过慢或通道压力过大。",
+    );
   }
   if (code === "504" && /EdgeOne Pages/i.test(text)) {
-    return "EdgeOne 代理函数超时或未生效。已尝试直连；如果仍失败，请在设置里切到“浏览器直连”或降低生成数量。";
+    return addApiGuidance(
+      "EdgeOne 代理函数超时或未生效。已尝试直连；如果仍失败，请在设置里切到“浏览器直连”或降低生成数量。",
+      "这通常和代理链路、上游接口响应或供应商限制有关。",
+    );
+  }
+  if (/failed to fetch|fetch failed|network error|network|connection|timeout|timed out|request aborted|aborted|econnreset|enotfound|socket hang up|dns|certificate/i.test(text)) {
+    return addApiGuidance(
+      `请求失败${code ? `（${code}）` : ""}，可能是 Failed to fetch 或网络连接异常。`,
+      "请重点检查 API 地址、Key、跨域/代理配置和供应商状态。",
+    );
+  }
+  if (/\b(401|403)\b|unauthorized|invalid api key|forbidden|permission denied/i.test(text)) {
+    return addApiGuidance(
+      `鉴权失败${code ? `（${code}）` : ""}，API Key、签名或权限可能不正确。`,
+      "请重新核对接口文档里的鉴权方式和参数名称。",
+    );
+  }
+  if (/\b429\b|rate limit|quota|billing/i.test(text)) {
+    return addApiGuidance(
+      `请求被限制${code ? `（${code}）` : ""}，可能是频率过高、额度不足或余额已耗尽。`,
+      "请稍后重试，或检查供应商账户额度和通道限制。",
+    );
+  }
+  if (/\b(500|502|503|520|522)\b|bad gateway|gateway timeout|service unavailable|internal server error|server error|stream error|received from peer|rst_stream|reset/i.test(text)) {
+    return addApiGuidance(
+      `上游服务异常${code ? `（${code}）` : ""}，接口返回内容不完整或连接被中断。`,
+      "这类问题通常不是前端本身造成的，请优先检查供应商接口。",
+    );
   }
   if (/<!doctype html|<html[\s>]/i.test(text)) {
-    return title ? `接口返回 HTML：${title}` : "接口返回 HTML 页面，请检查 API URL 是否为真实接口路径";
+    return addApiGuidance(
+      title ? `接口返回 HTML：${title}` : "接口返回 HTML 页面，请检查 API URL 是否为真实接口路径。",
+      "通常是地址填错、跳转到了网页页，或供应商返回了错误页。",
+    );
   }
-  return text.slice(0, 260) || `请求失败${code ? `：${code}` : ""}`;
+  return addApiGuidance(text.slice(0, 260) || `请求失败${code ? `：${code}` : ""}`);
 }
 
 function normalizeImages(payload) {
