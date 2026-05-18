@@ -1311,6 +1311,13 @@ function layoutResultMasonry() {
   const grid = $("#resultGrid");
   if (!grid || grid.classList.contains("empty")) return;
 
+  if (window.matchMedia("(max-width: 900px)").matches) {
+    $$(".image-card").forEach((card) => {
+      card.style.gridRowEnd = "";
+    });
+    return;
+  }
+
   const styles = getComputedStyle(grid);
   const rowHeight = parseFloat(styles.getPropertyValue("grid-auto-rows")) || 8;
   const rowGap = parseFloat(styles.getPropertyValue("row-gap")) || 0;
