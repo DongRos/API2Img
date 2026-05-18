@@ -1114,14 +1114,6 @@ svg {
   color: var(--text);
 }
 
-.admin-section-view {
-  display: none;
-}
-
-.admin-section-view.active {
-  display: flex;
-}
-
 .recharge-guide {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1219,6 +1211,14 @@ svg {
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   background: var(--glass-soft);
+}
+
+.code-admin-panel .admin-section-view:not(.active) {
+  display: none !important;
+}
+
+.code-admin-panel .admin-section-view.active {
+  display: flex;
 }
 
 .code-admin-result textarea {

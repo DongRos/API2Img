@@ -15,6 +15,7 @@ const DEFAULT_DB = {
       title: "隐私说明",
       body: "本站的 API 配置仅保存在你的本地浏览器，不会上传到服务器；生成的图片也会保存在本地，方便查看和管理。",
       pinned: true,
+      pinnedAt: 1,
       createdAt: 1,
       updatedAt: 1,
     },
@@ -110,6 +111,10 @@ export async function listAnnouncements(context, limit = 20) {
     .sort((a, b) => {
       const pinnedDelta = Number(b.pinned) - Number(a.pinned);
       if (pinnedDelta) return pinnedDelta;
+      if (a.pinned && b.pinned) {
+        const pinnedAtDelta = Number(a.pinnedAt || a.updatedAt || a.createdAt || 0) - Number(b.pinnedAt || b.updatedAt || b.createdAt || 0);
+        if (pinnedAtDelta) return pinnedAtDelta;
+      }
       const createdDelta = Number(b.createdAt || 0) - Number(a.createdAt || 0);
       if (createdDelta) return createdDelta;
       return String(b.id || "").localeCompare(String(a.id || ""));
@@ -340,6 +345,7 @@ export async function createAnnouncement(context) {
       title: String(payload.title || "").trim().slice(0, 120) || deriveAnnouncementTitle(body),
       body,
       pinned: Boolean(payload.pinned),
+      pinnedAt: payload.pinned ? now : 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -368,9 +374,12 @@ export async function updateAnnouncement(context) {
   const announcement = await mutateDb(context, (db) => {
     if (!isRecord(db.announcements)) db.announcements = {};
     if (!db.announcements[announcementId]) throw new Error("公告不存在或已删除");
+    const pinned = Boolean(payload.pinned);
+    const current = db.announcements[announcementId];
     const next = {
-      ...db.announcements[announcementId],
-      pinned: Boolean(payload.pinned),
+      ...current,
+      pinned,
+      pinnedAt: pinned ? Number(current.pinnedAt || Date.now()) : 0,
       updatedAt: Date.now(),
     };
     db.announcements[announcementId] = next;
@@ -779,6 +788,7 @@ function normalizeAnnouncementRecord(value) {
     title: String(value?.title || "").trim().slice(0, 120) || deriveAnnouncementTitle(body),
     body,
     pinned: Boolean(value?.pinned),
+    pinnedAt: Math.max(0, Number(value?.pinnedAt || (value?.pinned ? value?.updatedAt || value?.createdAt || 0 : 0))),
     createdAt: Math.max(0, Number(value?.createdAt || 0)),
     updatedAt: Math.max(0, Number(value?.updatedAt || value?.createdAt || 0)),
   };
@@ -917,6 +927,7 @@ function publicAnnouncement(announcement) {
     title: String(announcement?.title || "").trim(),
     body: String(announcement?.body || "").trim(),
     pinned: Boolean(announcement?.pinned),
+    pinnedAt: Number(announcement?.pinnedAt || 0),
     createdAt: Number(announcement?.createdAt || 0),
     updatedAt: Number(announcement?.updatedAt || announcement?.createdAt || 0),
   };

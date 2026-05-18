@@ -2173,7 +2173,9 @@ function selectCodeAdminSection(section) {
     button.classList.toggle("active", button.dataset.adminSection === next);
   });
   $$(".admin-section-view").forEach((panel) => {
-    panel.classList.toggle("active", panel.dataset.adminPanel === next);
+    const active = panel.dataset.adminPanel === next;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
   });
   if (next === "platform") loadPlatformAdminConfig({ silent: true });
   if (next === "stats") {
@@ -3516,12 +3518,17 @@ function normalizeAnnouncements(items) {
       title: String(item.title || "").trim() || "站点公告",
       body: String(item.body || "").trim(),
       pinned: Boolean(item.pinned),
+      pinnedAt: Number(item.pinnedAt || 0),
       createdAt: Number(item.createdAt || 0),
       updatedAt: Number(item.updatedAt || item.createdAt || 0),
     }))
     .filter((item) => item.id && item.body)
     .sort((a, b) => {
       if (a.pinned !== b.pinned) return Number(b.pinned) - Number(a.pinned);
+      if (a.pinned && b.pinned) {
+        const pinnedDelta = Number(a.pinnedAt || a.updatedAt || a.createdAt || 0) - Number(b.pinnedAt || b.updatedAt || b.createdAt || 0);
+        if (pinnedDelta) return pinnedDelta;
+      }
       const delta = Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0);
       if (delta) return delta;
       return String(b.id).localeCompare(String(a.id));

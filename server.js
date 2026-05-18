@@ -782,6 +782,7 @@ function publicAnnouncement(announcement) {
     title: String(announcement?.title || "").trim(),
     body: String(announcement?.body || "").trim(),
     pinned: Boolean(announcement?.pinned),
+    pinnedAt: Number(announcement?.pinnedAt || 0),
     createdAt: Number(announcement?.createdAt || 0),
     updatedAt: Number(announcement?.updatedAt || announcement?.createdAt || 0),
   };
