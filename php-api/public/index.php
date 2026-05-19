@@ -84,8 +84,16 @@ function route_request(PDO $pdo, array $config): void
         billing_ledger($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/generate/ticket') {
+        generate_ticket($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/generate/platform') {
         generate_platform($pdo, $config);
+        return;
+    }
+    if ($method === 'POST' && $path === '/api/generate/settle') {
+        settle_generation($pdo, $config);
         return;
     }
     if ($method === 'POST' && $path === '/api/admin/redeem-codes') {
@@ -279,6 +287,7 @@ function billing_config(array $config): void
         'currency' => 'CNY',
         'platformEnabled' => trim((string)$config['platform']['text_endpoint']) !== '' && trim((string)$config['platform']['api_key']) !== '',
         'rechargeUrl' => (string)$config['app']['recharge_url'],
+        'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
     ]);
 }
 
@@ -355,26 +364,60 @@ function billing_ledger(PDO $pdo, array $config): void
     json_response(['ok' => true, 'ledger' => $items]);
 }
 
-function generate_platform(PDO $pdo, array $config): void
+function generate_ticket(PDO $pdo, array $config): void
 {
     $user = require_user($pdo, $config);
     $payload = read_json();
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
     $count = max(1, min((int)$config['platform']['max_count'], (int)($payload['count'] ?? 1)));
     $price = (int)$config['platform']['price_cents'];
     $total = $count * $price;
-    $requestId = normalize_request_id((string)($payload['requestId'] ?? ''));
-    if ($requestId === '') {
-        $requestId = random_token(18);
+    if (!platform_is_configured($config)) {
+        throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
     }
+    ensure_user_can_afford($pdo, (int)$user['id'], $total);
+    $token = random_token(32);
+    $ticket = sign_generation_ticket($config, [
+        'uid' => (int)$user['id'],
+        'mode' => $mode,
+        'count' => $count,
+        'price' => $price,
+        'exp' => time() + 600,
+        'nonce' => random_token(12),
+    ], $token);
+    json_response([
+        'ok' => true,
+        'ticket' => $ticket,
+        'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
+        'priceCents' => $price,
+        'balanceCents' => current_balance($pdo, (int)$user['id']),
+    ]);
+}
+
+function generate_platform(PDO $pdo, array $config): void
+{
+    $payload = read_json();
+    $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
+    if (!$ticket) {
+        $user = require_user($pdo, $config);
+        $ticket = [
+            'uid' => (int)$user['id'],
+            'mode' => (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text',
+            'count' => max(1, min((int)$config['platform']['max_count'], (int)($payload['count'] ?? 1))),
+            'price' => (int)$config['platform']['price_cents'],
+        ];
+    }
+    $mode = (($ticket['mode'] ?? ($payload['mode'] ?? 'text')) === 'image') ? 'image' : 'text';
+    $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
+    $count = max(1, min((int)$ticket['count'], (int)$config['platform']['max_count'], (int)($payload['count'] ?? 1)));
+    $price = max(1, (int)$ticket['price']);
+    ensure_user_can_afford($pdo, (int)$ticket['uid'], $count * $price);
     $request = enforce_platform_request_count($request, $count);
     $endpoint = $mode === 'image' ? ((string)$config['platform']['edit_endpoint'] ?: infer_edit_endpoint((string)$config['platform']['text_endpoint'])) : (string)$config['platform']['text_endpoint'];
     if ($endpoint === '' || trim((string)$config['platform']['api_key']) === '') {
         throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
     }
 
-    $reservation = reserve_generation_charge($pdo, $config, (int)$user['id'], $requestId, $mode, (string)($payload['model'] ?? ''), $count, $price, $total);
     try {
         $upstream = call_platform_upstream($config, $endpoint, $request);
         $bodyPayload = json_decode($upstream['body'], true);
@@ -386,22 +429,59 @@ function generate_platform(PDO $pdo, array $config): void
         if (!count($images)) {
             throw new RuntimeException('推荐 API 没有返回图片');
         }
-        complete_generation_charge($pdo, (int)$reservation['generation_id'], 'succeeded', '');
-        $userAfter = find_user($pdo, (int)$user['id']);
         json_response([
             'ok' => true,
             'data' => $images,
-            'balanceCents' => (int)$userAfter['balance_cents'],
-            'chargedCents' => $total,
-            'requestId' => $requestId,
+            'settlementRequired' => true,
         ]);
     } catch (Throwable $error) {
-        refund_generation_charge($pdo, (int)$user['id'], (int)$reservation['generation_id'], $requestId, $total, $error->getMessage());
-        throw new HttpError($error->getMessage() ?: '生成失败，费用已退回', 502, 'platform_failed');
+        throw new HttpError($error->getMessage() ?: '生成失败，未扣费', 502, 'platform_failed');
     }
 }
 
-function reserve_generation_charge(PDO $pdo, array $config, int $userId, string $requestId, string $mode, string $model, int $count, int $price, int $total): array
+function settle_generation(PDO $pdo, array $config): void
+{
+    $payload = read_json();
+    $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
+    if (!$ticket) {
+        throw new HttpError('生成票据已失效，请重新生成', 401, 'ticket_invalid');
+    }
+    $imageId = normalize_request_id((string)($payload['imageId'] ?? ''));
+    if ($imageId === '') {
+        throw new HttpError('结算图片标识缺失', 400, 'invalid_image_id');
+    }
+    $requestId = normalize_request_id((string)($payload['requestId'] ?? ''));
+    if ($requestId === '') {
+        $requestId = 'settle_' . $imageId;
+    }
+    $price = max(1, (int)$ticket['price']);
+    $result = charge_generation_success($pdo, (int)$ticket['uid'], $requestId, (string)$ticket['mode'], (string)($payload['model'] ?? ''), $price, $imageId);
+    json_response([
+        'ok' => true,
+        'balanceCents' => (int)$result['balance'],
+        'chargedCents' => $price,
+        'requestId' => $requestId,
+    ]);
+}
+
+function ensure_user_can_afford(PDO $pdo, int $userId, int $total): void
+{
+    $stmt = $pdo->prepare("SELECT balance_cents FROM users WHERE id = ? AND status = 'active' LIMIT 1");
+    $stmt->execute([$userId]);
+    $balance = (int)$stmt->fetchColumn();
+    if ($balance < $total) {
+        throw new HttpError('余额不足，请先充值', 402, 'insufficient_balance');
+    }
+}
+
+function current_balance(PDO $pdo, int $userId): int
+{
+    $stmt = $pdo->prepare('SELECT balance_cents FROM users WHERE id = ? LIMIT 1');
+    $stmt->execute([$userId]);
+    return (int)$stmt->fetchColumn();
+}
+
+function charge_generation_success(PDO $pdo, int $userId, string $requestId, string $mode, string $model, int $price, string $imageId): array
 {
     $pdo->beginTransaction();
     try {
@@ -409,33 +489,38 @@ function reserve_generation_charge(PDO $pdo, array $config, int $userId, string 
         $existing->execute([$requestId]);
         $old = $existing->fetch();
         if ($old) {
-            throw new HttpError('请勿重复提交同一次生成请求', 409, 'duplicate_request');
+            if ((int)$old['user_id'] !== $userId) {
+                throw new HttpError('请勿重复提交同一次生成请求', 409, 'duplicate_request');
+            }
+            $pdo->commit();
+            return ['balance' => current_balance($pdo, $userId), 'duplicate' => true];
         }
         $beforeStmt = $pdo->prepare('SELECT balance_cents FROM users WHERE id = ? FOR UPDATE');
         $beforeStmt->execute([$userId]);
         $before = (int)$beforeStmt->fetchColumn();
-        if ($before < $total) {
+        if ($before < $price) {
             throw new HttpError('余额不足，请先充值', 402, 'insufficient_balance');
         }
         $affected = $pdo->prepare(
             "UPDATE users SET balance_cents = balance_cents - ?, updated_at = UTC_TIMESTAMP()
              WHERE id = ? AND balance_cents >= ? AND status = 'active'"
         );
-        $affected->execute([$total, $userId, $total]);
+        $affected->execute([$price, $userId, $price]);
         if ($affected->rowCount() !== 1) {
             throw new HttpError('余额不足，请先充值', 402, 'insufficient_balance');
         }
-        $after = $before - $total;
+        $after = $before - $price;
         $insert = $pdo->prepare(
             "INSERT INTO generation_requests
              (user_id, request_id, mode, model, image_count, price_cents, total_cents, status, error_message, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', '', UTC_TIMESTAMP())"
+             VALUES (?, ?, ?, ?, 1, ?, ?, 'succeeded', '', UTC_TIMESTAMP())"
         );
-        $insert->execute([$userId, $requestId, $mode, $model, $count, $price, $total]);
+        $insert->execute([$userId, $requestId, $mode, $model, $price, $price]);
         $generationId = (int)$pdo->lastInsertId();
-        create_ledger($pdo, $userId, 'charge', -$total, $before, $after, $requestId, '推荐 API 生图预扣');
+        create_ledger($pdo, $userId, 'charge', -$price, $before, $after, $requestId, '推荐 API 生图成功扣费 ' . $imageId);
+        complete_generation_charge($pdo, $generationId, 'succeeded', '');
         $pdo->commit();
-        return ['generation_id' => $generationId, 'before' => $before, 'after' => $after];
+        return ['balance' => $after, 'duplicate' => false];
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
@@ -475,6 +560,55 @@ function refund_generation_charge(PDO $pdo, int $userId, int $generationId, stri
         }
         throw $error;
     }
+}
+
+function platform_is_configured(array $config): bool
+{
+    return trim((string)$config['platform']['text_endpoint']) !== '' && trim((string)$config['platform']['api_key']) !== '';
+}
+
+function sign_generation_ticket(array $config, array $claims, string $token): string
+{
+    $claims['tok'] = secret_hash($config, 'generation-ticket-token', $token);
+    $payload = base64url_encode(json_encode($claims, JSON_UNESCAPED_SLASHES));
+    $signature = secret_hash($config, 'generation-ticket', $payload);
+    return $payload . '.' . $signature;
+}
+
+function verify_generation_ticket(array $config, string $ticket): ?array
+{
+    $parts = explode('.', $ticket, 2);
+    if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
+        return null;
+    }
+    $expected = secret_hash($config, 'generation-ticket', $parts[0]);
+    if (!hash_equals($expected, $parts[1])) {
+        return null;
+    }
+    $json = base64url_decode($parts[0]);
+    $claims = json_decode($json, true);
+    if (!is_array($claims) || (int)($claims['exp'] ?? 0) < time()) {
+        return null;
+    }
+    if ((int)($claims['uid'] ?? 0) <= 0 || (int)($claims['count'] ?? 0) <= 0 || (int)($claims['price'] ?? 0) <= 0) {
+        return null;
+    }
+    return $claims;
+}
+
+function base64url_encode(string $value): string
+{
+    return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+}
+
+function base64url_decode(string $value): string
+{
+    $padding = strlen($value) % 4;
+    if ($padding) {
+        $value .= str_repeat('=', 4 - $padding);
+    }
+    $decoded = base64_decode(strtr($value, '-_', '+/'), true);
+    return $decoded === false ? '' : $decoded;
 }
 
 function call_platform_upstream(array $config, string $endpoint, array $request): array

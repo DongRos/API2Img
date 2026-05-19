@@ -109,6 +109,7 @@ const billingState = {
   upstreamCostCents: 4,
   platformEnabled: false,
   rechargeUrl: "https://api2img.shop/",
+  directBaseUrl: "",
   lastDirectConfig: null,
   ledger: [],
   activeOrder: null,
@@ -686,16 +687,16 @@ async function commitGeneratedImage(src, options, index, context) {
   state.results.unshift(result);
   if (context) context.created.push(result);
   renderResults();
-  applyPlatformRequestCost(options, index);
   await persistState();
+  await settlePlatformImage(result, options, index, context);
   return result;
 }
 
-function applyPlatformRequestCost(options, index) {
+function applyPlatformRequestCost(options, index, amountCents = null) {
   if (options.apiProvider !== "platform") return;
   const requestEntry = findRequestLogEntry(options, index);
   if (!requestEntry) return;
-  const priceCents = resolvePlatformPriceCents(options);
+  const priceCents = amountCents == null ? resolvePlatformPriceCents(options) : Math.max(0, Math.round(Number(amountCents) || 0));
   requestEntry.costCents = priceCents;
   if (activeGenerationLog) activeGenerationLog.costCents = totalGenerationLogCost(activeGenerationLog);
   saveGenerationLogs();
@@ -729,6 +730,57 @@ async function commitGeneratedImages(sources, options, startIndex, context) {
   return created;
 }
 
+async function settlePlatformImage(result, options, index, context) {
+  if (options.apiProvider !== "platform") return;
+  const ticket = options.platformTicket || context?.platformTicket || "";
+  if (!ticket) {
+    showToast("图片已生成，但结算票据缺失，请联系站长核对流水");
+    return;
+  }
+  const requestId = platformSettlementRequestId(options, result, index);
+  let lastError = null;
+  try {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await apiFetch("/api/generate/settle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ticket,
+            imageId: result.id,
+            requestId,
+            model: options.model || getModelName(),
+          }),
+        });
+        const payload = await readJsonResponse(response);
+        if (!response.ok) throw new Error(payload?.error?.message || `结算失败：HTTP ${response.status}`);
+        if (Number.isFinite(Number(payload.balanceCents))) {
+          billingState.balanceCents = Number(payload.balanceCents);
+        }
+        applyPlatformRequestCost(options, index, Number(payload.chargedCents || options.platformPriceCents || billingState.priceCents || 0));
+        renderWallet();
+        if (billingState.authenticated) loadBillingLedger({ silent: true }).then(renderWallet).catch(() => {});
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await wait(700 * attempt);
+      }
+    }
+    throw lastError || new Error("结算失败");
+  } catch (error) {
+    applyPlatformRequestCost(options, index, 0);
+    showToast(`图片已生成，但扣费结算失败：${error.message || "请联系站长"}`);
+  }
+}
+
+function platformSettlementRequestId(options, result, index) {
+  return platformBillingRequestId({
+    generationId: options.generationId || result.generationId || result.id,
+    batchIndex: (Number(options.batchIndex) || index + 1),
+    count: 1,
+  });
+}
+
 async function requestImageBatch(endpoint, options, context) {
   const desired = Math.max(1, options.count || 1);
   if (shouldUseSingleImageRequests(options, desired)) {
@@ -741,6 +793,11 @@ async function requestImageBatch(endpoint, options, context) {
   let images = [];
   try {
     const payload = await requestImages(endpoint, { ...options, count: desired, batchTotal: 0 });
+    if (payload?.platformTicket) {
+      options.platformTicket = payload.platformTicket;
+      options.platformPriceCents = payload.platformPriceCents || options.platformPriceCents;
+      if (context) context.platformTicket = payload.platformTicket;
+    }
     images = normalizeImages(payload).slice(0, desired);
     await commitGeneratedImages(images, options, 0, context);
     updateProgress("接收生成结果", `接口返回 ${images.length}/${desired} 张图片`, 82, { generated: images.length, total: desired });
@@ -786,6 +843,11 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
         };
         try {
           const payload = await requestImages(endpoint, oneOptions);
+          if (payload?.platformTicket) {
+            oneOptions.platformTicket = payload.platformTicket;
+            oneOptions.platformPriceCents = payload.platformPriceCents || oneOptions.platformPriceCents;
+            if (context) context.platformTicket = payload.platformTicket;
+          }
           const source = normalizeImages(payload)[0] || "";
           if (!source) throw new Error("接口没有返回图片");
           images[index] = source;
@@ -925,14 +987,22 @@ async function sendImageRequest(endpoint, request) {
 
 async function fetchPlatformServerImageRequest(endpoint, request) {
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
-  const response = await apiFetch(endpoint, {
+  const ticket = await getPlatformGenerationTicket({
+    mode: billingMode || $("#modeSelect").value,
+    count: billingCount || 1,
+    model: billingModel || getModelName(),
+    signal,
+  });
+  const response = await fetch(platformDirectUrl("/api/generate/platform"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "omit",
     body: JSON.stringify({
       mode: billingMode || $("#modeSelect").value,
       count: billingCount || 1,
       model: billingModel || getModelName(),
       requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
+      ticket: ticket.ticket,
       request: {
         ...serverRequest,
         headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
@@ -940,7 +1010,8 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
     }),
     signal,
   });
-  updateBillingFromGenerationResponse(response);
+  response.platformTicket = ticket.ticket;
+  response.platformPriceCents = ticket.priceCents;
   return response;
 }
 
@@ -962,6 +1033,39 @@ function sanitizePlatformBrowserHeaders(headers) {
     clean[key] = String(value);
   });
   return clean;
+}
+
+async function getPlatformGenerationTicket(options = {}) {
+  const response = await apiFetch("/api/generate/ticket", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: options.mode || $("#modeSelect").value,
+      count: options.count || 1,
+      model: options.model || getModelName(),
+    }),
+    signal: options.signal,
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) throw new Error(payload?.error?.message || `生成票据获取失败：HTTP ${response.status}`);
+  if (!payload.ticket) throw new Error("生成票据缺失，请重试");
+  if (payload.directBaseUrl) billingState.directBaseUrl = normalizeDirectApiBase(payload.directBaseUrl);
+  billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+  if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
+  renderWallet();
+  return {
+    ticket: payload.ticket,
+    priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+  };
+}
+
+function platformDirectUrl(path) {
+  const base = normalizeDirectApiBase(billingState.directBaseUrl || "https://api2img.shop/php-api/index.php");
+  return `${base}${String(path || "").startsWith("/") ? path : `/${path}`}`;
+}
+
+function normalizeDirectApiBase(value) {
+  return String(value || "").trim().replace(/\/+$/, "");
 }
 
 function shouldFallbackToDirect(response) {
@@ -1054,6 +1158,10 @@ async function parseApiResponse(response, requestLog = null) {
     imageCount,
     responsePreview: summarizeLogValue(parsedJson ? payload : text),
   });
+  if (response.platformTicket && payload && typeof payload === "object") {
+    payload.platformTicket = response.platformTicket;
+    payload.platformPriceCents = response.platformPriceCents;
+  }
   return payload;
 }
 
@@ -1905,6 +2013,7 @@ async function loadBillingConfig() {
   billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
   billingState.platformEnabled = Boolean(info.platformEnabled);
   billingState.rechargeUrl = info.rechargeUrl || billingState.rechargeUrl;
+  billingState.directBaseUrl = normalizeDirectApiBase(info.directBaseUrl || billingState.directBaseUrl);
   return billingState.platformEnabled;
 }
 
