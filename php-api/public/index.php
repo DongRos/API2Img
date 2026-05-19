@@ -88,6 +88,10 @@ function route_request(PDO $pdo, array $config): void
         generate_ticket($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/generate/direct-config') {
+        generate_direct_config($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/generate/platform') {
         generate_platform($pdo, $config);
         return;
@@ -389,6 +393,42 @@ function generate_ticket(PDO $pdo, array $config): void
         'ok' => true,
         'ticket' => $ticket,
         'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
+        'priceCents' => $price,
+        'balanceCents' => current_balance($pdo, (int)$user['id']),
+    ]);
+}
+
+function generate_direct_config(PDO $pdo, array $config): void
+{
+    $user = require_user($pdo, $config);
+    $payload = read_json();
+    $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
+    $count = max(1, min((int)$config['platform']['max_count'], (int)($payload['count'] ?? 1)));
+    $price = (int)$config['platform']['price_cents'];
+    $total = $count * $price;
+    if (!platform_is_configured($config)) {
+        throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
+    }
+    ensure_user_can_afford($pdo, (int)$user['id'], $total);
+    $endpoint = $mode === 'image'
+        ? ((string)$config['platform']['edit_endpoint'] ?: infer_edit_endpoint((string)$config['platform']['text_endpoint']))
+        : (string)$config['platform']['text_endpoint'];
+    if ($endpoint === '') {
+        throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
+    }
+    $ticket = sign_generation_ticket($config, [
+        'uid' => (int)$user['id'],
+        'mode' => $mode,
+        'count' => $count,
+        'price' => $price,
+        'exp' => time() + 600,
+        'nonce' => random_token(12),
+    ], random_token(32));
+    json_response([
+        'ok' => true,
+        'ticket' => $ticket,
+        'endpoint' => $endpoint,
+        'apiKey' => (string)$config['platform']['api_key'],
         'priceCents' => $price,
         'balanceCents' => current_balance($pdo, (int)$user['id']),
     ]);

@@ -987,31 +987,44 @@ async function sendImageRequest(endpoint, request) {
 
 async function fetchPlatformServerImageRequest(endpoint, request) {
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
-  const ticket = await getPlatformGenerationTicket({
+  const direct = await getPlatformDirectConfig({
     mode: billingMode || $("#modeSelect").value,
     count: billingCount || 1,
     model: billingModel || getModelName(),
     signal,
   });
-  const response = await fetch(platformDirectUrl("/api/generate/platform"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "omit",
-    body: JSON.stringify({
-      mode: billingMode || $("#modeSelect").value,
-      count: billingCount || 1,
-      model: billingModel || getModelName(),
-      requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
-      ticket: ticket.ticket,
-      request: {
-        ...serverRequest,
-        headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
-      },
-    }),
+  const directRequest = {
+    ...serverRequest,
     signal,
-  });
-  response.platformTicket = ticket.ticket;
-  response.platformPriceCents = ticket.priceCents;
+    headers: {
+      ...(serverRequest.headers || {}),
+      Authorization: `Bearer ${direct.apiKey}`,
+    },
+  };
+  let response = null;
+  try {
+    response = await fetchDirectImageRequest(direct.endpoint, directRequest);
+  } catch (error) {
+    response = await fetch(platformDirectUrl("/api/generate/platform"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "omit",
+      body: JSON.stringify({
+        mode: billingMode || $("#modeSelect").value,
+        count: billingCount || 1,
+        model: billingModel || getModelName(),
+        requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
+        ticket: direct.ticket,
+        request: {
+          ...serverRequest,
+          headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
+        },
+      }),
+      signal,
+    });
+  }
+  response.platformTicket = direct.ticket;
+  response.platformPriceCents = direct.priceCents;
   return response;
 }
 
@@ -1055,6 +1068,31 @@ async function getPlatformGenerationTicket(options = {}) {
   renderWallet();
   return {
     ticket: payload.ticket,
+    priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+  };
+}
+
+async function getPlatformDirectConfig(options = {}) {
+  const response = await apiFetch("/api/generate/direct-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: options.mode || $("#modeSelect").value,
+      count: options.count || 1,
+      model: options.model || getModelName(),
+    }),
+    signal: options.signal,
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) throw new Error(payload?.error?.message || `推荐 API 配置获取失败：HTTP ${response.status}`);
+  if (!payload.ticket || !payload.endpoint || !payload.apiKey) throw new Error("推荐 API 配置不完整，请联系站长");
+  billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+  if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
+  renderWallet();
+  return {
+    ticket: payload.ticket,
+    endpoint: payload.endpoint,
+    apiKey: payload.apiKey,
     priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
   };
 }
