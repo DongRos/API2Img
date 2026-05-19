@@ -4,11 +4,12 @@ export async function onRequestOptions() {
   return optionsResponse();
 }
 
+export async function onRequestGet(context) {
+  return proxyPhpApi(context);
+}
+
 export async function onRequestPost(context) {
-  const url = new URL(context.request.url);
-  url.pathname = "/api/generate/platform";
-  const proxiedRequest = new Request(url.toString(), context.request);
-  return proxyPhpApi({ ...context, request: proxiedRequest });
+  return proxyPhpApi(context);
 }
 
 export async function onRequest() {

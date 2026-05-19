@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 const http = require("http");
+const https = require("https");
 const fs = require("fs/promises");
-const crypto = require("crypto");
 
 const [, , command, ...args] = process.argv;
-const baseUrl = process.env.BILLING_BASE_URL || "http://127.0.0.1:4173";
+const baseUrl = process.env.BILLING_BASE_URL || "https://api2image.top";
 const adminPassword = process.env.BILLING_ADMIN_PASSWORD || "";
 
 if (!adminPassword) {
-  console.error("请先设置 BILLING_ADMIN_PASSWORD 环境变量");
+  console.error("Please set BILLING_ADMIN_PASSWORD first.");
   process.exit(1);
 }
 
@@ -19,19 +19,19 @@ main().catch((error) => {
 
 async function main() {
   if (command === "codes:list") {
-    const payload = await request("GET", "/api/billing/admin/codes");
+    const payload = await request("GET", "/api/admin/redeem-codes");
     if (!payload.codes?.length) {
-      console.log("还没有兑换码");
+      console.log("No redeem codes yet.");
       return;
     }
     payload.codes.forEach((item) => {
       console.log(
         [
           item.code,
-          `金额:${money(item.amountCents)}元`,
-          `状态:${item.status}`,
-          `标签:${item.label || "-"}`,
-          item.usedBy ? `使用用户:${item.usedBy}` : "",
+          `amount:${money(item.amountCents)} yuan`,
+          `status:${item.status}`,
+          `label:${item.label || "-"}`,
+          item.usedByUserId ? `usedBy:${item.usedByUserId}` : "",
         ]
           .filter(Boolean)
           .join("  "),
@@ -42,38 +42,38 @@ async function main() {
 
   if (command === "codes:generate") {
     const amountYuan = Number(args[0] || 0);
-    const count = Math.max(1, Math.min(1000, Number(args[1] || 0)));
-    const label = args[2] || `${amountYuan}元充值码`;
+    const count = Math.max(1, Math.min(1000, Math.floor(Number(args[1] || 0))));
+    const label = args[2] || `${amountYuan} yuan redeem code`;
     if (!amountYuan || !count) {
-      throw new Error("用法: node scripts/billing-admin.js codes:generate <金额元> <数量> [标签]");
+      throw new Error("Usage: node scripts/billing-admin.js codes:generate <amount-yuan> <count> [label]");
     }
-    const codes = Array.from({ length: count }, () => ({
-      code: makeRedeemCode(),
+    const payload = await request("POST", "/api/admin/redeem-codes", {
       amountCents: Math.round(amountYuan * 100),
+      count,
       label,
-    }));
-    const payload = await request("POST", "/api/billing/admin/codes", { codes });
+    });
     const filename = `redeem-codes-${amountYuan}yuan-${Date.now()}.csv`;
     await fs.writeFile(
       filename,
       ["code,amount_yuan,label", ...payload.codes.map((item) => `${item.code},${money(item.amountCents)},${csvCell(item.label)}`)].join("\n"),
       "utf8",
     );
-    console.log(`已生成 ${payload.codes.length} 个兑换码: ${filename}`);
-    console.log("把 CSV 里的 code 列导入发卡网作为卡密库存即可。");
+    console.log(`Created ${payload.codes.length} redeem codes: ${filename}`);
+    console.log("Import the CSV code column into your card-selling platform.");
     return;
   }
 
-  console.log("用法:");
+  console.log("Usage:");
   console.log("  node scripts/billing-admin.js codes:list");
-  console.log("  node scripts/billing-admin.js codes:generate <金额元> <数量> [标签]");
+  console.log("  node scripts/billing-admin.js codes:generate <amount-yuan> <count> [label]");
 }
 
 function request(method, pathname, body) {
   const url = new URL(pathname, baseUrl);
   const data = body ? JSON.stringify(body) : "";
+  const client = url.protocol === "https:" ? https : http;
   return new Promise((resolve, reject) => {
-    const req = http.request(
+    const req = client.request(
       url,
       {
         method,
@@ -106,13 +106,6 @@ function request(method, pathname, body) {
     if (data) req.write(data);
     req.end();
   });
-}
-
-function makeRedeemCode() {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const chars = [];
-  for (const byte of crypto.randomBytes(16)) chars.push(alphabet[byte % alphabet.length]);
-  return `A2I-${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}-${chars.slice(8, 12).join("")}-${chars.slice(12, 16).join("")}`;
 }
 
 function csvCell(value) {

@@ -23,6 +23,7 @@ const FLOW_META_STORE = "meta";
 const FLOW_RESULTS_STORE = "results";
 const FLOW_REFERENCES_STORE = "references";
 const FLOW_META_ID = "flow";
+const API_BASE = (window.API2IMAGE_API_BASE || "").replace(/\/+$/, "");
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -101,14 +102,15 @@ const state = {
 
 const billingState = {
   customerId: "",
+  authenticated: false,
+  email: "",
   balanceCents: 0,
   priceCents: PLATFORM_PRICE_FALLBACK_CENTS,
   upstreamCostCents: 4,
   platformEnabled: false,
+  rechargeUrl: "https://api2img.shop/",
   lastDirectConfig: null,
-  orders: [],
-  usage: [],
-  redemptions: [],
+  ledger: [],
   activeOrder: null,
 };
 
@@ -212,17 +214,18 @@ function bindEvents() {
   });
   $("#closeWallet").addEventListener("click", () => $("#walletPanel").classList.remove("open"));
   $("#apiProviderSelect").addEventListener("change", onApiProviderChange);
+  $("#sendLoginCodeButton").addEventListener("click", sendLoginCode);
+  $("#loginButton").addEventListener("click", verifyLoginCode);
+  $("#logoutButton").addEventListener("click", logoutWallet);
   $("#redeemCodeButton").addEventListener("click", redeemCode);
-  $("#restoreBalanceButton").addEventListener("click", restoreBalance);
-  $("#redeemEmailInput").addEventListener("keydown", submitOnEnter(redeemCode));
+  $("#loginEmailInput").addEventListener("keydown", submitOnEnter(sendLoginCode));
+  $("#loginCodeInput").addEventListener("keydown", submitOnEnter(verifyLoginCode));
   $("#redeemCodeInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       redeemCode();
     }
   });
-  $("#restoreEmailInput").addEventListener("keydown", submitOnEnter(restoreBalance));
-  $("#restoreCodeInput").addEventListener("keydown", submitOnEnter(restoreBalance));
   $("#saveConfigButton").addEventListener("click", saveConfigFromForm);
   $("#themeButton").addEventListener("click", toggleTheme);
   $("#uploadButton").addEventListener("click", () => $("#imageInput").click());
@@ -335,6 +338,12 @@ async function generateImages(extra = {}) {
   if (usePlatformApi && !billingState.platformEnabled) {
     $("#walletPanel").classList.add("open");
     showToast("推荐 API 暂未配置，请联系站长处理");
+    return;
+  }
+  if (usePlatformApi && !billingState.authenticated) {
+    $("#walletPanel").classList.add("open");
+    showToast("请先用邮箱登录后再使用推荐 API");
+    setTimeout(() => $("#loginEmailInput")?.focus(), 0);
     return;
   }
   if (mode === "image" && !state.references.length) {
@@ -489,7 +498,7 @@ function normalizeEndpointBeforeRequest(endpoint, options) {
 function resolveEndpointForMode(mode) {
   if (isPlatformApiSelected()) {
     return {
-      endpoint: "/api/billing/platform-image",
+      endpoint: "/api/generate/platform",
       inferred: false,
       message: "",
     };
@@ -577,6 +586,7 @@ async function requestTextImages(endpoint, headers, options, variant) {
       billingMode: options.mode,
       billingModel: options.model,
       billingGenerationId: options.generationId,
+      billingRequestId: platformBillingRequestId(options),
     },
     options,
     { variant, label: requestLogLabel(options) },
@@ -604,6 +614,7 @@ async function requestEditImages(endpoint, headers, options, variant) {
       billingMode: options.mode,
       billingModel: options.model,
       billingGenerationId: options.generationId,
+      billingRequestId: platformBillingRequestId(options),
     },
     options,
     { variant, label: requestLogLabel(options) },
@@ -647,6 +658,13 @@ function compatibleQuality(options) {
   return "";
 }
 
+function platformBillingRequestId(options = {}) {
+  const generationId = String(options.generationId || makeId()).replace(/[^\w-]/g, "");
+  const index = Math.max(1, Number(options.batchIndex || 1));
+  const count = Math.max(1, Number(options.count || 1));
+  return `gen_${generationId}_${index}_${count}`;
+}
+
 function createGenerationContext(options) {
   return {
     options,
@@ -666,41 +684,7 @@ async function commitGeneratedImage(src, options, index, context) {
   renderResults();
   applyPlatformRequestCost(options, index);
   await persistState();
-  try {
-    await chargePlatformImageIfNeeded(options, index, context);
-  } catch (error) {
-    console.warn("平台计费同步失败，但图片已保留", error);
-  }
   return result;
-}
-
-async function chargePlatformImageIfNeeded(options, index, context) {
-  if (options.apiProvider !== "platform") return;
-  const requestId = `${options.generationId || makeId()}:${index + 1}`;
-  if (!context) return;
-  context.chargedRequestIds ||= new Set();
-  if (context.chargedRequestIds.has(requestId)) return;
-  const response = await fetch("/api/billing/platform-usage", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      requestId,
-      generationId: options.generationId || "",
-      imageCount: 1,
-      mode: options.mode || "text",
-      model: options.model || "",
-    }),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || payload?.message || `扣费失败：${response.status}`);
-  }
-  context.chargedRequestIds.add(requestId);
-  if (Number.isFinite(Number(payload.balanceCents))) {
-    billingState.balanceCents = Number(payload.balanceCents);
-    renderWallet();
-  }
-  refreshBilling();
 }
 
 function applyPlatformRequestCost(options, index) {
@@ -805,7 +789,15 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
           break;
         } catch (error) {
           lastError = cleanErrorMessage(error);
-          if (generationCancelled || isAbortError(error) || attempt >= SINGLE_IMAGE_MAX_ATTEMPTS || !shouldRetrySingleImageError(lastError)) break;
+          if (
+            generationCancelled ||
+            options.apiProvider === "platform" ||
+            isAbortError(error) ||
+            attempt >= SINGLE_IMAGE_MAX_ATTEMPTS ||
+            !shouldRetrySingleImageError(lastError)
+          ) {
+            break;
+          }
           updateProgress("重试单张生成", `第 ${absoluteIndex + 1}/${total} 张失败：${lastError}，正在重试`, currentProgress, {
             generated: offset + images.filter(Boolean).length,
             total,
@@ -906,7 +898,7 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
 
 async function sendImageRequest(endpoint, request) {
   if (isPlatformApiSelected()) {
-    return fetchPlatformDirectImageRequest(endpoint, request);
+    return fetchPlatformServerImageRequest(endpoint, request);
   }
 
   if (config.transportMode === "direct") {
@@ -927,37 +919,25 @@ async function sendImageRequest(endpoint, request) {
   return proxyResponse;
 }
 
-async function fetchPlatformDirectImageRequest(endpoint, request) {
-  const { signal, billingCount, billingMode, billingModel } = request;
-  const platform = await readPlatformDirectConfig({
-    signal,
-    mode: billingMode || $("#modeSelect").value,
-    count: billingCount || 1,
-    model: billingModel || getModelName(),
-  });
-  billingState.lastDirectConfig = platform;
-  const directRequest = {
-    ...request,
-    headers: {
-      ...sanitizePlatformBrowserHeaders(request.headers || {}),
-      Authorization: `Bearer ${platform.apiKey}`,
-    },
-  };
-  return fetchDirectImageRequest(platform.endpoint || endpoint, directRequest);
-}
-
-async function readPlatformDirectConfig({ signal, mode, count, model }) {
-  const configResponse = await fetch("/api/billing/platform-direct-config", {
+async function fetchPlatformServerImageRequest(endpoint, request) {
+  const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
+  const response = await apiFetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode, count, model }),
+    body: JSON.stringify({
+      mode: billingMode || $("#modeSelect").value,
+      count: billingCount || 1,
+      model: billingModel || getModelName(),
+      requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
+      request: {
+        ...serverRequest,
+        headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
+      },
+    }),
     signal,
   });
-  const platform = await configResponse.json().catch(() => ({}));
-  if (!configResponse.ok) {
-    throw new Error(platform?.error?.message || platform?.message || `推荐 API 配置读取失败：${configResponse.status}`);
-  }
-  return platform || {};
+  updateBillingFromGenerationResponse(response);
+  return response;
 }
 
 function fetchDirectImageRequest(endpoint, request) {
@@ -1904,15 +1884,17 @@ function deleteConfigHistory(id) {
 
 async function loadBilling() {
   try {
-    const configResponse = await fetch("/api/billing/config");
+    const configResponse = await apiFetch("/api/billing/config");
     if (configResponse.ok) {
       const info = await configResponse.json();
       billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
       billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
       billingState.platformEnabled = Boolean(info.platformEnabled);
+      billingState.rechargeUrl = info.rechargeUrl || billingState.rechargeUrl;
     }
-    const meResponse = await fetch("/api/billing/me");
+    const meResponse = await apiFetch("/api/auth/me");
     if (meResponse.ok) applyBillingDashboard(await meResponse.json());
+    if (billingState.authenticated) await loadBillingLedger();
   } catch (error) {
     console.warn("充值信息读取失败", error);
   }
@@ -1920,12 +1902,25 @@ async function loadBilling() {
 
 async function refreshBilling() {
   try {
-    const response = await fetch("/api/billing/me");
+    const response = await apiFetch("/api/auth/me");
     if (!response.ok) return;
     applyBillingDashboard(await response.json());
+    if (billingState.authenticated) await loadBillingLedger({ silent: true });
     renderWallet();
   } catch (error) {
     console.warn("余额刷新失败", error);
+  }
+}
+
+async function loadBillingLedger(options = {}) {
+  try {
+    const response = await apiFetch("/api/billing/ledger");
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "流水读取失败");
+    billingState.ledger = Array.isArray(payload.ledger) ? payload.ledger : [];
+  } catch (error) {
+    billingState.ledger = [];
+    if (!options.silent) console.warn("流水读取失败", error);
   }
 }
 
@@ -2051,13 +2046,15 @@ async function sendSiteHeartbeat() {
 }
 
 function applyBillingDashboard(payload) {
-  billingState.customerId = payload.customerId || payload.customer?.id || billingState.customerId;
-  billingState.balanceCents = Number(payload.customer?.balanceCents || 0);
-  billingState.orders = Array.isArray(payload.orders) ? payload.orders : [];
-  billingState.usage = Array.isArray(payload.usage) ? payload.usage : [];
-  billingState.redemptions = Array.isArray(payload.redemptions) ? payload.redemptions : [];
+  const user = payload.user || payload.customer || null;
+  billingState.authenticated = Boolean(payload.authenticated || user);
+  billingState.customerId = user?.id ? String(user.id) : "";
+  billingState.email = user?.email || "";
+  billingState.balanceCents = Number(user?.balanceCents || 0);
+  if (!billingState.authenticated) billingState.ledger = [];
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
+  billingState.rechargeUrl = payload.rechargeUrl || billingState.rechargeUrl;
   billingState.lastDirectConfig = {
     ...(billingState.lastDirectConfig || {}),
     priceCents: billingState.priceCents,
@@ -2065,115 +2062,150 @@ function applyBillingDashboard(payload) {
 }
 
 function renderWallet() {
-  $("#walletBalance").textContent = `余额 ${formatMoney(billingState.balanceCents)} 元`;
-  $("#walletPanelBalance").textContent = `${formatMoney(billingState.balanceCents)} 元`;
+  $("#walletBalance").textContent = billingState.authenticated ? `余额 ${formatMoney(billingState.balanceCents)} 元` : "登录钱包";
+  $("#walletPanelBalance").textContent = billingState.authenticated ? `${formatMoney(billingState.balanceCents)} 元` : "--";
   $("#walletPrice").textContent = formatPlatformPriceLabel(billingState.priceCents);
   updateRecommendedApiLabels();
-  $("#walletCustomerId").textContent = billingState.customerId ? `用户 ${billingState.customerId.slice(-8)}` : "";
-  renderRedemptionList();
-  renderUsageList();
+  $("#walletCustomerId").textContent = billingState.authenticated ? billingState.email || `用户 ${billingState.customerId}` : "未登录";
+  $("#walletAuthBox").hidden = billingState.authenticated;
+  $("#walletAccountBox").hidden = !billingState.authenticated;
+  const rechargeLink = $(".wallet-recharge-link");
+  if (rechargeLink) rechargeLink.href = billingState.rechargeUrl || "https://api2img.shop/";
+  renderLedgerList();
 }
 
-function renderUsageList() {
-  const list = $("#usageList");
-  if (!billingState.usage.length) {
-    list.innerHTML = `<div class="log-empty">还没有扣费记录。</div>`;
+function renderLedgerList() {
+  const list = $("#ledgerList");
+  if (!list) return;
+  if (!billingState.authenticated) {
+    list.innerHTML = `<div class="log-empty">登录后显示余额流水。</div>`;
     return;
   }
-  list.innerHTML = billingState.usage
+  if (!billingState.ledger.length) {
+    list.innerHTML = `<div class="log-empty">还没有余额流水。</div>`;
+    return;
+  }
+  list.innerHTML = billingState.ledger
     .map(
       (item) => `
         <article class="wallet-item">
           <div>
-            <strong>-${formatMoney(item.amountCents)} 元</strong>
-            <span>${Number(item.imageCount || 0)} 张 · ${escapeHtml(modeLabel(item.mode))}</span>
+            <strong>${formatSignedMoney(item.amountCents)} 元</strong>
+            <span>${escapeHtml(walletLedgerTypeLabel(item.type))}${item.note ? ` · ${escapeHtml(item.note)}` : ""}</span>
           </div>
-          <small>${escapeHtml(item.model || "-")} · ${formatWalletTime(item.createdAt)}</small>
+          <small>余额 ${formatMoney(item.balanceAfterCents)} 元 · ${formatWalletTime(item.createdAt)}</small>
         </article>
       `,
     )
     .join("");
 }
 
-function renderRedemptionList() {
-  const list = $("#redemptionList");
-  if (!billingState.redemptions.length) {
-    list.innerHTML = `<div class="log-empty">还没有兑换记录。</div>`;
-    return;
-  }
-  list.innerHTML = billingState.redemptions
-    .map(
-      (item) => `
-        <article class="wallet-item">
-          <div>
-            <strong>+${formatMoney(item.amountCents)} 元</strong>
-            <span>${escapeHtml(item.label || "兑换码充值")}${item.contactEmail ? ` · ${escapeHtml(item.contactEmail)}` : ""}</span>
-          </div>
-          <small>${escapeHtml(item.code || "-")} · ${formatWalletTime(item.createdAt)}</small>
-        </article>
-      `,
-    )
-    .join("");
-}
-
-async function redeemCode() {
-  const email = normalizeContactEmail($("#redeemEmailInput").value);
-  const code = $("#redeemCodeInput").value.trim();
+async function sendLoginCode() {
+  const email = normalizeContactEmail($("#loginEmailInput").value);
   if (!email) {
-    showToast("请输入购买时填写的邮箱");
-    $("#redeemEmailInput").focus();
+    showToast("请输入有效邮箱");
+    $("#loginEmailInput").focus();
     return;
   }
-  if (!code) {
-    showToast("请输入兑换码");
-    $("#redeemCodeInput").focus();
-    return;
-  }
+  const button = $("#sendLoginCodeButton");
+  button.disabled = true;
+  button.textContent = "发送中...";
   try {
-    const response = await fetch("/api/billing/redeem", {
+    const response = await apiFetch("/api/auth/send-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "验证码发送失败");
+    $("#loginEmailInput").value = email;
+    showToast("验证码已发送，请查看邮箱");
+    $("#loginCodeInput").focus();
+  } catch (error) {
+    showToast(error.message || "验证码发送失败");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="rotate"></i><span>发送验证码</span>`;
+    renderIcons();
+  }
+}
+
+async function verifyLoginCode() {
+  const email = normalizeContactEmail($("#loginEmailInput").value);
+  const code = $("#loginCodeInput").value.trim();
+  if (!email) {
+    showToast("请输入有效邮箱");
+    $("#loginEmailInput").focus();
+    return;
+  }
+  if (!/^\d{6}$/.test(code)) {
+    showToast("请输入 6 位验证码");
+    $("#loginCodeInput").focus();
+    return;
+  }
+  const button = $("#loginButton");
+  button.disabled = true;
+  button.textContent = "登录中...";
+  try {
+    const response = await apiFetch("/api/auth/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, code }),
     });
-    const payload = await response.json();
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || "登录失败");
+    applyBillingDashboard({ ...payload, authenticated: true });
+    await loadBillingLedger({ silent: true });
+    $("#loginCodeInput").value = "";
+    renderWallet();
+    showToast("登录成功，余额已同步");
+  } catch (error) {
+    showToast(error.message || "登录失败");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="check"></i><span>登录 / 注册</span>`;
+    renderIcons();
+  }
+}
+
+async function logoutWallet() {
+  try {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  } catch {}
+  billingState.authenticated = false;
+  billingState.customerId = "";
+  billingState.email = "";
+  billingState.balanceCents = 0;
+  billingState.ledger = [];
+  renderWallet();
+  showToast("已退出登录");
+}
+
+async function redeemCode() {
+  const code = $("#redeemCodeInput").value.trim();
+  if (!billingState.authenticated) {
+    showToast("请先登录钱包再兑换充值码");
+    $("#loginEmailInput").focus();
+    return;
+  }
+  if (!code) {
+    showToast("请输入充值码");
+    $("#redeemCodeInput").focus();
+    return;
+  }
+  try {
+    const response = await apiFetch("/api/billing/redeem", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "兑换失败");
-    $("#redeemEmailInput").value = email;
     $("#redeemCodeInput").value = "";
     await refreshBilling();
     showToast(`兑换成功，已到账 ${formatMoney(payload.redemption?.amountCents || 0)} 元`);
   } catch (error) {
     showToast(error.message || "兑换失败");
-  }
-}
-
-async function restoreBalance() {
-  const email = normalizeContactEmail($("#restoreEmailInput").value);
-  const code = $("#restoreCodeInput").value.trim();
-  if (!email) {
-    showToast("请输入购买时填写的邮箱");
-    $("#restoreEmailInput").focus();
-    return;
-  }
-  if (!code) {
-    showToast("请输入邮件里的兑换码");
-    $("#restoreCodeInput").focus();
-    return;
-  }
-  try {
-    const response = await fetch("/api/billing/restore", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, code }),
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error?.message || "找回失败");
-    applyBillingDashboard(payload);
-    renderWallet();
-    $("#restoreEmailInput").value = email;
-    $("#restoreCodeInput").value = "";
-    showToast(`余额已找回：${formatMoney(payload.customer?.balanceCents || 0)} 元`);
-  } catch (error) {
-    showToast(error.message || "找回失败");
   }
 }
 
@@ -2213,15 +2245,15 @@ async function unlockCodeAdminPanel() {
   button.textContent = "验证中...";
   setCodeAdminAuthStatus("正在验证管理员密码");
   try {
-    const response = await fetch("/api/billing/admin/platform", {
+    const response = await apiFetch("/api/admin/redeem-codes", {
       headers: { "X-Admin-Password": password },
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "管理员密码不正确");
     localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
     codeAdminState.authenticated = true;
-    hydratePlatformAdminForm(payload.platform || {});
-    setPlatformAdminStatus(payload.platform?.enabled ? "已启用" : "未启用");
+    hydratePlatformAdminForm({});
+    setPlatformAdminStatus("请在 PHP 配置文件中维护");
     applyCodeAdminAuthState();
     selectCodeAdminSection(codeAdminState.pendingSection || "codes");
     await loadSiteStats({ silent: true });
@@ -2312,18 +2344,13 @@ async function generateRedeemCodesFromPanel() {
 
   try {
     const amountCents = Math.round(amountYuan * 100);
-    const codes = Array.from({ length: count }, () => ({
-      code: makeRedeemCode(),
-      amountCents,
-      label,
-    }));
-    const response = await fetch("/api/billing/admin/codes", {
+    const response = await apiFetch("/api/admin/redeem-codes", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Admin-Password": password,
       },
-      body: JSON.stringify({ codes }),
+      body: JSON.stringify({ amountCents, count, label }),
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `生成失败：HTTP ${response.status}`);
@@ -2377,77 +2404,21 @@ function setCodeAdminStatus(text) {
 }
 
 async function loadPlatformAdminConfig(options = {}) {
-  const password = $("#codeAdminPassword").value.trim();
-  if (!password) {
-    if (!options.silent) showToast("请输入管理密码");
-    return;
-  }
-  setPlatformAdminStatus("读取中");
-  try {
-    const response = await fetch("/api/billing/admin/platform", {
-      headers: { "X-Admin-Password": password },
-    });
-    const payload = await readJsonResponse(response);
-    if (!response.ok) throw new Error(payload?.error?.message || "读取推荐 API 配置失败");
-    hydratePlatformAdminForm(payload.platform || {});
-    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
-    setPlatformAdminStatus(payload.platform?.enabled ? "已启用" : "未启用");
-    if (!options.silent) showToast("已读取推荐 API 配置");
-  } catch (error) {
-    setPlatformAdminStatus("读取失败");
-    if (!options.silent) showToast(error.message || "读取失败");
-  }
+  hydratePlatformAdminForm({});
+  setPlatformAdminStatus("推荐 API 在 php-api/config/config.local.php 中配置");
+  if (!options.silent) showToast("推荐 API 密钥不再通过网页维护，请改服务器配置文件");
 }
 
 async function savePlatformAdminConfig() {
-  const password = $("#codeAdminPassword").value.trim();
-  if (!password) {
-    showToast("请输入管理密码");
-    return;
-  }
-
-  const settings = readPlatformAdminForm();
-  if (!settings.textEndpoint || !settings.apiKey) {
-    showToast("请填写文生图接口和 API Key");
-    return;
-  }
-
-  const button = $("#savePlatformConfigButton");
-  button.disabled = true;
-  button.textContent = "保存中...";
-  setPlatformAdminStatus("保存中");
-  try {
-    const response = await fetch("/api/billing/admin/platform", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Admin-Password": password,
-      },
-      body: JSON.stringify(settings),
-    });
-    const payload = await readJsonResponse(response);
-    if (!response.ok) throw new Error(payload?.error?.message || "保存推荐 API 配置失败");
-    localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
-    hydratePlatformAdminForm(payload.platform || settings);
-    await loadBilling();
-    renderWallet();
-    setPlatformAdminStatus(payload.platform?.enabled ? "已保存并启用" : "已保存");
-    showToast("推荐 API 配置已保存");
-  } catch (error) {
-    setPlatformAdminStatus("保存失败");
-    showToast(error.message || "保存失败");
-  } finally {
-    button.disabled = false;
-    button.innerHTML = `<i data-icon="check"></i><span>保存推荐 API</span>`;
-    renderIcons();
-  }
+  setPlatformAdminStatus("请改服务器配置文件");
+  showToast("为避免密钥泄露，推荐 API 请在 PHP 配置文件中维护");
 }
 
 function hydratePlatformAdminForm(platform) {
   $("#platformTextEndpoint").value = platform.textEndpoint || "";
   $("#platformEditEndpoint").value = platform.editEndpoint || "";
   $("#platformApiKey").value = "";
-  $("#platformApiKey").placeholder = platform.apiKeyConfigured ? "已配置，留空表示保持不变" : "sk-...";
+  $("#platformApiKey").placeholder = "在 php-api/config/config.local.php 中配置";
   $("#platformPriceYuan").value = formatCodeAdminAmount((Number(platform.priceCents || billingState.priceCents) || 10) / 100);
   billingState.upstreamCostCents = Number(platform.upstreamCostCents || billingState.upstreamCostCents || 0);
 }
@@ -2529,6 +2500,19 @@ async function readJsonResponse(response) {
   }
 }
 
+function apiUrl(path) {
+  const value = String(path || "");
+  if (/^https?:\/\//i.test(value)) return value;
+  return `${API_BASE}${value.startsWith("/") ? value : `/${value}`}`;
+}
+
+function apiFetch(path, options = {}) {
+  return fetch(apiUrl(path), {
+    credentials: "include",
+    ...options,
+  });
+}
+
 function updateApiProviderUi() {
   const usingPlatform = isPlatformApiSelected();
   $("#settingsPanel").classList.toggle("platform-selected", usingPlatform);
@@ -2546,6 +2530,22 @@ function updateBillingFromGenerationResponse(response) {
     billingState.balanceCents = balance;
     renderWallet();
   }
+}
+
+function formatSignedMoney(cents) {
+  const value = Number(cents || 0);
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${formatMoney(value)}`;
+}
+
+function walletLedgerTypeLabel(type) {
+  const labels = {
+    redeem: "充值码到账",
+    charge: "推荐 API 扣费",
+    refund: "生成失败退款",
+    adjust: "余额调整",
+  };
+  return labels[type] || "余额变动";
 }
 
 function formatMoney(cents) {

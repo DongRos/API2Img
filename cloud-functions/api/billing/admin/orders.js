@@ -1,11 +1,11 @@
-import { guarded, listAdminOrders, optionsResponse } from "../../../lib/billing-edgeone.js";
+import { deprecatedResponse, optionsResponse } from "../../../lib/deprecated-response.js";
 
 export async function onRequestOptions() {
   return optionsResponse();
 }
 
-export async function onRequestGet(context) {
-  return guarded(listAdminOrders, context);
+export async function onRequestGet() {
+  return deprecatedResponse("旧订单后台接口已停用。", "admin_orders_deprecated");
 }
 
 export async function onRequest() {

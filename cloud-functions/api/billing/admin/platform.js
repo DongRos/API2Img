@@ -1,15 +1,15 @@
-import { getPlatformAdminConfig, guarded, optionsResponse, updatePlatformAdminConfig } from "../../../lib/billing-edgeone.js";
+import { deprecatedResponse, optionsResponse } from "../../../lib/deprecated-response.js";
 
 export async function onRequestOptions() {
   return optionsResponse();
 }
 
-export async function onRequestGet(context) {
-  return guarded(getPlatformAdminConfig, context);
+export async function onRequestGet() {
+  return deprecatedResponse("推荐 API 配置已迁移到 PHP 服务器配置文件。", "admin_platform_deprecated");
 }
 
-export async function onRequestPost(context) {
-  return guarded(updatePlatformAdminConfig, context);
+export async function onRequestPost() {
+  return deprecatedResponse("推荐 API 配置已迁移到 PHP 服务器配置文件。", "admin_platform_deprecated");
 }
 
 export async function onRequest() {

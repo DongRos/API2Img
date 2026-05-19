@@ -29,6 +29,10 @@ const config = {
   routes: [
     { src: "^/api/proxy-image/?$", methods: ["POST", "OPTIONS"] },
     { src: "^/api/cache-image/?$", methods: ["POST", "OPTIONS"] },
+    { src: "^/api/health/?$", methods: ["GET", "OPTIONS"] },
+    { src: "^/api/auth/(.*)$", methods: ["GET", "POST", "OPTIONS"] },
+    { src: "^/api/generate/(.*)$", methods: ["POST", "OPTIONS"] },
+    { src: "^/api/admin/(.*)$", methods: ["GET", "POST", "OPTIONS"] },
     { src: "^/api/billing/(.*)$", methods: ["GET", "POST", "OPTIONS"] },
     { src: "^/api/site/(.*)$", methods: ["GET", "POST", "OPTIONS"] },
     { handle: "filesystem" },

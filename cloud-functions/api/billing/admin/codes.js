@@ -1,15 +1,15 @@
-import { createRedeemCodes, guarded, listRedeemCodes, optionsResponse } from "../../../lib/billing-edgeone.js";
+import { deprecatedResponse, optionsResponse } from "../../../lib/deprecated-response.js";
 
 export async function onRequestOptions() {
   return optionsResponse();
 }
 
-export async function onRequestGet(context) {
-  return guarded(listRedeemCodes, context);
+export async function onRequestGet() {
+  return deprecatedResponse("旧兑换码管理接口已停用，请使用 /api/admin/redeem-codes。", "admin_codes_deprecated");
 }
 
-export async function onRequestPost(context) {
-  return guarded(createRedeemCodes, context);
+export async function onRequestPost() {
+  return deprecatedResponse("旧兑换码管理接口已停用，请使用 /api/admin/redeem-codes。", "admin_codes_deprecated");
 }
 
 export async function onRequest() {

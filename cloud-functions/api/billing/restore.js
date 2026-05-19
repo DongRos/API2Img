@@ -1,11 +1,26 @@
-import { guarded, optionsResponse, restoreBalance } from "../../lib/billing-edgeone.js";
+import { optionsResponse } from "../../lib/php-api-proxy.js";
 
 export async function onRequestOptions() {
   return optionsResponse();
 }
 
-export async function onRequestPost(context) {
-  return guarded(restoreBalance, context);
+export async function onRequestPost() {
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      error: {
+        code: "restore_deprecated",
+        message: "余额找回已升级为邮箱验证码登录，请登录同一邮箱查看余额。",
+      },
+    }),
+    {
+      status: 410,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    },
+  );
 }
 
 export async function onRequest() {
