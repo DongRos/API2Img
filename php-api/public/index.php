@@ -108,6 +108,14 @@ function route_request(PDO $pdo, array $config): void
         admin_list_redeem_codes($pdo, $config);
         return;
     }
+    if ($method === 'GET' && $path === '/api/admin/custom-api') {
+        admin_get_custom_api($pdo, $config);
+        return;
+    }
+    if ($method === 'POST' && $path === '/api/admin/custom-api') {
+        admin_save_custom_api($pdo, $config);
+        return;
+    }
 
     error_response('接口不存在', 404, 'not_found');
 }
@@ -786,6 +794,191 @@ function admin_list_redeem_codes(PDO $pdo, array $config): void
         ];
     }
     json_response(['ok' => true, 'codes' => $codes]);
+}
+
+function admin_get_custom_api(PDO $pdo, array $config): void
+{
+    require_admin($config);
+    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $current = normalize_custom_api_config($settings['current'] ?? []);
+    $history = normalize_custom_api_history($settings['history'] ?? []);
+    json_response([
+        'ok' => true,
+        'config' => $current,
+        'history' => $history,
+    ]);
+}
+
+function admin_save_custom_api(PDO $pdo, array $config): void
+{
+    require_admin($config);
+    $payload = read_json();
+    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $current = normalize_custom_api_config($payload);
+    if ($current['enabled'] && ($current['textEndpoint'] === '' || $current['apiKey'] === '')) {
+        throw new HttpError('启用自定义 API 调试前，请填写文生图 API URL 和 API Key', 400, 'custom_api_incomplete');
+    }
+
+    $history = normalize_custom_api_history($settings['history'] ?? []);
+    if ($current['textEndpoint'] !== '' || $current['editEndpoint'] !== '' || $current['apiKey'] !== '') {
+        $snapshot = $current;
+        $snapshot['enabled'] = false;
+        $snapshot['id'] = $snapshot['id'] ?: random_token(8);
+        $snapshot['title'] = custom_api_config_title($snapshot);
+        $snapshot['updatedAt'] = time() * 1000;
+        $key = custom_api_history_key($snapshot);
+        $filtered = [];
+        foreach ($history as $item) {
+            if (custom_api_history_key($item) !== $key) {
+                $filtered[] = $item;
+            }
+        }
+        $history = array_slice(array_merge([$snapshot], $filtered), 0, 12);
+    }
+
+    $current['updatedAt'] = time() * 1000;
+    write_admin_setting_json($pdo, 'custom_api_debug', [
+        'current' => $current,
+        'history' => $history,
+    ]);
+    json_response([
+        'ok' => true,
+        'config' => $current,
+        'history' => $history,
+    ]);
+}
+
+function ensure_admin_settings_table(PDO $pdo): void
+{
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS admin_settings (
+          setting_key VARCHAR(80) NOT NULL,
+          setting_value MEDIUMTEXT NOT NULL,
+          updated_at DATETIME NOT NULL,
+          PRIMARY KEY (setting_key)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+}
+
+function read_admin_setting_json(PDO $pdo, string $key): array
+{
+    ensure_admin_settings_table($pdo);
+    $stmt = $pdo->prepare('SELECT setting_value FROM admin_settings WHERE setting_key = ? LIMIT 1');
+    $stmt->execute([$key]);
+    $raw = (string)($stmt->fetchColumn() ?: '');
+    if ($raw === '') {
+        return [];
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function write_admin_setting_json(PDO $pdo, string $key, array $value): void
+{
+    ensure_admin_settings_table($pdo);
+    $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $stmt = $pdo->prepare(
+        'INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+         VALUES (?, ?, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = UTC_TIMESTAMP()'
+    );
+    $stmt->execute([$key, $json]);
+}
+
+function normalize_custom_api_config(array $value): array
+{
+    $requestFormat = (string)($value['requestFormat'] ?? 'openai');
+    if (!in_array($requestFormat, ['openai', 'json'], true)) {
+        $requestFormat = 'openai';
+    }
+    $transportMode = (string)($value['transportMode'] ?? 'direct');
+    if (!in_array($transportMode, ['direct', 'proxy'], true)) {
+        $transportMode = 'direct';
+    }
+    return [
+        'id' => preg_replace('/[^\w-]/', '', (string)($value['id'] ?? '')),
+        'enabled' => (bool)($value['enabled'] ?? false),
+        'title' => trim((string)($value['title'] ?? '')),
+        'textEndpoint' => sanitize_custom_api_url((string)($value['textEndpoint'] ?? '')),
+        'editEndpoint' => sanitize_custom_api_url((string)($value['editEndpoint'] ?? '')),
+        'apiKey' => trim((string)($value['apiKey'] ?? '')),
+        'requestFormat' => $requestFormat,
+        'transportMode' => $transportMode,
+        'customTemplate' => custom_api_template((string)($value['customTemplate'] ?? '')),
+        'modelName' => substr(trim((string)($value['modelName'] ?? 'gpt-image-2')), 0, 80) ?: 'gpt-image-2',
+        'updatedAt' => (int)($value['updatedAt'] ?? 0),
+    ];
+}
+
+function normalize_custom_api_history($value): array
+{
+    if (!is_array($value)) {
+        return [];
+    }
+    $items = [];
+    foreach ($value as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $clean = normalize_custom_api_config($item);
+        $clean['enabled'] = false;
+        if ($clean['id'] === '') {
+            $clean['id'] = random_token(8);
+        }
+        if ($clean['title'] === '') {
+            $clean['title'] = custom_api_config_title($clean);
+        }
+        if ($clean['textEndpoint'] !== '' || $clean['editEndpoint'] !== '' || $clean['apiKey'] !== '') {
+            $items[] = $clean;
+        }
+    }
+    return array_slice($items, 0, 12);
+}
+
+function sanitize_custom_api_url(string $url): string
+{
+    $url = trim($url);
+    if ($url === '') {
+        return '';
+    }
+    if (!preg_match('#^https?://#i', $url) || strlen($url) > 500) {
+        throw new HttpError('API URL 必须是 http 或 https 地址', 400, 'invalid_custom_api_url');
+    }
+    return $url;
+}
+
+function custom_api_template(string $template): string
+{
+    $template = trim($template);
+    if ($template === '') {
+        return '';
+    }
+    if (strlen($template) > 20000) {
+        throw new HttpError('自定义 JSON 模板过长', 400, 'custom_template_too_long');
+    }
+    return $template;
+}
+
+function custom_api_config_title(array $item): string
+{
+    $endpoint = (string)($item['textEndpoint'] ?: $item['editEndpoint']);
+    if ($endpoint === '') {
+        return (string)($item['modelName'] ?? 'API Config');
+    }
+    $host = parse_url($endpoint, PHP_URL_HOST);
+    return $host ? $host : preg_replace('#^https?://#i', '', explode('/', $endpoint)[0]);
+}
+
+function custom_api_history_key(array $item): string
+{
+    return implode('|', [
+        (string)($item['textEndpoint'] ?? ''),
+        (string)($item['editEndpoint'] ?? ''),
+        hash('sha256', (string)($item['apiKey'] ?? '')),
+        (string)($item['requestFormat'] ?? 'openai'),
+        (string)($item['transportMode'] ?? 'direct'),
+        (string)($item['modelName'] ?? 'gpt-image-2'),
+    ]);
 }
 
 function require_admin(array $config): void

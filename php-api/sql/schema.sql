@@ -115,3 +115,10 @@ CREATE TABLE IF NOT EXISTS admin_logs (
   PRIMARY KEY (id),
   KEY idx_admin_logs_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admin_settings (
+  setting_key VARCHAR(80) NOT NULL,
+  setting_value MEDIUMTEXT NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (setting_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

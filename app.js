@@ -137,6 +137,12 @@ const codeAdminState = {
   activeSection: "codes",
   pendingSection: "codes",
 };
+const customDebugState = {
+  enabled: false,
+  loaded: false,
+  history: [],
+  updatedAt: 0,
+};
 
 let toastTimer = null;
 let progressTimer = null;
@@ -207,14 +213,14 @@ function fillControls() {
 }
 
 function bindEvents() {
-  $("#settingsToggle").addEventListener("click", () => $("#settingsPanel").classList.toggle("open"));
-  $("#closeSettings").addEventListener("click", () => $("#settingsPanel").classList.remove("open"));
+  $("#settingsToggle")?.addEventListener("click", () => $("#settingsPanel")?.classList.toggle("open"));
+  $("#closeSettings")?.addEventListener("click", () => $("#settingsPanel")?.classList.remove("open"));
   $("#walletToggle").addEventListener("click", () => {
     $("#walletPanel").classList.toggle("open");
     refreshBilling();
   });
   $("#closeWallet").addEventListener("click", () => $("#walletPanel").classList.remove("open"));
-  $("#apiProviderSelect").addEventListener("change", onApiProviderChange);
+  $("#apiProviderSelect")?.addEventListener("change", onApiProviderChange);
   $("#sendLoginCodeButton").addEventListener("click", sendLoginCode);
   $("#loginButton").addEventListener("click", verifyLoginCode);
   $("#logoutButton").addEventListener("click", logoutWallet);
@@ -227,7 +233,7 @@ function bindEvents() {
       redeemCode();
     }
   });
-  $("#saveConfigButton").addEventListener("click", saveConfigFromForm);
+  $("#saveConfigButton")?.addEventListener("click", saveConfigFromForm);
   $("#themeButton").addEventListener("click", toggleTheme);
   $("#uploadButton").addEventListener("click", () => $("#imageInput").click());
   $("#imageInput").addEventListener("change", onReferenceFiles);
@@ -270,12 +276,16 @@ function bindEvents() {
   $("#codeAdminAmount").addEventListener("input", syncCodeAdminLabel);
   $("#loadPlatformConfigButton").addEventListener("click", loadPlatformAdminConfig);
   $("#savePlatformConfigButton").addEventListener("click", savePlatformAdminConfig);
+  $("#loadCustomApiConfigButton")?.addEventListener("click", () => loadCustomApiAdminConfig({ silent: false }));
+  $("#saveCustomApiConfigButton")?.addEventListener("click", saveCustomApiAdminConfig);
+  $("#adminCustomRequestFormat")?.addEventListener("change", updateAdminCustomTemplateVisibility);
+  $("#adminCustomHistoryList")?.addEventListener("click", onAdminCustomHistoryClick);
   $("#cancelGenerateButton").addEventListener("click", cancelGeneration);
   $("#generationProgress").addEventListener("click", onProgressClick);
   $("#ratioSelect").addEventListener("change", syncSizeOptions);
-  $("#multiImageMode").addEventListener("change", saveMultiImageMode);
-  $("#requestFormat").addEventListener("change", updateTemplateVisibility);
-  $("#configHistoryList").addEventListener("click", onConfigHistoryClick);
+  $("#multiImageMode")?.addEventListener("change", saveMultiImageMode);
+  $("#requestFormat")?.addEventListener("change", updateTemplateVisibility);
+  $("#configHistoryList")?.addEventListener("click", onConfigHistoryClick);
   $("#modelName").addEventListener("change", onModelSelect);
   $("#closeDetail").addEventListener("click", closeDetail);
   $("#doneDetail").addEventListener("click", closeDetail);
@@ -359,7 +369,7 @@ async function generateImages(extra = {}) {
   const endpoint = endpointInfo.endpoint;
   if (!endpoint) {
     if (usePlatformApi) $("#walletPanel").classList.add("open");
-    else $("#settingsPanel").classList.add("open");
+    else openCustomApiAdminSection();
     showToast(endpointInfo.message || "请先配置 API URL");
     return;
   }
@@ -377,7 +387,7 @@ async function generateImages(extra = {}) {
     ratio: $("#ratioSelect").value,
     size: $("#sizeSelect").value,
     count: Number($("#countSelect").value),
-    multiImageMode: $("#multiImageMode").value,
+    multiImageMode: "single",
     quality: $("#qualitySelect").value,
     seed: $("#seedInput").value.trim(),
     model: getModelName(),
@@ -463,8 +473,9 @@ async function requestImages(endpoint, options) {
   endpoint = normalizeEndpointBeforeRequest(endpoint, options);
   const headers = {};
   if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
+  const requestFormat = isPlatformApiSelected() ? "openai" : config.requestFormat;
 
-  if (config.requestFormat === "json") {
+  if (requestFormat === "json") {
     headers["Content-Type"] = "application/json";
     const body = renderTemplate(config.customTemplate || defaultTemplate, options);
     return sendAndParseImageRequest(endpoint, { method: "POST", headers, bodyType: "json", body, signal: options.abortSignal }, options, {
@@ -515,7 +526,8 @@ function resolveEndpointForMode(mode) {
       const corrected = inferEditEndpoint(editEndpoint);
       if (corrected && corrected !== editEndpoint) {
         config.editEndpoint = corrected;
-        $("#editEndpoint").value = corrected;
+        if ($("#editEndpoint")) $("#editEndpoint").value = corrected;
+        if ($("#adminCustomEditEndpoint")) $("#adminCustomEditEndpoint").value = corrected;
         saveActiveConfig();
         return {
           endpoint: corrected,
@@ -529,7 +541,8 @@ function resolveEndpointForMode(mode) {
     const inferred = inferEditEndpoint(config.textEndpoint);
     if (inferred) {
       config.editEndpoint = inferred;
-      $("#editEndpoint").value = inferred;
+      if ($("#editEndpoint")) $("#editEndpoint").value = inferred;
+      if ($("#adminCustomEditEndpoint")) $("#adminCustomEditEndpoint").value = inferred;
       saveActiveConfig();
       return {
         endpoint: inferred,
@@ -900,7 +913,7 @@ function getSingleRequestConcurrency() {
 
 function shouldUseSingleImageRequests(options, desired) {
   if (desired <= PLATFORM_MAX_BATCH_REQUEST_COUNT) return false;
-  return options.apiProvider === "platform" || options.multiImageMode === "single";
+  return true;
 }
 
 function isFatalImageError(message) {
@@ -1825,21 +1838,23 @@ function loadConfig() {
     }
     if (!saved.rememberKey) config.apiKey = "";
     if (saved.modelName) ensureModelOption(saved.modelName);
+    config.apiProvider = "platform";
+    config.multiImageMode = "single";
   } catch {
     showToast("配置读取失败");
   }
 }
 
 function hydrateConfig() {
-  $("#textEndpoint").value = config.textEndpoint || "";
-  $("#editEndpoint").value = config.editEndpoint || "";
-  $("#apiKey").value = config.apiKey || "";
-  $("#rememberKey").checked = Boolean(config.rememberKey);
-  $("#requestFormat").value = config.requestFormat || "openai";
-  $("#transportMode").value = config.transportMode || "direct";
-  $("#multiImageMode").value = config.multiImageMode || "single";
-  $("#apiProviderSelect").value = config.apiProvider || "platform";
-  $("#customTemplate").value = config.customTemplate || defaultTemplate;
+  if ($("#textEndpoint")) $("#textEndpoint").value = config.textEndpoint || "";
+  if ($("#editEndpoint")) $("#editEndpoint").value = config.editEndpoint || "";
+  if ($("#apiKey")) $("#apiKey").value = config.apiKey || "";
+  if ($("#rememberKey")) $("#rememberKey").checked = Boolean(config.rememberKey);
+  if ($("#requestFormat")) $("#requestFormat").value = config.requestFormat || "openai";
+  if ($("#transportMode")) $("#transportMode").value = config.transportMode || "direct";
+  if ($("#multiImageMode")) $("#multiImageMode").value = "single";
+  if ($("#apiProviderSelect")) $("#apiProviderSelect").value = config.apiProvider || "platform";
+  if ($("#customTemplate")) $("#customTemplate").value = config.customTemplate || defaultTemplate;
   ensureModelOption(config.modelName || "gpt-image-2");
   $("#modelName").value = config.modelName || "gpt-image-2";
   updateTemplateVisibility();
@@ -1847,16 +1862,16 @@ function hydrateConfig() {
 }
 
 function saveConfigFromForm() {
-  config.textEndpoint = $("#textEndpoint").value.trim();
-  config.editEndpoint = $("#editEndpoint").value.trim();
+  config.textEndpoint = $("#textEndpoint")?.value.trim() || "";
+  config.editEndpoint = $("#editEndpoint")?.value.trim() || "";
   normalizeConfiguredEditEndpoint();
-  config.apiKey = $("#apiKey").value.trim();
-  config.rememberKey = $("#rememberKey").checked;
-  config.requestFormat = $("#requestFormat").value;
-  config.transportMode = $("#transportMode").value;
-  config.multiImageMode = $("#multiImageMode").value;
-  config.apiProvider = $("#apiProviderSelect").value;
-  config.customTemplate = $("#customTemplate").value.trim() || defaultTemplate;
+  config.apiKey = $("#apiKey")?.value.trim() || "";
+  config.rememberKey = Boolean($("#rememberKey")?.checked);
+  config.requestFormat = $("#requestFormat")?.value || "openai";
+  config.transportMode = $("#transportMode")?.value || "direct";
+  config.multiImageMode = "single";
+  config.apiProvider = isCustomApiDebugEnabled() ? "custom" : "platform";
+  config.customTemplate = $("#customTemplate")?.value.trim() || defaultTemplate;
   config.modelName = getModelName();
   delete config.id;
   delete config.title;
@@ -1871,17 +1886,18 @@ function normalizeConfiguredEditEndpoint() {
   const corrected = inferEditEndpoint(config.editEndpoint);
   if (corrected && corrected !== config.editEndpoint) {
     config.editEndpoint = corrected;
-    $("#editEndpoint").value = corrected;
+    if ($("#editEndpoint")) $("#editEndpoint").value = corrected;
+    if ($("#adminCustomEditEndpoint")) $("#adminCustomEditEndpoint").value = corrected;
   }
 }
 
 function saveMultiImageMode() {
-  config.multiImageMode = $("#multiImageMode").value;
+  config.multiImageMode = "single";
   saveActiveConfig();
 }
 
 function onApiProviderChange() {
-  config.apiProvider = $("#apiProviderSelect").value;
+  config.apiProvider = isCustomApiDebugEnabled() ? "custom" : "platform";
   saveActiveConfig();
   updateApiProviderUi();
   if (isPlatformApiSelected()) refreshBilling();
@@ -1903,8 +1919,8 @@ function saveActiveConfig() {
     rememberKey: Boolean(config.rememberKey),
     requestFormat: config.requestFormat || "openai",
     transportMode: config.transportMode || "direct",
-    multiImageMode: config.multiImageMode || "single",
-    apiProvider: config.apiProvider || "platform",
+    multiImageMode: "single",
+    apiProvider: "platform",
     customTemplate: config.customTemplate || defaultTemplate,
     modelName: config.modelName || "gpt-image-2",
     configVersion: CONFIG_VERSION,
@@ -2379,6 +2395,12 @@ function openCodeAdminPanel(section = "codes") {
   setTimeout(() => $("#codeAdminPassword")?.focus(), 0);
 }
 
+function openCustomApiAdminSection() {
+  codeAdminState.pendingSection = "custom";
+  openCodeAdminPanel("custom");
+  showToast("自定义 API 调试已移到站长后台，请先进入后台并启用调试开关");
+}
+
 function closeCodeAdminPanel() {
   $("#codeAdminPanel").classList.remove("open");
   codeAdminState.authenticated = false;
@@ -2442,7 +2464,7 @@ function setCodeAdminAuthStatus(text) {
 }
 
 function selectCodeAdminSection(section) {
-  const next = ["codes", "platform", "announcements", "stats"].includes(section) ? section : "codes";
+  const next = ["codes", "platform", "custom", "announcements", "stats"].includes(section) ? section : "codes";
   codeAdminState.activeSection = next;
   if (!codeAdminState.authenticated) {
     codeAdminState.pendingSection = next;
@@ -2458,6 +2480,7 @@ function selectCodeAdminSection(section) {
     panel.hidden = !active;
   });
   if (next === "platform") loadPlatformAdminConfig({ silent: true });
+  if (next === "custom") loadCustomApiAdminConfig({ silent: true });
   if (next === "stats") {
     loadSiteStats({ silent: true });
     renderApiStats();
@@ -2596,13 +2619,195 @@ function setPlatformAdminStatus(text) {
   $("#platformAdminStatus").textContent = text;
 }
 
+function adminPassword() {
+  return ($("#codeAdminPassword")?.value || localStorage.getItem(CODE_ADMIN_PASSWORD_KEY) || "").trim();
+}
+
+async function loadCustomApiAdminConfig(options = {}) {
+  const password = adminPassword();
+  if (!password) {
+    setCustomApiAdminStatus("请先输入管理员密码");
+    if (!options.silent) showToast("请先进入站长后台");
+    return;
+  }
+
+  if (!options.silent) setCustomApiAdminStatus("正在读取服务器配置...");
+  try {
+    const response = await apiFetch("/api/admin/custom-api", {
+      headers: { "X-Admin-Password": password },
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `读取失败：HTTP ${response.status}`);
+    const serverConfig = payload.config || {};
+    customDebugState.loaded = true;
+    customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
+    applyCustomApiRuntimeConfig(serverConfig);
+    hydrateAdminCustomApiForm(serverConfig);
+    renderAdminCustomHistory();
+    setCustomApiAdminStatus(serverConfig.enabled ? "已启用自定义 API 调试" : "调试开关未启用，前台仍使用推荐 API");
+    if (!options.silent) showToast("已读取自定义 API 调试配置");
+  } catch (error) {
+    setCustomApiAdminStatus("读取失败");
+    if (!options.silent) showToast(error.message || "读取自定义 API 调试配置失败");
+  }
+}
+
+async function saveCustomApiAdminConfig() {
+  const password = adminPassword();
+  if (!password) {
+    showToast("请先输入管理员密码");
+    return;
+  }
+  const form = readAdminCustomApiForm();
+  if (form.enabled && (!form.textEndpoint || !form.apiKey)) {
+    showToast("启用调试前需要填写文生图 API URL 和 API Key");
+    return;
+  }
+
+  const button = $("#saveCustomApiConfigButton");
+  button.disabled = true;
+  button.textContent = "保存中...";
+  setCustomApiAdminStatus("正在保存到服务器...");
+  try {
+    const response = await apiFetch("/api/admin/custom-api", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify(form),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `保存失败：HTTP ${response.status}`);
+    const serverConfig = payload.config || form;
+    customDebugState.loaded = true;
+    customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
+    applyCustomApiRuntimeConfig(serverConfig);
+    hydrateAdminCustomApiForm(serverConfig);
+    renderAdminCustomHistory();
+    setCustomApiAdminStatus(serverConfig.enabled ? "已保存并启用自定义 API 调试" : "已保存，当前仍使用推荐 API");
+    showToast(serverConfig.enabled ? "已切到站长自定义 API 调试" : "已保存调试配置，前台继续使用推荐 API");
+  } catch (error) {
+    setCustomApiAdminStatus("保存失败");
+    showToast(error.message || "保存自定义 API 调试配置失败");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="check"></i><span>保存并应用</span>`;
+    renderIcons();
+  }
+}
+
+function readAdminCustomApiForm() {
+  return {
+    enabled: Boolean($("#adminCustomApiEnabled")?.checked),
+    textEndpoint: $("#adminCustomTextEndpoint")?.value.trim() || "",
+    editEndpoint: $("#adminCustomEditEndpoint")?.value.trim() || "",
+    apiKey: $("#adminCustomApiKey")?.value.trim() || "",
+    requestFormat: $("#adminCustomRequestFormat")?.value || "openai",
+    transportMode: $("#adminCustomTransportMode")?.value || "direct",
+    customTemplate: $("#adminCustomTemplate")?.value.trim() || defaultTemplate,
+    modelName: $("#adminCustomModelName")?.value.trim() || getModelName(),
+  };
+}
+
+function hydrateAdminCustomApiForm(item = {}) {
+  if ($("#adminCustomApiEnabled")) $("#adminCustomApiEnabled").checked = Boolean(item.enabled);
+  if ($("#adminCustomTextEndpoint")) $("#adminCustomTextEndpoint").value = item.textEndpoint || "";
+  if ($("#adminCustomEditEndpoint")) $("#adminCustomEditEndpoint").value = item.editEndpoint || "";
+  if ($("#adminCustomApiKey")) $("#adminCustomApiKey").value = item.apiKey || "";
+  if ($("#adminCustomRequestFormat")) $("#adminCustomRequestFormat").value = item.requestFormat || "openai";
+  if ($("#adminCustomTransportMode")) $("#adminCustomTransportMode").value = item.transportMode || "direct";
+  if ($("#adminCustomTemplate")) $("#adminCustomTemplate").value = item.customTemplate || defaultTemplate;
+  if ($("#adminCustomModelName")) $("#adminCustomModelName").value = item.modelName || config.modelName || "gpt-image-2";
+  updateAdminCustomTemplateVisibility();
+}
+
+function applyCustomApiRuntimeConfig(item = {}) {
+  customDebugState.enabled = Boolean(item.enabled);
+  customDebugState.updatedAt = Number(item.updatedAt || Date.now());
+  if (!customDebugState.enabled) {
+    config.apiProvider = "platform";
+    config.multiImageMode = "single";
+    config.apiKey = "";
+    config.rememberKey = false;
+    config.requestFormat = "openai";
+    config.transportMode = "direct";
+    hydrateConfig();
+    saveActiveConfig();
+    updateApiProviderUi();
+    return;
+  }
+  config.textEndpoint = item.textEndpoint || "";
+  config.editEndpoint = item.editEndpoint || "";
+  config.apiKey = item.apiKey || "";
+  config.rememberKey = false;
+  config.requestFormat = item.requestFormat || "openai";
+  config.transportMode = item.transportMode || "direct";
+  config.customTemplate = item.customTemplate || defaultTemplate;
+  config.multiImageMode = "single";
+  config.apiProvider = customDebugState.enabled ? "custom" : "platform";
+  if (item.modelName) {
+    config.modelName = item.modelName;
+    ensureModelOption(config.modelName);
+  }
+  hydrateConfig();
+  saveActiveConfig();
+  updateApiProviderUi();
+}
+
+function updateAdminCustomTemplateVisibility() {
+  const field = $("#adminCustomTemplateField");
+  if (field) field.hidden = ($("#adminCustomRequestFormat")?.value || "openai") !== "json";
+}
+
+function renderAdminCustomHistory() {
+  const list = $("#adminCustomHistoryList");
+  if (!list) return;
+  if (!customDebugState.history.length) {
+    list.innerHTML = `<div class="config-history-empty">保存后会在服务器保留最近 ${CONFIG_HISTORY_LIMIT} 条配置</div>`;
+    return;
+  }
+  list.innerHTML = customDebugState.history
+    .map((item) => {
+      const endpoint = item.textEndpoint || item.editEndpoint || "未设置 URL";
+      const keyLabel = item.apiKey ? maskApiKey(item.apiKey) : "未保存 Key";
+      const transportLabel = item.transportMode === "proxy" ? "代理" : "直连";
+      const formatLabel = item.requestFormat === "json" ? "JSON 模板" : "OpenAI";
+      return `
+        <div class="config-history-item" data-admin-custom-id="${escapeHtml(item.id || "")}">
+          <button class="config-history-main" type="button" data-action="apply-admin-custom">
+            <strong>${escapeHtml(item.title || configSnapshotTitle(item))}</strong>
+            <span>${escapeHtml(endpoint)}</span>
+            <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${formatLabel} · ${transportLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
+          </button>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function onAdminCustomHistoryClick(event) {
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  const row = event.target.closest("[data-admin-custom-id]");
+  if (action !== "apply-admin-custom" || !row) return;
+  const item = customDebugState.history.find((entry) => entry.id === row.dataset.adminCustomId);
+  if (!item) return;
+  hydrateAdminCustomApiForm({ ...item, enabled: true });
+  showToast("已填入历史配置，确认后点击保存并应用");
+}
+
+function setCustomApiAdminStatus(text) {
+  const status = $("#customApiAdminStatus");
+  if (status) status.textContent = text;
+}
+
 function updateRecommendedApiLabels() {
   const priceLabel = formatPlatformPriceLabel(billingState.priceCents);
   const label = `推荐 API · ${priceLabel}`;
   const option = $('#apiProviderSelect option[value="platform"]');
   if (option) option.textContent = label;
   const intro = $("#platformPriceIntro");
-  if (intro) intro.textContent = "本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片。";
+  if (intro) intro.textContent = "本站使用推荐 API 生图，登录并充值后即可稳定生成图片。";
 }
 
 function formatPlatformPriceLabel(cents) {
@@ -2670,13 +2875,17 @@ function apiFetch(path, options = {}) {
 
 function updateApiProviderUi() {
   const usingPlatform = isPlatformApiSelected();
-  $("#settingsPanel").classList.toggle("platform-selected", usingPlatform);
+  $("#settingsPanel")?.classList.toggle("platform-selected", usingPlatform);
   $("#walletToggle").classList.toggle("active", usingPlatform);
   updateRecommendedApiLabels();
 }
 
 function isPlatformApiSelected() {
-  return ($("#apiProviderSelect")?.value || config.apiProvider || "platform") === "platform";
+  return !isCustomApiDebugEnabled();
+}
+
+function isCustomApiDebugEnabled() {
+  return Boolean(customDebugState.enabled);
 }
 
 function updateBillingFromGenerationResponse(response) {

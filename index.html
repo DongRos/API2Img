@@ -24,7 +24,7 @@
           <img class="brand-icon" src="./icon.png?v=2" alt="" aria-hidden="true" />
           <div>
             <h1>API 2 Image</h1>
-            <p id="platformPriceIntro">本站支持自定义 API 与推荐 API。选择推荐 API 并充值后即可生成图片。</p>
+            <p id="platformPriceIntro">本站使用推荐 API 生图，登录并充值后即可稳定生成图片。</p>
           </div>
         </div>
 
@@ -38,9 +38,6 @@
           </button>
           <button class="pill-button wallet-chip" id="walletToggle" type="button">
             <i data-icon="wallet"></i><span id="walletBalance">余额 --</span>
-          </button>
-          <button class="icon-button" id="settingsToggle" title="API 设置" type="button">
-            <i data-icon="settings"></i>
           </button>
           <button class="pill-button" id="logsToggle" type="button">
             <i data-icon="list"></i><span>生成日志</span>
@@ -110,10 +107,6 @@
         </div>
 
         <div class="control-row">
-          <select id="apiProviderSelect" title="API 来源">
-            <option value="custom">自定义 API</option>
-            <option value="platform">推荐 API</option>
-          </select>
           <select id="modeSelect" title="生成模式">
             <option value="text">文生图</option>
             <option value="image">图生图</option>
@@ -121,17 +114,13 @@
           <select id="ratioSelect" title="比例"></select>
           <select id="sizeSelect" title="尺寸"></select>
           <select id="countSelect" title="数量"></select>
-          <select id="multiImageMode" title="多图方式">
-            <option value="single">逐张稳定</option>
-            <option value="batch">批量优先（不补单）</option>
-          </select>
           <select id="qualitySelect" title="质量"></select>
           <input id="negativePrompt" type="text" placeholder="反向提示词" />
           <input id="seedInput" type="number" placeholder="种子" />
         </div>
       </section>
 
-      <aside id="settingsPanel" class="settings-panel">
+      <aside id="settingsPanel" class="settings-panel" hidden>
         <div class="panel-header">
           <div>
             <h2>API 设置</h2>
@@ -201,7 +190,7 @@
         <div class="panel-header">
           <div>
             <h2>充值与余额</h2>
-            <p>推荐 API 按张扣费，充值后即可使用；自定义 API 使用你自己的 Key，不消耗这里的余额。</p>
+            <p>推荐 API 按张扣费，充值后即可使用；余额以服务器数据库为准。</p>
           </div>
           <button class="icon-button" id="closeWallet" title="关闭" type="button">
             <i data-icon="x"></i>
@@ -305,6 +294,7 @@
           <div class="admin-nav" role="tablist" aria-label="站长后台功能">
             <button class="admin-nav-button active" type="button" data-admin-section="codes">兑换码</button>
             <button class="admin-nav-button" type="button" data-admin-section="platform">推荐 API</button>
+            <button class="admin-nav-button" type="button" data-admin-section="custom">调试 API</button>
             <button class="admin-nav-button" type="button" data-admin-section="announcements">公告</button>
             <button class="admin-nav-button" type="button" data-admin-section="stats">统计</button>
           </div>
@@ -386,6 +376,75 @@
               <i data-icon="check"></i><span>保存推荐 API</span>
             </button>
           </div>
+        </section>
+
+        <section id="customApiAdminSection" class="admin-section admin-section-view" data-admin-panel="custom">
+          <div class="config-history-head">
+            <h3>自定义 API 调试</h3>
+            <span id="customApiAdminStatus">仅站长本机调试生效</span>
+          </div>
+
+          <label class="check-line">
+            <input id="adminCustomApiEnabled" type="checkbox" />
+            <span>启用自定义 API 调试。开启后仅当前已解锁后台的浏览器使用自定义 API，普通用户仍使用推荐 API。</span>
+          </label>
+
+          <label class="field">
+            <span>文生图 API URL</span>
+            <input id="adminCustomTextEndpoint" type="url" placeholder="https://.../v1/images/generations" />
+          </label>
+          <label class="field">
+            <span>图生图 / 编辑 API URL</span>
+            <input id="adminCustomEditEndpoint" type="url" placeholder="https://.../v1/images/edits" />
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="adminCustomApiKey" type="password" autocomplete="off" placeholder="sk-..." />
+          </label>
+
+          <div class="field-grid">
+            <label class="field">
+              <span>请求格式</span>
+              <select id="adminCustomRequestFormat">
+                <option value="openai">OpenAI 兼容</option>
+                <option value="json">自定义 JSON</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>请求方式</span>
+              <select id="adminCustomTransportMode">
+                <option value="direct">浏览器直连</option>
+                <option value="proxy">代理转发</option>
+              </select>
+            </label>
+          </div>
+
+          <label class="field" id="adminCustomTemplateField">
+            <span>自定义 JSON 模板</span>
+            <textarea id="adminCustomTemplate" rows="8"></textarea>
+          </label>
+
+          <label class="field">
+            <span>默认模型名</span>
+            <input id="adminCustomModelName" type="text" placeholder="gpt-image-2" />
+          </label>
+
+          <div class="code-admin-actions">
+            <button class="pill-button" id="loadCustomApiConfigButton" type="button">
+              <i data-icon="rotate"></i><span>读取调试配置</span>
+            </button>
+            <button class="pill-button primary" id="saveCustomApiConfigButton" type="button">
+              <i data-icon="check"></i><span>保存并应用</span>
+            </button>
+          </div>
+
+          <section class="config-history">
+            <div class="config-history-head">
+              <h3>服务器配置记录</h3>
+              <span>点击可填入表单，再保存应用</span>
+            </div>
+            <div id="adminCustomHistoryList" class="config-history-list"></div>
+          </section>
         </section>
 
         <section id="announcementAdminSection" class="admin-section admin-section-view" data-admin-panel="announcements">
@@ -511,6 +570,6 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=43"></script>
+    <script src="./app.js?v=44"></script>
   </body>
 </html>
