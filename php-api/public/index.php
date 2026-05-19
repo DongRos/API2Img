@@ -1,5 +1,7 @@
 <?php
 
+ob_start();
+
 require __DIR__ . '/../src/helpers.php';
 
 $config = load_config();
@@ -423,7 +425,7 @@ function generate_ticket(PDO $pdo, array $config): void
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
     if (!platform_is_configured($platform)) {
-        throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
+        throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
     }
     ensure_user_can_afford($pdo, (int)$user['id'], $total);
     $token = random_token(32);
@@ -456,14 +458,14 @@ function generate_direct_config(PDO $pdo, array $config): void
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
     if (!platform_is_configured($platform)) {
-        throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
+        throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
     }
     ensure_user_can_afford($pdo, (int)$user['id'], $total);
     $endpoint = $mode === 'image'
         ? ((string)$platform['edit_endpoint'] ?: infer_edit_endpoint((string)$platform['text_endpoint']))
         : (string)$platform['text_endpoint'];
     if ($endpoint === '') {
-        throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
+        throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
     }
     $ticket = sign_generation_ticket($config, [
         'uid' => (int)$user['id'],
@@ -508,7 +510,7 @@ function generate_platform(PDO $pdo, array $config): void
     $request = enforce_platform_request_count($request, $count);
     $endpoint = $mode === 'image' ? ((string)$platform['edit_endpoint'] ?: infer_edit_endpoint((string)$platform['text_endpoint'])) : (string)$platform['text_endpoint'];
     if ($endpoint === '' || trim((string)$platform['api_key']) === '') {
-        throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
+        throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
     }
 
     try {
@@ -516,11 +518,11 @@ function generate_platform(PDO $pdo, array $config): void
         $bodyPayload = json_decode($upstream['body'], true);
         $images = is_array($bodyPayload) ? json_images($bodyPayload) : [];
         if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
-            $message = is_array($bodyPayload) ? (string)($bodyPayload['error']['message'] ?? $bodyPayload['message'] ?? '推荐 API 生成失败') : '推荐 API 生成失败';
+            $message = is_array($bodyPayload) ? (string)($bodyPayload['error']['message'] ?? $bodyPayload['message'] ?? '站点 API 生成失败') : '站点 API 生成失败';
             throw new RuntimeException($message);
         }
         if (!count($images)) {
-            throw new RuntimeException('推荐 API 没有返回图片');
+            throw new RuntimeException('站点 API 没有返回图片');
         }
         json_response([
             'ok' => true,
@@ -610,7 +612,7 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
         );
         $insert->execute([$userId, $requestId, $mode, $model, $price, $price]);
         $generationId = (int)$pdo->lastInsertId();
-        create_ledger($pdo, $userId, 'charge', -$price, $before, $after, $requestId, '推荐 API 生图成功扣费 ' . $imageId);
+        create_ledger($pdo, $userId, 'charge', -$price, $before, $after, $requestId, '站点 API 生图成功扣费 ' . $imageId);
         complete_generation_charge($pdo, $generationId, 'succeeded', '');
         $pdo->commit();
         return ['balance' => $after, 'duplicate' => false];
@@ -645,7 +647,7 @@ function refund_generation_charge(PDO $pdo, int $userId, int $generationId, stri
         $after = $before + $total;
         $pdo->prepare('UPDATE users SET balance_cents = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$after, $userId]);
         $pdo->prepare("UPDATE generation_requests SET status = 'refunded', error_message = ?, completed_at = UTC_TIMESTAMP() WHERE id = ?")->execute([substr($message, 0, 500), $generationId]);
-        create_ledger($pdo, $userId, 'refund', $total, $before, $after, $requestId, '推荐 API 失败退款');
+        create_ledger($pdo, $userId, 'refund', $total, $before, $after, $requestId, '站点 API 失败退款');
         $pdo->commit();
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) {

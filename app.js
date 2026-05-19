@@ -22,7 +22,9 @@ const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
 const DEFAULT_PHP_API_BASE = "https://api2img.shop/php-api/index.php";
-const FAST_API_TIMEOUT_MS = 9000;
+const FAST_API_TIMEOUT_MS = 6500;
+const GENERATION_READY_WAIT_MS = 2200;
+const ADMIN_API_TIMEOUT_MS = 8000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
@@ -115,6 +117,7 @@ const billingState = {
   priceCents: PLATFORM_PRICE_FALLBACK_CENTS,
   upstreamCostCents: 4,
   platformEnabled: false,
+  configLoaded: false,
   rechargeUrl: "https://api2img.shop/",
   directBaseUrl: "",
   sessionToken: "",
@@ -152,6 +155,7 @@ const codeAdminState = {
 const customDebugState = {
   enabled: false,
   loaded: false,
+  current: null,
   history: [],
   global: null,
   updatedAt: 0,
@@ -219,16 +223,22 @@ async function init() {
   autoGrow($("#promptInput"));
   startSiteHeartbeat();
   billingReadyPromise = loadBilling().catch((error) => console.warn("充值信息读取失败", error));
-  loadState()
-    .then(() => {
-      renderReferences();
-      renderResults();
-      renderIcons();
-    })
-    .catch((error) => console.warn("本地图片状态读取失败", error));
-  trackSiteVisit().catch((error) => console.warn("站点访问上报失败", error));
-  loadSiteStats({ silent: true }).catch((error) => console.warn("站点统计读取失败", error));
-  loadAnnouncements({ silent: true }).catch((error) => console.warn("公告读取失败", error));
+  afterFirstPaint(() => {
+    loadState()
+      .then(() => {
+        renderReferences();
+        renderResults();
+        renderIcons();
+      })
+      .catch((error) => console.warn("本地图片状态读取失败", error));
+    trackSiteVisit().catch((error) => console.warn("站点访问上报失败", error));
+    loadSiteStats({ silent: true }).catch((error) => console.warn("站点统计读取失败", error));
+    loadAnnouncements({ silent: true }).catch((error) => console.warn("公告读取失败", error));
+  });
+}
+
+function afterFirstPaint(callback) {
+  requestAnimationFrame(() => setTimeout(callback, 0));
 }
 
 function fillControls() {
@@ -459,18 +469,14 @@ async function generateImages(extra = {}) {
   if (usePlatformApi) {
     await ensurePlatformReadyForGeneration();
   }
-  if (usePlatformApi && !billingState.platformEnabled) {
-    await loadBillingConfig();
-    renderWallet();
-  }
-  if (usePlatformApi && !billingState.platformEnabled) {
+  if (usePlatformApi && billingState.configLoaded && !billingState.platformEnabled) {
     $("#walletPanel").classList.add("open");
-    showToast("推荐 API 暂未配置，请联系站长处理");
+    showToast("站点 API 暂未配置，请联系站长处理");
     return;
   }
   if (usePlatformApi && !billingState.authenticated) {
     $("#walletPanel").classList.add("open");
-    showToast("请先用邮箱登录后再使用推荐 API");
+    showToast(currentWalletSessionToken() ? "登录状态还在同步，请稍后再点生成" : "请先用邮箱登录后再使用站点 API");
     setTimeout(() => $("#loginEmailInput")?.focus(), 0);
     return;
   }
@@ -510,7 +516,7 @@ async function generateImages(extra = {}) {
     apiProvider: usePlatformApi ? "platform" : "custom",
     platformPriceCents: usePlatformApi ? billingState.priceCents : 0,
   };
-  if (usePlatformApi) {
+  if (usePlatformApi && billingState.configLoaded) {
     const requiredCents = options.count * billingState.priceCents;
     if (billingState.balanceCents < requiredCents) {
       $("#walletPanel").classList.add("open");
@@ -583,16 +589,16 @@ async function generateImages(extra = {}) {
 }
 
 async function ensurePlatformReadyForGeneration() {
-  const noticeTimer = setTimeout(() => showToast("正在同步钱包，请稍候..."), 450);
+  const noticeTimer = setTimeout(() => showToast("正在同步钱包，请稍候..."), 700);
   try {
     if (billingReadyPromise) {
-      await Promise.race([billingReadyPromise, wait(FAST_API_TIMEOUT_MS)]);
+      await Promise.race([billingReadyPromise, wait(GENERATION_READY_WAIT_MS)]);
     }
     if (!billingState.platformEnabled) {
-      await loadBillingConfig();
+      await Promise.race([loadBillingConfig(), wait(GENERATION_READY_WAIT_MS)]);
     }
     if (currentWalletSessionToken() && !billingState.authenticated) {
-      await refreshBilling();
+      await Promise.race([refreshBilling(), wait(GENERATION_READY_WAIT_MS)]);
     }
     warmDirectApiBase();
   } catch (error) {
@@ -1197,31 +1203,21 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
 }
 
 async function fetchPlatformGeneration(payload, signal) {
-  const urls = uniqueUrls([platformDirectUrl("/api/generate/platform"), apiUrl("/api/generate/platform")]);
-  let lastError = null;
-  let lastRetryableResponse = null;
-  for (const url of urls) {
-    try {
-      const response = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: isDirectPhpApiUrl(url) ? "omit" : "include",
-        body: JSON.stringify(payload),
-        signal,
-      });
-      if (response.ok || !isRetryableHttpStatus(response.status)) {
-        return { response, url };
-      }
-      lastRetryableResponse = { response, url };
-      lastError = new Error(`推荐 API 请求失败：HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-      if (signal?.aborted) throw error;
-      if (!isRetryableFetchError(error)) throw error;
-    }
+  const url = platformDirectUrl("/api/generate/platform");
+  try {
+    const response = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "omit",
+      cache: "no-store",
+      body: JSON.stringify(payload),
+      signal,
+    });
+    return { response, url };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new Error(`站点 API 直连失败：${cleanErrorMessage(error) || "请检查网络后重试"}`);
   }
-  if (lastRetryableResponse) return lastRetryableResponse;
-  throw lastError || new Error("推荐 API 请求失败");
 }
 
 function fetchDirectImageRequest(endpoint, request) {
@@ -1293,15 +1289,20 @@ async function getPlatformDirectConfig(options = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const response = await apiFetch("/api/generate/direct-config", {
+      const response = await apiFetchPreferDirect("/api/generate/direct-config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
         signal: options.signal,
+        timeoutMs: FAST_API_TIMEOUT_MS,
+      }, {
+        directFirst: true,
+        timeoutMs: FAST_API_TIMEOUT_MS,
+        label: "站点 API 配置获取",
       });
       const payload = await readJsonResponse(response);
-      if (!response.ok) throw new Error(payload?.error?.message || `推荐 API 配置获取失败：HTTP ${response.status}`);
-      if (!payload.ticket || !payload.endpoint || !payload.apiKey) throw new Error("推荐 API 配置不完整，请联系站长");
+      if (!response.ok) throw new Error(payload?.error?.message || `站点 API 配置获取失败：HTTP ${response.status}`);
+      if (!payload.ticket || !payload.endpoint || !payload.apiKey) throw new Error("站点 API 配置不完整，请联系站长");
       billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
       if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
       renderWallet();
@@ -1317,7 +1318,7 @@ async function getPlatformDirectConfig(options = {}) {
       await wait(700 * attempt);
     }
   }
-  throw lastError || new Error("推荐 API 配置获取失败");
+  throw lastError || new Error("站点 API 配置获取失败");
 }
 
 function isRetryableDirectConfigError(error, attempt) {
@@ -1371,21 +1372,22 @@ async function parseApiResponse(response, requestLog = null) {
     return payload;
   }
   const text = await response.text();
-  let payload = text;
+  const responseText = stripJsonBom(text);
+  let payload = responseText;
   let parsedJson = false;
   try {
-    payload = JSON.parse(text);
+    payload = JSON.parse(responseText);
     parsedJson = true;
   } catch {
     if (!response.ok) {
-      const message = formatHttpError(response.status, text);
+      const message = formatHttpError(response.status, responseText);
       completeRequestLog(requestLog, {
         status: "failed",
         httpStatus: response.status,
         ok: response.ok,
         contentType,
         imageCount: 0,
-        responsePreview: summarizeLogValue(text),
+        responsePreview: message,
         error: message,
       });
       throw new Error(message);
@@ -1393,7 +1395,7 @@ async function parseApiResponse(response, requestLog = null) {
   }
   const imageCount = normalizeImages(payload).length;
   if (!response.ok) {
-    const message = payload?.error?.message || payload?.message || text || `请求失败：${response.status}`;
+    const message = payload?.error?.message || payload?.message || responseText || `请求失败：${response.status}`;
     const formatted = formatHttpError(response.status, message);
     completeRequestLog(requestLog, {
       status: "failed",
@@ -1479,9 +1481,9 @@ function addApiGuidance(message, extra = "") {
   parts.push("常见原因是上游 API 未正确配置，或地址/Key/模型/通道参数填错，也可能是供应商接口临时异常。");
   parts.push("请先按供应商文档重新检查并保存配置。");
   if (isPlatformApiSelected()) {
-    parts.push("如果当前已经在用推荐API，请重点核对推荐 API 的地址、Key、模型/通道参数是否与文档一致。");
+    parts.push("如果当前已经在用站点API，请重点核对站点 API 的地址、Key、模型/通道参数是否与文档一致。");
   } else {
-    parts.push("如果当前用的是自定义 API，仍失败时可以临时切到“推荐API”对比排查。");
+    parts.push("如果当前用的是自定义 API，仍失败时可以临时切到“站点API”对比排查。");
   }
   return `${intro}${parts.join(" ")}`.trim();
 }
@@ -1502,14 +1504,14 @@ function formatHttpError(status, message) {
   }
   if (code === "524" || /524: A timeout occurred|A timeout occurred/i.test(text)) {
     return addApiGuidance(
-      "上游接口超时（Cloudflare 524）。本次没有自动追加请求，请减少数量或稍后重试。",
-      "这一般是供应商响应过慢或通道压力过大。",
+      "站点 API 请求超时（HTTP 524）。本次未扣费；请稍后重试或减少生成数量。",
+      "这一般是服务器或上游通道响应过慢。",
     );
   }
   if (code === "504" && /EdgeOne Pages/i.test(text)) {
     return addApiGuidance(
-      "EdgeOne 代理函数超时或未生效。已尝试直连；如果仍失败，请在设置里切到“浏览器直连”或降低生成数量。",
-      "这通常和代理链路、上游接口响应或供应商限制有关。",
+      "EdgeOne 代理超时（HTTP 504），这不是 base64 图片。已改为优先使用站点 API 直连；本次未扣费，请重试。",
+      "如果手机端仍出现，请检查 api2img.shop 是否能直接访问。",
     );
   }
   if (/failed to fetch|fetch failed|network error|network|connection|timeout|timed out|request aborted|aborted|econnreset|enotfound|socket hang up|dns|certificate/i.test(text)) {
@@ -1614,13 +1616,26 @@ function normalizeImageSources(source, keyPath = "") {
   });
 
   const imageBase64 = value.match(/[A-Za-z0-9+/_-]{220,}={0,2}/)?.[0];
-  if (imageBase64 && imageField && !dataUrls.length) {
+  if (imageBase64 && (imageField || looksLikeImageBase64(imageBase64)) && !dataUrls.length) {
     const imageBase64Items = value.match(/[A-Za-z0-9+/_-]{220,}={0,2}/g) || [];
     imageBase64Items.forEach((item) => {
-      addSource(`data:image/png;base64,${item.replace(/-/g, "+").replace(/_/g, "/")}`);
+      addSource(`data:${imageMimeFromBase64(item)};base64,${item.replace(/-/g, "+").replace(/_/g, "/")}`);
     });
   }
   return sources;
+}
+
+function looksLikeImageBase64(value) {
+  const clean = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  return /^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR)/.test(clean);
+}
+
+function imageMimeFromBase64(value) {
+  const clean = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  if (clean.startsWith("/9j/")) return "image/jpeg";
+  if (clean.startsWith("R0lGOD")) return "image/gif";
+  if (clean.startsWith("UklGR")) return "image/webp";
+  return "image/png";
 }
 
 function cleanImageSource(source) {
@@ -2271,10 +2286,17 @@ function deleteConfigHistory(id) {
 async function loadBilling() {
   try {
     const sessionSnapshot = currentWalletSessionToken();
-    const [configResult, meResponse] = await Promise.allSettled([loadBillingConfig(), apiFetch("/api/auth/me")]);
+    const [configResult, meResponse] = await Promise.allSettled([
+      loadBillingConfig(),
+      apiFetchPreferDirect("/api/auth/me", { timeoutMs: FAST_API_TIMEOUT_MS }, {
+        directFirst: true,
+        timeoutMs: FAST_API_TIMEOUT_MS,
+        label: "登录状态读取",
+      }),
+    ]);
     if (configResult.status === "rejected") console.warn("充值配置读取失败", configResult.reason);
     if (walletSessionChanged(sessionSnapshot)) return;
-    if (meResponse.status === "fulfilled" && meResponse.value.ok) applyBillingDashboard(await meResponse.value.json());
+    if (meResponse.status === "fulfilled" && meResponse.value.ok) applyBillingDashboard(await readJsonResponse(meResponse.value));
     renderWallet();
     if (billingState.authenticated) {
       billingState.ledgerLoading = true;
@@ -2299,6 +2321,7 @@ async function loadBillingConfig() {
     label: "充值配置读取",
   });
   const info = await readJsonResponse(configResponse);
+  billingState.configLoaded = true;
   if (!configResponse.ok) return false;
   billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
@@ -2331,10 +2354,14 @@ function warmDirectApiBase() {
 async function refreshBilling() {
   try {
     const sessionSnapshot = currentWalletSessionToken();
-    const response = await apiFetch("/api/auth/me");
+    const response = await apiFetchPreferDirect("/api/auth/me", { timeoutMs: FAST_API_TIMEOUT_MS }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "余额刷新",
+    });
     if (walletSessionChanged(sessionSnapshot)) return;
     if (!response.ok) return;
-    applyBillingDashboard(await response.json());
+    applyBillingDashboard(await readJsonResponse(response));
     renderWallet();
     if (billingState.authenticated) {
       billingState.ledgerLoading = true;
@@ -2579,10 +2606,15 @@ async function sendLoginCode() {
   button.innerHTML = `<i data-icon="rotate"></i><span>发送中...</span>`;
   renderIcons();
   try {
-    const response = await apiFetch("/api/auth/send-code", {
+    const response = await apiFetchPreferDirect("/api/auth/send-code", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email }),
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "验证码发送",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "验证码发送失败");
@@ -2618,10 +2650,15 @@ async function verifyLoginCode() {
   button.innerHTML = `<i data-icon="check"></i><span>登录中...</span>`;
   renderIcons();
   try {
-    const response = await apiFetch("/api/auth/verify", {
+    const response = await apiFetchPreferDirect("/api/auth/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, code }),
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "登录验证",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "登录失败");
@@ -2648,7 +2685,11 @@ async function verifyLoginCode() {
 
 async function logoutWallet() {
   try {
-    await apiFetch("/api/auth/logout", { method: "POST" });
+    await apiFetchPreferDirect("/api/auth/logout", { method: "POST", timeoutMs: FAST_API_TIMEOUT_MS }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "退出登录",
+    });
   } catch {}
   billingState.authenticated = false;
   billingState.customerId = "";
@@ -2674,10 +2715,15 @@ async function redeemCode() {
     return;
   }
   try {
-    const response = await apiFetch("/api/billing/redeem", {
+    const response = await apiFetchPreferDirect("/api/billing/redeem", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code }),
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "充值码兑换",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "兑换失败");
@@ -2730,8 +2776,13 @@ async function unlockCodeAdminPanel() {
   button.textContent = "验证中...";
   setCodeAdminAuthStatus("正在验证管理员密码");
   try {
-    const response = await apiFetch("/api/admin/redeem-codes", {
+    const response = await apiFetchPreferDirect("/api/admin/redeem-codes", {
       headers: { "X-Admin-Password": password },
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "后台验证",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "管理员密码不正确");
@@ -2827,13 +2878,18 @@ async function generateRedeemCodesFromPanel() {
 
   try {
     const amountCents = Math.round(amountYuan * 100);
-    const response = await apiFetch("/api/admin/redeem-codes", {
+    const response = await apiFetchPreferDirect("/api/admin/redeem-codes", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Admin-Password": password,
       },
       body: JSON.stringify({ amountCents, count, label }),
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "兑换码生成",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `生成失败：HTTP ${response.status}`);
@@ -2900,8 +2956,13 @@ async function loadCustomApiAdminConfig(options = {}) {
 
   if (!options.silent) setCustomApiAdminStatus("正在读取服务器配置...");
   try {
-    const response = await apiFetch("/api/admin/custom-api", {
+    const response = await apiFetchPreferDirect("/api/admin/custom-api", {
       headers: { "X-Admin-Password": password },
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "API 与定价读取",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `读取失败：HTTP ${response.status}`);
@@ -2909,6 +2970,7 @@ async function loadCustomApiAdminConfig(options = {}) {
     const globalConfig = payload.global || {};
     const formConfig = hasApiConfig(serverConfig) ? serverConfig : { ...globalConfig, enabled: false };
     customDebugState.loaded = true;
+    customDebugState.current = serverConfig;
     customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
     customDebugState.global = globalConfig;
     applyGlobalApiInfo(globalConfig);
@@ -2940,18 +3002,24 @@ async function saveCustomApiAdminConfig() {
   button.textContent = "保存中...";
   setCustomApiAdminStatus("正在保存到服务器...");
   try {
-    const response = await apiFetch("/api/admin/custom-api", {
+    const response = await apiFetchPreferDirect("/api/admin/custom-api", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Admin-Password": password,
       },
       body: JSON.stringify(form),
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "API 与定价保存",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `保存失败：HTTP ${response.status}`);
     const serverConfig = payload.config || form;
     customDebugState.loaded = true;
+    customDebugState.current = serverConfig;
     customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
     customDebugState.global = payload.global || customDebugState.global;
     applyGlobalApiInfo(customDebugState.global || {});
@@ -2959,9 +3027,10 @@ async function saveCustomApiAdminConfig() {
     hydrateAdminCustomApiForm(serverConfig);
     renderAdminCustomHistory();
     setCustomApiAdminStatus(apiPricingStatus(serverConfig, customDebugState.global || {}));
-    showToast(serverConfig.enabled ? "已切到站长自定义 API 调试" : "已保存调试配置，前台继续使用推荐 API");
+    showToast(serverConfig.enabled ? "已切到站长自定义 API 调试" : "已保存调试配置，前台继续使用站点 API");
   } catch (error) {
     setCustomApiAdminStatus("保存失败");
+    restoreAdminCustomApiForm();
     showToast(error.message || "保存自定义 API 调试配置失败");
   } finally {
     button.disabled = false;
@@ -2991,17 +3060,24 @@ async function applyCustomApiAsGlobal() {
   button.textContent = "同步中...";
   setCustomApiAdminStatus("正在同步为全局 API 与定价...");
   try {
-    const response = await apiFetch("/api/admin/custom-api/global", {
+    const response = await apiFetchPreferDirect("/api/admin/custom-api/global", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Admin-Password": password,
       },
       body: JSON.stringify(form),
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "全局 API 同步",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `同步失败：HTTP ${response.status}`);
     const serverConfig = payload.config || form;
+    customDebugState.loaded = true;
+    customDebugState.current = serverConfig;
     customDebugState.history = Array.isArray(payload.history) ? payload.history : customDebugState.history;
     customDebugState.global = payload.global || serverConfig;
     billingState.priceCents = Number(payload.priceCents || serverConfig.priceCents || billingState.priceCents);
@@ -3017,12 +3093,21 @@ async function applyCustomApiAsGlobal() {
     showToast("已设置为全局 API，售价也已同步到全站");
   } catch (error) {
     setCustomApiAdminStatus("同步失败");
+    restoreAdminCustomApiForm();
     showToast(error.message || "设置全局 API 失败");
   } finally {
     button.disabled = false;
     button.innerHTML = `<i data-icon="check"></i><span>设置为全局 API</span>`;
     renderIcons();
   }
+}
+
+function restoreAdminCustomApiForm() {
+  if (!customDebugState.loaded) return;
+  const fallback = customDebugState.current || { ...(customDebugState.global || {}), enabled: false };
+  hydrateAdminCustomApiForm(fallback);
+  applyCustomApiRuntimeConfig(customDebugState.current || {});
+  setCustomApiAdminStatus(apiPricingStatus(customDebugState.current || {}, customDebugState.global || {}));
 }
 
 function readAdminCustomApiForm() {
@@ -3154,7 +3239,7 @@ function setCustomApiAdminStatus(text) {
 
 function updateRecommendedApiLabels() {
   const priceLabel = formatPlatformPriceLabel(billingState.priceCents);
-  const label = `推荐 API · ${priceLabel}`;
+  const label = `站点 API · ${priceLabel}`;
   const option = $('#apiProviderSelect option[value="platform"]');
   if (option) option.textContent = label;
   const intro = $("#platformPriceIntro");
@@ -3202,13 +3287,17 @@ function downloadTextFile(text, filename, type = "text/plain;charset=utf-8") {
 }
 
 async function readJsonResponse(response) {
-  const text = await response.text();
+  const text = stripJsonBom(await response.text());
   if (!text) return {};
   try {
     return JSON.parse(text);
   } catch {
-    return { error: { message: text } };
+    return { error: { message: formatHttpError(response?.status || 0, text) } };
   }
+}
+
+function stripJsonBom(text) {
+  return String(text || "").replace(/^\uFEFF/, "");
 }
 
 function apiUrl(path) {
@@ -3344,7 +3433,7 @@ function formatSignedMoney(cents) {
 function walletLedgerTypeLabel(type) {
   const labels = {
     redeem: "充值码到账",
-    charge: "推荐 API 扣费",
+    charge: "站点 API 扣费",
     refund: "生成失败退款",
     adjust: "余额调整",
   };
@@ -4222,10 +4311,11 @@ function startProgress(title, detail, percent, counts = {}) {
   applyProgress(title, detail, percent);
   clearInterval(progressTimer);
   progressTimer = setInterval(() => {
-    if (currentProgress >= 92) return;
+    if (currentProgress >= 88) return;
     const elapsed = (Date.now() - progressStartedAt) / 1000;
-    const eased = Math.min(92, 28 + Math.log2(elapsed + 1) * 18);
-    applyProgress("等待模型生成", `仍在生成中，已等待 ${formatDurationLabel(elapsed * 1000)}`, Math.max(currentProgress, eased));
+    const softCap = elapsed > 75 ? 88 : elapsed > 45 ? 86 : 82;
+    const eased = Math.min(softCap, 20 + Math.log2(elapsed + 1) * 12.5);
+    applyProgress("等待模型生成", `模型仍在生成，已等待 ${formatDurationLabel(elapsed * 1000)}`, Math.max(currentProgress, eased));
   }, 800);
 }
 

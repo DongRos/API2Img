@@ -266,7 +266,7 @@ async function proxyImageRequest(req, res) {
 async function platformImageRequest(req, res, customerId) {
   const platform = await platformConfig();
   if (!platform.enabled) {
-    sendJson(res, 503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } });
+    sendJson(res, 503, { error: { message: "站点 API 还没有配置，请联系站长处理" } });
     return;
   }
 
@@ -288,7 +288,7 @@ async function platformImageRequest(req, res, customerId) {
 
   const endpoint = mode === "image" ? platform.editEndpoint || inferEditEndpoint(platform.textEndpoint) : platform.textEndpoint;
   if (!endpoint) {
-    sendJson(res, 503, { error: { message: "推荐 API 图生图接口还没有配置" } });
+    sendJson(res, 503, { error: { message: "站点 API 图生图接口还没有配置" } });
     return;
   }
 
@@ -313,7 +313,7 @@ async function platformImageRequest(req, res, customerId) {
 async function platformDirectConfigRequest(req, res, customerId) {
   const platform = await platformConfig();
   if (!platform.enabled) {
-    sendJson(res, 503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } });
+    sendJson(res, 503, { error: { message: "站点 API 还没有配置，请联系站长处理" } });
     return;
   }
 
@@ -334,7 +334,7 @@ async function platformDirectConfigRequest(req, res, customerId) {
 
   const endpoint = mode === "image" ? platform.editEndpoint || inferEditEndpoint(platform.textEndpoint) : platform.textEndpoint;
   if (!endpoint) {
-    sendJson(res, 503, { error: { message: "推荐 API 图生图接口还没有配置" } });
+    sendJson(res, 503, { error: { message: "站点 API 图生图接口还没有配置" } });
     return;
   }
 
@@ -350,7 +350,7 @@ async function platformDirectConfigRequest(req, res, customerId) {
 async function platformUsageRequest(req, res, customerId) {
   const platform = await platformConfig();
   if (!platform.enabled) {
-    sendJson(res, 503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } });
+    sendJson(res, 503, { error: { message: "站点 API 还没有配置，请联系站长处理" } });
     return;
   }
 
@@ -471,7 +471,7 @@ async function handleBillingAdminRequest(req, res, route) {
 }
 
 async function fetchUpstreamImage(endpoint, request) {
-  if (!/^https?:\/\//i.test(endpoint)) throw new Error("推荐 API URL 必须以 http:// 或 https:// 开头");
+  if (!/^https?:\/\//i.test(endpoint)) throw new Error("站点 API URL 必须以 http:// 或 https:// 开头");
   const headers = sanitizeHeaders(request.headers || {});
   let body;
 

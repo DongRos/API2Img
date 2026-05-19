@@ -49,6 +49,7 @@ function utc_sql_age_seconds(string $value): int
 
 function json_response(array $payload, int $status = 200, array $headers = []): void
 {
+    discard_accidental_output();
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
@@ -56,6 +57,13 @@ function json_response(array $payload, int $status = 200, array $headers = []): 
         header($name . ': ' . $value);
     }
     echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+function discard_accidental_output(): void
+{
+    if (ob_get_level() > 0 && ob_get_length() > 0) {
+        ob_clean();
+    }
 }
 
 function error_response(string $message, int $status = 400, string $code = ''): void
@@ -549,18 +557,102 @@ function data_url_to_temp_file(string $dataUrl, string $fallbackMime = 'image/pn
 function json_images(array $payload): array
 {
     $images = [];
-    if (isset($payload['data']) && is_array($payload['data'])) {
-        foreach ($payload['data'] as $item) {
-            if (is_array($item)) {
-                if (!empty($item['url'])) {
-                    $images[] = ['url' => $item['url']];
-                } elseif (!empty($item['b64_json'])) {
-                    $images[] = ['b64_json' => $item['b64_json']];
-                }
+    collect_json_images($payload, $images, 0, '');
+    $seen = [];
+    $clean = [];
+    foreach ($images as $image) {
+        $key = json_encode($image, JSON_UNESCAPED_SLASHES);
+        if ($key === false || isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $clean[] = $image;
+    }
+    return $clean;
+}
+
+function collect_json_images($value, array &$images, int $depth, string $keyPath): void
+{
+    if ($value === null || $depth > 8) {
+        return;
+    }
+    if (is_string($value)) {
+        $text = trim($value);
+        if ($text === '' || json_value_looks_like_html($text)) {
+            return;
+        }
+        if (($text[0] === '{' || $text[0] === '[') && strlen($text) < 200000) {
+            $decoded = json_decode($text, true);
+            if (is_array($decoded)) {
+                collect_json_images($decoded, $images, $depth + 1, $keyPath);
+                return;
+            }
+        }
+        foreach (json_image_sources($text, $keyPath) as $source) {
+            $images[] = $source;
+        }
+        return;
+    }
+    if (!is_array($value)) {
+        return;
+    }
+    foreach ($value as $key => $nested) {
+        $nextPath = $keyPath === '' ? (string)$key : $keyPath . '.' . (string)$key;
+        collect_json_images($nested, $images, $depth + 1, $nextPath);
+    }
+}
+
+function json_image_sources(string $text, string $keyPath): array
+{
+    $sources = [];
+    $imageField = preg_match('/(^|[^a-z0-9])(b64|b64_json|base64|image|image_url|images|img|data|url|result|output|content|asset|assets|file|files|download)($|[^a-z0-9])/i', $keyPath) === 1;
+
+    if (preg_match_all('/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=\r\n]+/i', $text, $matches)) {
+        foreach ($matches[0] as $dataUrl) {
+            $sources[] = ['url' => preg_replace('/\s+/', '', $dataUrl)];
+        }
+    }
+
+    if (preg_match_all('/https?:\/\/[^\s"\'<>),]+/i', $text, $matches)) {
+        foreach ($matches[0] as $url) {
+            $cleanUrl = rtrim($url, ".。");
+            if (json_is_likely_image_url($cleanUrl) || ($imageField && !json_is_excluded_image_url($cleanUrl))) {
+                $sources[] = ['url' => $cleanUrl];
             }
         }
     }
-    return $images;
+
+    if (preg_match_all('/[A-Za-z0-9+\/_-]{220,}={0,2}/', $text, $matches) && ($imageField || json_looks_like_image_base64($matches[0][0] ?? ''))) {
+        foreach ($matches[0] as $base64) {
+            $sources[] = ['b64_json' => strtr($base64, '-_', '+/')];
+        }
+    }
+
+    return $sources;
+}
+
+function json_value_looks_like_html(string $text): bool
+{
+    return preg_match('/<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]/i', $text) === 1;
+}
+
+function json_is_likely_image_url(string $url): bool
+{
+    if (json_is_excluded_image_url($url)) {
+        return false;
+    }
+    return preg_match('/\.(png|jpe?g|webp|gif|bmp|avif)(\?|#|$)/i', $url) === 1;
+}
+
+function json_is_excluded_image_url(string $url): bool
+{
+    return preg_match('/logo|favicon|avatar|icon|brand/i', $url) === 1;
+}
+
+function json_looks_like_image_base64(string $value): bool
+{
+    $clean = strtr($value, '-_', '+/');
+    return preg_match('/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR)/', $clean) === 1;
 }
 
 function create_ledger(PDO $pdo, int $userId, string $type, int $amountCents, int $before, int $after, string $relatedId, string $note = ''): void

@@ -494,7 +494,7 @@ export async function platformImage(context) {
   const session = await resolveSession(context);
   const platform = await getPlatformConfig(context);
   if (!platform.enabled) {
-    return jsonResponse(503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } }, session);
+    return jsonResponse(503, { error: { message: "站点 API 还没有配置，请联系站长处理" } }, session);
   }
 
   const payload = await readJson(context.request);
@@ -516,7 +516,7 @@ export async function platformImage(context) {
   }
 
   const endpoint = mode === "image" ? platform.editEndpoint || inferEditEndpoint(platform.textEndpoint) : platform.textEndpoint;
-  if (!endpoint) return jsonResponse(503, { error: { message: "推荐 API 图生图接口还没有配置" } }, session);
+  if (!endpoint) return jsonResponse(503, { error: { message: "站点 API 图生图接口还没有配置" } }, session);
 
   const upstreamRequest = payload.request || {};
   const upstream = await fetchUpstreamImage(endpoint, {
@@ -541,7 +541,7 @@ export async function platformDirectConfig(context) {
   const session = await resolveSession(context);
   const platform = await getPlatformConfig(context);
   if (!platform.enabled) {
-    return jsonResponse(503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } }, session);
+    return jsonResponse(503, { error: { message: "站点 API 还没有配置，请联系站长处理" } }, session);
   }
 
   const payload = await readJson(context.request);
@@ -563,7 +563,7 @@ export async function platformDirectConfig(context) {
   }
 
   const endpoint = mode === "image" ? platform.editEndpoint || inferEditEndpoint(platform.textEndpoint) : platform.textEndpoint;
-  if (!endpoint) return jsonResponse(503, { error: { message: "推荐 API 图生图接口还没有配置" } }, session);
+  if (!endpoint) return jsonResponse(503, { error: { message: "站点 API 图生图接口还没有配置" } }, session);
 
   return jsonResponse(
     200,
@@ -582,7 +582,7 @@ export async function platformUsage(context) {
   const session = await resolveSession(context);
   const platform = await getPlatformConfig(context);
   if (!platform.enabled) {
-    return jsonResponse(503, { error: { message: "推荐 API 还没有配置，请联系站长处理" } }, session);
+    return jsonResponse(503, { error: { message: "站点 API 还没有配置，请联系站长处理" } }, session);
   }
 
   const payload = await readJson(context.request);

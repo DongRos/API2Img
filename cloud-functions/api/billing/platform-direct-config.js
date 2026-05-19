@@ -18,7 +18,7 @@ function deprecatedPlatformResponse() {
       ok: false,
       error: {
         code: "platform_direct_deprecated",
-        message: "推荐 API 已升级为后端数据库钱包扣费，不再向前端下发 API 配置。",
+        message: "站点 API 已升级为后端数据库钱包扣费，不再向前端下发 API 配置。",
       },
     }),
     {

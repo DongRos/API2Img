@@ -18,7 +18,7 @@ function deprecatedPlatformResponse() {
       ok: false,
       error: {
         code: "platform_usage_deprecated",
-        message: "推荐 API 扣费已迁移到后端原子事务，前端上报扣费接口已停用。",
+        message: "站点 API 扣费已迁移到后端原子事务，前端上报扣费接口已停用。",
       },
     }),
     {

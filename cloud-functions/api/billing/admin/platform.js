@@ -5,11 +5,11 @@ export async function onRequestOptions() {
 }
 
 export async function onRequestGet() {
-  return deprecatedResponse("推荐 API 配置已迁移到 PHP 服务器配置文件。", "admin_platform_deprecated");
+  return deprecatedResponse("站点 API 配置已迁移到 PHP 服务器配置文件。", "admin_platform_deprecated");
 }
 
 export async function onRequestPost() {
-  return deprecatedResponse("推荐 API 配置已迁移到 PHP 服务器配置文件。", "admin_platform_deprecated");
+  return deprecatedResponse("站点 API 配置已迁移到 PHP 服务器配置文件。", "admin_platform_deprecated");
 }
 
 export async function onRequest() {
