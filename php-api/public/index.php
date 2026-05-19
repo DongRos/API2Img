@@ -73,7 +73,7 @@ function route_request(PDO $pdo, array $config): void
         return;
     }
     if ($method === 'GET' && $path === '/api/billing/config') {
-        billing_config($config);
+        billing_config($pdo, $config);
         return;
     }
     if ($method === 'POST' && $path === '/api/billing/redeem') {
@@ -114,6 +114,10 @@ function route_request(PDO $pdo, array $config): void
     }
     if ($method === 'POST' && $path === '/api/admin/custom-api') {
         admin_save_custom_api($pdo, $config);
+        return;
+    }
+    if ($method === 'POST' && $path === '/api/admin/custom-api/global') {
+        admin_apply_custom_api_global($pdo, $config);
         return;
     }
 
@@ -227,7 +231,8 @@ function auth_verify(PDO $pdo, array $config): void
         $session->execute([(int)$user['id'], $tokenHash, $days]);
         $pdo->commit();
         set_session_cookie($config, $token, $days * 86400);
-        json_response(['ok' => true, 'user' => public_user($user), 'priceCents' => (int)$config['platform']['price_cents']]);
+        $platform = platform_config($pdo, $config);
+        json_response(['ok' => true, 'user' => public_user($user), 'priceCents' => (int)$platform['price_cents']]);
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
@@ -239,11 +244,12 @@ function auth_verify(PDO $pdo, array $config): void
 function auth_me(PDO $pdo, array $config): void
 {
     $user = current_user($pdo, $config);
+    $platform = platform_config($pdo, $config);
     json_response([
         'ok' => true,
         'authenticated' => (bool)$user,
         'user' => $user ? public_user($user) : null,
-        'priceCents' => (int)$config['platform']['price_cents'],
+        'priceCents' => (int)$platform['price_cents'],
         'currency' => 'CNY',
         'rechargeUrl' => (string)$config['app']['recharge_url'],
     ]);
@@ -272,6 +278,7 @@ function api_health(?PDO $pdo, array $config, ?Throwable $dbError = null): void
             $dbOk = false;
         }
     }
+    $platform = ($dbOk && $pdo instanceof PDO) ? platform_config($pdo, $config) : fallback_platform_config($config);
     json_response([
         'ok' => $dbOk,
         'service' => 'api2image-php-wallet',
@@ -283,23 +290,27 @@ function api_health(?PDO $pdo, array $config, ?Throwable $dbError = null): void
             'curl' => extension_loaded('curl'),
             'openssl' => extension_loaded('openssl'),
         ],
-        'platformConfigured' => trim((string)$config['platform']['text_endpoint']) !== '' && trim((string)$config['platform']['api_key']) !== '',
+        'platformConfigured' => platform_is_configured($platform),
         'mailConfigured' => trim((string)$config['mail']['smtp_host']) !== '' && trim((string)$config['mail']['smtp_username']) !== '',
         'secretConfigured' => is_secret_configured($config),
         'dbError' => $dbOk || !$dbError ? '' : substr($dbError->getMessage(), 0, 180),
     ], $dbOk ? 200 : 500);
 }
 
-function billing_config(array $config): void
+function billing_config(PDO $pdo, array $config): void
 {
+    $platform = platform_config($pdo, $config);
     json_response([
         'ok' => true,
-        'priceCents' => (int)$config['platform']['price_cents'],
-        'upstreamCostCents' => (int)$config['platform']['upstream_cost_cents'],
+        'priceCents' => (int)$platform['price_cents'],
+        'upstreamCostCents' => (int)$platform['upstream_cost_cents'],
         'currency' => 'CNY',
-        'platformEnabled' => trim((string)$config['platform']['text_endpoint']) !== '' && trim((string)$config['platform']['api_key']) !== '',
+        'platformEnabled' => platform_is_configured($platform),
         'rechargeUrl' => (string)$config['app']['recharge_url'],
         'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
+        'requestFormat' => (string)$platform['request_format'],
+        'customTemplate' => (string)$platform['custom_template'],
+        'modelName' => (string)$platform['model_name'],
     ]);
 }
 
@@ -380,11 +391,12 @@ function generate_ticket(PDO $pdo, array $config): void
 {
     $user = require_user($pdo, $config);
     $payload = read_json();
+    $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $count = max(1, min((int)$config['platform']['max_count'], (int)($payload['count'] ?? 1)));
-    $price = (int)$config['platform']['price_cents'];
+    $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
+    $price = (int)$platform['price_cents'];
     $total = $count * $price;
-    if (!platform_is_configured($config)) {
+    if (!platform_is_configured($platform)) {
         throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
     }
     ensure_user_can_afford($pdo, (int)$user['id'], $total);
@@ -410,17 +422,18 @@ function generate_direct_config(PDO $pdo, array $config): void
 {
     $user = require_user($pdo, $config);
     $payload = read_json();
+    $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $count = max(1, min((int)$config['platform']['max_count'], (int)($payload['count'] ?? 1)));
-    $price = (int)$config['platform']['price_cents'];
+    $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
+    $price = (int)$platform['price_cents'];
     $total = $count * $price;
-    if (!platform_is_configured($config)) {
+    if (!platform_is_configured($platform)) {
         throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
     }
     ensure_user_can_afford($pdo, (int)$user['id'], $total);
     $endpoint = $mode === 'image'
-        ? ((string)$config['platform']['edit_endpoint'] ?: infer_edit_endpoint((string)$config['platform']['text_endpoint']))
-        : (string)$config['platform']['text_endpoint'];
+        ? ((string)$platform['edit_endpoint'] ?: infer_edit_endpoint((string)$platform['text_endpoint']))
+        : (string)$platform['text_endpoint'];
     if ($endpoint === '') {
         throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
     }
@@ -436,7 +449,7 @@ function generate_direct_config(PDO $pdo, array $config): void
         'ok' => true,
         'ticket' => $ticket,
         'endpoint' => $endpoint,
-        'apiKey' => (string)$config['platform']['api_key'],
+        'apiKey' => (string)$platform['api_key'],
         'priceCents' => $price,
         'balanceCents' => current_balance($pdo, (int)$user['id']),
     ]);
@@ -445,29 +458,30 @@ function generate_direct_config(PDO $pdo, array $config): void
 function generate_platform(PDO $pdo, array $config): void
 {
     $payload = read_json();
+    $platform = platform_config($pdo, $config);
     $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
     if (!$ticket) {
         $user = require_user($pdo, $config);
         $ticket = [
             'uid' => (int)$user['id'],
             'mode' => (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text',
-            'count' => max(1, min((int)$config['platform']['max_count'], (int)($payload['count'] ?? 1))),
-            'price' => (int)$config['platform']['price_cents'],
+            'count' => max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1))),
+            'price' => (int)$platform['price_cents'],
         ];
     }
     $mode = (($ticket['mode'] ?? ($payload['mode'] ?? 'text')) === 'image') ? 'image' : 'text';
     $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
-    $count = max(1, min((int)$ticket['count'], (int)$config['platform']['max_count'], (int)($payload['count'] ?? 1)));
+    $count = max(1, min((int)$ticket['count'], (int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = max(1, (int)$ticket['price']);
     ensure_user_can_afford($pdo, (int)$ticket['uid'], $count * $price);
     $request = enforce_platform_request_count($request, $count);
-    $endpoint = $mode === 'image' ? ((string)$config['platform']['edit_endpoint'] ?: infer_edit_endpoint((string)$config['platform']['text_endpoint'])) : (string)$config['platform']['text_endpoint'];
-    if ($endpoint === '' || trim((string)$config['platform']['api_key']) === '') {
+    $endpoint = $mode === 'image' ? ((string)$platform['edit_endpoint'] ?: infer_edit_endpoint((string)$platform['text_endpoint'])) : (string)$platform['text_endpoint'];
+    if ($endpoint === '' || trim((string)$platform['api_key']) === '') {
         throw new HttpError('推荐 API 尚未配置', 503, 'platform_not_configured');
     }
 
     try {
-        $upstream = call_platform_upstream($config, $endpoint, $request);
+        $upstream = call_platform_upstream($platform, $endpoint, $request);
         $bodyPayload = json_decode($upstream['body'], true);
         $images = is_array($bodyPayload) ? json_images($bodyPayload) : [];
         if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
@@ -610,9 +624,82 @@ function refund_generation_charge(PDO $pdo, int $userId, int $generationId, stri
     }
 }
 
-function platform_is_configured(array $config): bool
+function fallback_platform_config(array $config): array
 {
-    return trim((string)$config['platform']['text_endpoint']) !== '' && trim((string)$config['platform']['api_key']) !== '';
+    $platform = is_array($config['platform'] ?? null) ? $config['platform'] : [];
+    return [
+        'text_endpoint' => trim((string)($platform['text_endpoint'] ?? '')),
+        'edit_endpoint' => trim((string)($platform['edit_endpoint'] ?? '')),
+        'api_key' => trim((string)($platform['api_key'] ?? '')),
+        'price_cents' => max(1, (int)($platform['price_cents'] ?? 10)),
+        'upstream_cost_cents' => max(0, (int)($platform['upstream_cost_cents'] ?? 0)),
+        'max_count' => max(1, (int)($platform['max_count'] ?? 4)),
+        'model_name' => trim((string)($platform['model_name'] ?? 'gpt-image-2')),
+        'request_format' => 'openai',
+        'custom_template' => '',
+        'source' => 'file',
+    ];
+}
+
+function platform_config(PDO $pdo, array $config): array
+{
+    $fallback = fallback_platform_config($config);
+    $stored = read_admin_setting_json($pdo, 'platform_global_api');
+    if (!is_array($stored) || $stored === []) {
+        return $fallback;
+    }
+    return normalize_global_platform_config($stored, $fallback);
+}
+
+function normalize_global_platform_config(array $value, array $fallback): array
+{
+    $textEndpoint = trim((string)($value['textEndpoint'] ?? $value['text_endpoint'] ?? $fallback['text_endpoint']));
+    $editEndpoint = trim((string)($value['editEndpoint'] ?? $value['edit_endpoint'] ?? $fallback['edit_endpoint']));
+    $apiKey = trim((string)($value['apiKey'] ?? $value['api_key'] ?? $fallback['api_key']));
+    $price = max(1, (int)($value['priceCents'] ?? $value['price_cents'] ?? $fallback['price_cents']));
+    $upstreamCost = max(0, (int)($value['upstreamCostCents'] ?? $value['upstream_cost_cents'] ?? $fallback['upstream_cost_cents']));
+    $maxCount = max(1, (int)($value['maxCount'] ?? $value['max_count'] ?? $fallback['max_count']));
+    $modelName = trim((string)($value['modelName'] ?? $value['model_name'] ?? $fallback['model_name']));
+    $requestFormat = (string)($value['requestFormat'] ?? $value['request_format'] ?? $fallback['request_format']);
+    if (!in_array($requestFormat, ['openai', 'json'], true)) {
+        $requestFormat = 'openai';
+    }
+    $customTemplate = custom_api_template((string)($value['customTemplate'] ?? $value['custom_template'] ?? $fallback['custom_template']));
+    return [
+        'text_endpoint' => $textEndpoint,
+        'edit_endpoint' => $editEndpoint,
+        'api_key' => $apiKey,
+        'price_cents' => $price,
+        'upstream_cost_cents' => $upstreamCost,
+        'max_count' => $maxCount,
+        'model_name' => $modelName ?: 'gpt-image-2',
+        'request_format' => $requestFormat,
+        'custom_template' => $customTemplate,
+        'updated_at' => (int)($value['updatedAt'] ?? $value['updated_at'] ?? 0),
+        'source' => 'database',
+    ];
+}
+
+function public_global_platform_config(array $platform): array
+{
+    return [
+        'textEndpoint' => (string)$platform['text_endpoint'],
+        'editEndpoint' => (string)$platform['edit_endpoint'],
+        'apiKey' => (string)$platform['api_key'],
+        'priceCents' => (int)$platform['price_cents'],
+        'upstreamCostCents' => (int)$platform['upstream_cost_cents'],
+        'maxCount' => (int)$platform['max_count'],
+        'modelName' => (string)$platform['model_name'],
+        'requestFormat' => (string)$platform['request_format'],
+        'customTemplate' => (string)$platform['custom_template'],
+        'updatedAt' => (int)($platform['updated_at'] ?? 0),
+        'source' => (string)($platform['source'] ?? 'file'),
+    ];
+}
+
+function platform_is_configured(array $platform): bool
+{
+    return trim((string)$platform['text_endpoint']) !== '' && trim((string)$platform['api_key']) !== '';
 }
 
 function sign_generation_ticket(array $config, array $claims, string $token): string
@@ -659,7 +746,7 @@ function base64url_decode(string $value): string
     return $decoded === false ? '' : $decoded;
 }
 
-function call_platform_upstream(array $config, string $endpoint, array $request): array
+function call_platform_upstream(array $platform, string $endpoint, array $request): array
 {
     $headers = [];
     foreach (($request['headers'] ?? []) as $key => $value) {
@@ -667,7 +754,7 @@ function call_platform_upstream(array $config, string $endpoint, array $request)
             $headers['Content-Type'] = (string)$value;
         }
     }
-    $headers['Authorization'] = 'Bearer ' . (string)$config['platform']['api_key'];
+    $headers['Authorization'] = 'Bearer ' . (string)$platform['api_key'];
     $tempFiles = [];
     try {
         if (($request['bodyType'] ?? '') === 'multipart') {
@@ -802,10 +889,12 @@ function admin_get_custom_api(PDO $pdo, array $config): void
     $settings = read_admin_setting_json($pdo, 'custom_api_debug');
     $current = normalize_custom_api_config($settings['current'] ?? []);
     $history = normalize_custom_api_history($settings['history'] ?? []);
+    $global = public_global_platform_config(platform_config($pdo, $config));
     json_response([
         'ok' => true,
         'config' => $current,
         'history' => $history,
+        'global' => $global,
     ]);
 }
 
@@ -841,10 +930,68 @@ function admin_save_custom_api(PDO $pdo, array $config): void
         'current' => $current,
         'history' => $history,
     ]);
+    $global = public_global_platform_config(platform_config($pdo, $config));
     json_response([
         'ok' => true,
         'config' => $current,
         'history' => $history,
+        'global' => $global,
+    ]);
+}
+
+function admin_apply_custom_api_global(PDO $pdo, array $config): void
+{
+    require_admin($config);
+    $payload = read_json();
+    $current = normalize_custom_api_config($payload);
+    if ($current['textEndpoint'] === '' || $current['apiKey'] === '') {
+        throw new HttpError('设置全局 API 前，请填写文生图 API URL 和 API Key', 400, 'global_api_incomplete');
+    }
+    if ($current['priceCents'] <= 0) {
+        throw new HttpError('售价需要大于 0 元/张', 400, 'invalid_price');
+    }
+    $existingPlatform = platform_config($pdo, $config);
+
+    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $history = normalize_custom_api_history($settings['history'] ?? []);
+    $current['updatedAt'] = time() * 1000;
+    $snapshot = $current;
+    $snapshot['enabled'] = false;
+    $snapshot['id'] = $snapshot['id'] ?: random_token(8);
+    $snapshot['title'] = custom_api_config_title($snapshot);
+    $key = custom_api_history_key($snapshot);
+    $filtered = [];
+    foreach ($history as $item) {
+        if (custom_api_history_key($item) !== $key) {
+            $filtered[] = $item;
+        }
+    }
+    $history = array_slice(array_merge([$snapshot], $filtered), 0, 12);
+
+    write_admin_setting_json($pdo, 'custom_api_debug', [
+        'current' => $current,
+        'history' => $history,
+    ]);
+    write_admin_setting_json($pdo, 'platform_global_api', [
+        'textEndpoint' => $current['textEndpoint'],
+        'editEndpoint' => $current['editEndpoint'],
+        'apiKey' => $current['apiKey'],
+        'priceCents' => $current['priceCents'],
+        'upstreamCostCents' => (int)$existingPlatform['upstream_cost_cents'],
+        'maxCount' => (int)$existingPlatform['max_count'],
+        'modelName' => $current['modelName'],
+        'requestFormat' => $current['requestFormat'],
+        'customTemplate' => $current['customTemplate'],
+        'updatedAt' => $current['updatedAt'],
+    ]);
+    $global = public_global_platform_config(platform_config($pdo, $config));
+    json_response([
+        'ok' => true,
+        'config' => $current,
+        'history' => $history,
+        'global' => $global,
+        'priceCents' => (int)$global['priceCents'],
+        'platformEnabled' => platform_is_configured(platform_config($pdo, $config)),
     ]);
 }
 
@@ -906,8 +1053,18 @@ function normalize_custom_api_config(array $value): array
         'transportMode' => $transportMode,
         'customTemplate' => custom_api_template((string)($value['customTemplate'] ?? '')),
         'modelName' => substr(trim((string)($value['modelName'] ?? 'gpt-image-2')), 0, 80) ?: 'gpt-image-2',
+        'priceCents' => custom_api_price_cents($value['priceCents'] ?? $value['price_cents'] ?? 10),
         'updatedAt' => (int)($value['updatedAt'] ?? 0),
     ];
+}
+
+function custom_api_price_cents($value): int
+{
+    $price = (int)$value;
+    if ($price < 1) {
+        $price = 10;
+    }
+    return min(100000, $price);
 }
 
 function normalize_custom_api_history($value): array
@@ -978,6 +1135,7 @@ function custom_api_history_key(array $item): string
         (string)($item['requestFormat'] ?? 'openai'),
         (string)($item['transportMode'] ?? 'direct'),
         (string)($item['modelName'] ?? 'gpt-image-2'),
+        (string)($item['priceCents'] ?? 10),
     ]);
 }
 

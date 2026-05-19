@@ -287,14 +287,13 @@
               <i data-icon="check"></i><span>进入后台</span>
             </button>
           </div>
-          <p id="codeAdminAuthStatus" class="admin-auth-status">验证通过后可使用兑换码、推荐 API、公告和统计功能。</p>
+          <p id="codeAdminAuthStatus" class="admin-auth-status">验证通过后可使用兑换码、API 与定价、公告和统计功能。</p>
         </div>
 
         <div id="codeAdminWorkspace" class="admin-workspace" hidden>
           <div class="admin-nav" role="tablist" aria-label="站长后台功能">
             <button class="admin-nav-button active" type="button" data-admin-section="codes">兑换码</button>
-            <button class="admin-nav-button" type="button" data-admin-section="platform">推荐 API</button>
-            <button class="admin-nav-button" type="button" data-admin-section="custom">调试 API</button>
+            <button class="admin-nav-button" type="button" data-admin-section="custom">API 与定价</button>
             <button class="admin-nav-button" type="button" data-admin-section="announcements">公告</button>
             <button class="admin-nav-button" type="button" data-admin-section="stats">统计</button>
           </div>
@@ -344,44 +343,10 @@
             </section>
           </section>
 
-        <section id="platformAdminSection" class="admin-section admin-section-view" data-admin-panel="platform">
-          <div class="config-history-head">
-            <h3>推荐 API 配置</h3>
-            <span id="platformAdminStatus">仅站长可改</span>
-          </div>
-
-          <label class="field">
-            <span>文生图接口</span>
-            <input id="platformTextEndpoint" type="url" placeholder="https://.../v1/images/generations" />
-          </label>
-          <label class="field">
-            <span>图生图接口</span>
-            <input id="platformEditEndpoint" type="url" placeholder="https://.../v1/images/edits" />
-          </label>
-          <label class="field">
-            <span>API Key</span>
-            <input id="platformApiKey" type="password" autocomplete="off" placeholder="sk-..." />
-          </label>
-
-          <label class="field">
-            <span>售价（元/张）</span>
-            <input id="platformPriceYuan" type="number" min="0.01" step="0.01" value="0.10" />
-          </label>
-
-          <div class="code-admin-actions">
-            <button class="pill-button" id="loadPlatformConfigButton" type="button">
-              <i data-icon="rotate"></i><span>读取配置</span>
-            </button>
-            <button class="pill-button primary" id="savePlatformConfigButton" type="button">
-              <i data-icon="check"></i><span>保存推荐 API</span>
-            </button>
-          </div>
-        </section>
-
         <section id="customApiAdminSection" class="admin-section admin-section-view" data-admin-panel="custom">
           <div class="config-history-head">
-            <h3>自定义 API 调试</h3>
-            <span id="customApiAdminStatus">仅站长本机调试生效</span>
+            <h3>API 与定价</h3>
+            <span id="customApiAdminStatus">调试仅本机生效；设置为全局后全部用户生效</span>
           </div>
 
           <label class="check-line">
@@ -428,6 +393,10 @@
             <span>默认模型名</span>
             <input id="adminCustomModelName" type="text" placeholder="gpt-image-2" />
           </label>
+          <label class="field">
+            <span>售价（元/张）</span>
+            <input id="adminCustomPriceYuan" type="number" min="0.01" step="0.01" value="0.10" />
+          </label>
 
           <div class="code-admin-actions">
             <button class="pill-button" id="loadCustomApiConfigButton" type="button">
@@ -435,6 +404,9 @@
             </button>
             <button class="pill-button primary" id="saveCustomApiConfigButton" type="button">
               <i data-icon="check"></i><span>保存并应用</span>
+            </button>
+            <button class="pill-button primary" id="applyGlobalApiConfigButton" type="button">
+              <i data-icon="check"></i><span>设置为全局 API</span>
             </button>
           </div>
 
@@ -570,6 +542,6 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=44"></script>
+    <script src="./app.js?v=45"></script>
   </body>
 </html>

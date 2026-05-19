@@ -111,6 +111,9 @@ const billingState = {
   rechargeUrl: "https://api2img.shop/",
   directBaseUrl: "",
   lastDirectConfig: null,
+  platformRequestFormat: "openai",
+  platformCustomTemplate: "",
+  platformModelName: "",
   ledger: [],
   activeOrder: null,
 };
@@ -141,6 +144,7 @@ const customDebugState = {
   enabled: false,
   loaded: false,
   history: [],
+  global: null,
   updatedAt: 0,
 };
 
@@ -274,10 +278,9 @@ function bindEvents() {
   $("#copyCodesButton").addEventListener("click", copyGeneratedCodes);
   $("#downloadCodesButton").addEventListener("click", downloadLastCodeCsv);
   $("#codeAdminAmount").addEventListener("input", syncCodeAdminLabel);
-  $("#loadPlatformConfigButton").addEventListener("click", loadPlatformAdminConfig);
-  $("#savePlatformConfigButton").addEventListener("click", savePlatformAdminConfig);
   $("#loadCustomApiConfigButton")?.addEventListener("click", () => loadCustomApiAdminConfig({ silent: false }));
   $("#saveCustomApiConfigButton")?.addEventListener("click", saveCustomApiAdminConfig);
+  $("#applyGlobalApiConfigButton")?.addEventListener("click", applyCustomApiAsGlobal);
   $("#adminCustomRequestFormat")?.addEventListener("change", updateAdminCustomTemplateVisibility);
   $("#adminCustomHistoryList")?.addEventListener("click", onAdminCustomHistoryClick);
   $("#cancelGenerateButton").addEventListener("click", cancelGeneration);
@@ -473,11 +476,12 @@ async function requestImages(endpoint, options) {
   endpoint = normalizeEndpointBeforeRequest(endpoint, options);
   const headers = {};
   if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
-  const requestFormat = isPlatformApiSelected() ? "openai" : config.requestFormat;
+  const requestFormat = isPlatformApiSelected() ? billingState.platformRequestFormat || "openai" : config.requestFormat;
 
   if (requestFormat === "json") {
     headers["Content-Type"] = "application/json";
-    const body = renderTemplate(config.customTemplate || defaultTemplate, options);
+    const template = isPlatformApiSelected() ? billingState.platformCustomTemplate || defaultTemplate : config.customTemplate || defaultTemplate;
+    const body = renderTemplate(template, options);
     return sendAndParseImageRequest(endpoint, { method: "POST", headers, bodyType: "json", body, signal: options.abortSignal }, options, {
       variant: "custom-json",
       label: requestLogLabel(options),
@@ -2068,6 +2072,9 @@ async function loadBillingConfig() {
   billingState.platformEnabled = Boolean(info.platformEnabled);
   billingState.rechargeUrl = info.rechargeUrl || billingState.rechargeUrl;
   billingState.directBaseUrl = normalizeDirectApiBase(info.directBaseUrl || billingState.directBaseUrl);
+  billingState.platformRequestFormat = info.requestFormat === "json" ? "json" : "openai";
+  billingState.platformCustomTemplate = info.customTemplate || "";
+  billingState.platformModelName = info.modelName || "";
   return billingState.platformEnabled;
 }
 
@@ -2386,7 +2393,6 @@ function openCodeAdminPanel(section = "codes") {
   codeAdminState.authenticated = false;
   codeAdminState.pendingSection = section || "codes";
   syncCodeAdminLabel();
-  hydratePlatformAdminPriceDefaults();
   applyCodeAdminAuthState();
   $("#codeAdminPanel").classList.add("open");
   $("#walletPanel").classList.remove("open");
@@ -2429,8 +2435,6 @@ async function unlockCodeAdminPanel() {
     if (!response.ok) throw new Error(payload?.error?.message || "管理员密码不正确");
     localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
     codeAdminState.authenticated = true;
-    hydratePlatformAdminForm({});
-    setPlatformAdminStatus("请在 PHP 配置文件中维护");
     applyCodeAdminAuthState();
     selectCodeAdminSection(codeAdminState.pendingSection || "codes");
     await loadSiteStats({ silent: true });
@@ -2464,7 +2468,7 @@ function setCodeAdminAuthStatus(text) {
 }
 
 function selectCodeAdminSection(section) {
-  const next = ["codes", "platform", "custom", "announcements", "stats"].includes(section) ? section : "codes";
+  const next = ["codes", "custom", "announcements", "stats"].includes(section) ? section : "codes";
   codeAdminState.activeSection = next;
   if (!codeAdminState.authenticated) {
     codeAdminState.pendingSection = next;
@@ -2479,7 +2483,6 @@ function selectCodeAdminSection(section) {
     panel.classList.toggle("active", active);
     panel.hidden = !active;
   });
-  if (next === "platform") loadPlatformAdminConfig({ silent: true });
   if (next === "custom") loadCustomApiAdminConfig({ silent: true });
   if (next === "stats") {
     loadSiteStats({ silent: true });
@@ -2581,44 +2584,6 @@ function setCodeAdminStatus(text) {
   $("#codeAdminStatus").textContent = text;
 }
 
-async function loadPlatformAdminConfig(options = {}) {
-  hydratePlatformAdminForm({});
-  setPlatformAdminStatus("推荐 API 在 php-api/config/config.local.php 中配置");
-  if (!options.silent) showToast("推荐 API 密钥不再通过网页维护，请改服务器配置文件");
-}
-
-async function savePlatformAdminConfig() {
-  setPlatformAdminStatus("请改服务器配置文件");
-  showToast("为避免密钥泄露，推荐 API 请在 PHP 配置文件中维护");
-}
-
-function hydratePlatformAdminForm(platform) {
-  $("#platformTextEndpoint").value = platform.textEndpoint || "";
-  $("#platformEditEndpoint").value = platform.editEndpoint || "";
-  $("#platformApiKey").value = "";
-  $("#platformApiKey").placeholder = "在 php-api/config/config.local.php 中配置";
-  $("#platformPriceYuan").value = formatCodeAdminAmount((Number(platform.priceCents || billingState.priceCents) || 10) / 100);
-  billingState.upstreamCostCents = Number(platform.upstreamCostCents || billingState.upstreamCostCents || 0);
-}
-
-function hydratePlatformAdminPriceDefaults() {
-  if (!$("#platformPriceYuan").value) $("#platformPriceYuan").value = formatCodeAdminAmount(billingState.priceCents / 100);
-}
-
-function readPlatformAdminForm() {
-  return {
-    textEndpoint: $("#platformTextEndpoint").value.trim(),
-    editEndpoint: $("#platformEditEndpoint").value.trim(),
-    apiKey: $("#platformApiKey").value.trim(),
-    priceCents: Math.max(1, Math.round(Number($("#platformPriceYuan").value || 0) * 100)),
-    upstreamCostCents: Math.max(0, Math.round(Number(billingState.upstreamCostCents || 0))),
-  };
-}
-
-function setPlatformAdminStatus(text) {
-  $("#platformAdminStatus").textContent = text;
-}
-
 function adminPassword() {
   return ($("#codeAdminPassword")?.value || localStorage.getItem(CODE_ADMIN_PASSWORD_KEY) || "").trim();
 }
@@ -2639,12 +2604,16 @@ async function loadCustomApiAdminConfig(options = {}) {
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `读取失败：HTTP ${response.status}`);
     const serverConfig = payload.config || {};
+    const globalConfig = payload.global || {};
+    const formConfig = hasApiConfig(serverConfig) ? serverConfig : { ...globalConfig, enabled: false };
     customDebugState.loaded = true;
     customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
+    customDebugState.global = globalConfig;
+    applyGlobalApiInfo(globalConfig);
     applyCustomApiRuntimeConfig(serverConfig);
-    hydrateAdminCustomApiForm(serverConfig);
+    hydrateAdminCustomApiForm(formConfig);
     renderAdminCustomHistory();
-    setCustomApiAdminStatus(serverConfig.enabled ? "已启用自定义 API 调试" : "调试开关未启用，前台仍使用推荐 API");
+    setCustomApiAdminStatus(apiPricingStatus(serverConfig, globalConfig));
     if (!options.silent) showToast("已读取自定义 API 调试配置");
   } catch (error) {
     setCustomApiAdminStatus("读取失败");
@@ -2682,10 +2651,12 @@ async function saveCustomApiAdminConfig() {
     const serverConfig = payload.config || form;
     customDebugState.loaded = true;
     customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
+    customDebugState.global = payload.global || customDebugState.global;
+    applyGlobalApiInfo(customDebugState.global || {});
     applyCustomApiRuntimeConfig(serverConfig);
     hydrateAdminCustomApiForm(serverConfig);
     renderAdminCustomHistory();
-    setCustomApiAdminStatus(serverConfig.enabled ? "已保存并启用自定义 API 调试" : "已保存，当前仍使用推荐 API");
+    setCustomApiAdminStatus(apiPricingStatus(serverConfig, customDebugState.global || {}));
     showToast(serverConfig.enabled ? "已切到站长自定义 API 调试" : "已保存调试配置，前台继续使用推荐 API");
   } catch (error) {
     setCustomApiAdminStatus("保存失败");
@@ -2693,6 +2664,61 @@ async function saveCustomApiAdminConfig() {
   } finally {
     button.disabled = false;
     button.innerHTML = `<i data-icon="check"></i><span>保存并应用</span>`;
+    renderIcons();
+  }
+}
+
+async function applyCustomApiAsGlobal() {
+  const password = adminPassword();
+  if (!password) {
+    showToast("请先输入管理员密码");
+    return;
+  }
+  const form = readAdminCustomApiForm();
+  if (!form.textEndpoint || !form.apiKey) {
+    showToast("设置全局 API 前需要填写文生图 API URL 和 API Key");
+    return;
+  }
+  if (!Number.isFinite(form.priceCents) || form.priceCents <= 0) {
+    showToast("售价需要大于 0 元/张");
+    return;
+  }
+
+  const button = $("#applyGlobalApiConfigButton");
+  button.disabled = true;
+  button.textContent = "同步中...";
+  setCustomApiAdminStatus("正在同步为全局 API 与定价...");
+  try {
+    const response = await apiFetch("/api/admin/custom-api/global", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify(form),
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `同步失败：HTTP ${response.status}`);
+    const serverConfig = payload.config || form;
+    customDebugState.history = Array.isArray(payload.history) ? payload.history : customDebugState.history;
+    customDebugState.global = payload.global || serverConfig;
+    billingState.priceCents = Number(payload.priceCents || serverConfig.priceCents || billingState.priceCents);
+    billingState.platformEnabled = true;
+    billingState.platformRequestFormat = serverConfig.requestFormat === "json" ? "json" : "openai";
+    billingState.platformCustomTemplate = serverConfig.customTemplate || "";
+    billingState.platformModelName = serverConfig.modelName || "";
+    applyCustomApiRuntimeConfig(serverConfig);
+    hydrateAdminCustomApiForm(serverConfig);
+    renderAdminCustomHistory();
+    renderWallet();
+    setCustomApiAdminStatus("已设置为全局 API 与定价，全部用户实时生效");
+    showToast("已设置为全局 API，售价也已同步到全站");
+  } catch (error) {
+    setCustomApiAdminStatus("同步失败");
+    showToast(error.message || "设置全局 API 失败");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = `<i data-icon="check"></i><span>设置为全局 API</span>`;
     renderIcons();
   }
 }
@@ -2707,7 +2733,27 @@ function readAdminCustomApiForm() {
     transportMode: $("#adminCustomTransportMode")?.value || "direct",
     customTemplate: $("#adminCustomTemplate")?.value.trim() || defaultTemplate,
     modelName: $("#adminCustomModelName")?.value.trim() || getModelName(),
+    priceCents: Math.max(1, Math.round(Number($("#adminCustomPriceYuan")?.value || 0) * 100)),
   };
+}
+
+function hasApiConfig(item = {}) {
+  return Boolean(item.textEndpoint || item.editEndpoint || item.apiKey);
+}
+
+function applyGlobalApiInfo(item = {}) {
+  if (!hasApiConfig(item)) return;
+  billingState.priceCents = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+  billingState.platformEnabled = true;
+  billingState.platformRequestFormat = item.requestFormat === "json" ? "json" : "openai";
+  billingState.platformCustomTemplate = item.customTemplate || "";
+  billingState.platformModelName = item.modelName || "";
+}
+
+function apiPricingStatus(debugConfig = {}, globalConfig = {}) {
+  const globalText = hasApiConfig(globalConfig) ? `全局 ${formatPlatformPriceLabel(globalConfig.priceCents || billingState.priceCents)}` : "全局 API 尚未设置";
+  if (debugConfig.enabled) return `本机调试已启用；${globalText}`;
+  return `本机调试未启用；${globalText}`;
 }
 
 function hydrateAdminCustomApiForm(item = {}) {
@@ -2719,6 +2765,10 @@ function hydrateAdminCustomApiForm(item = {}) {
   if ($("#adminCustomTransportMode")) $("#adminCustomTransportMode").value = item.transportMode || "direct";
   if ($("#adminCustomTemplate")) $("#adminCustomTemplate").value = item.customTemplate || defaultTemplate;
   if ($("#adminCustomModelName")) $("#adminCustomModelName").value = item.modelName || config.modelName || "gpt-image-2";
+  if ($("#adminCustomPriceYuan")) {
+    const price = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+    $("#adminCustomPriceYuan").value = formatCodeAdminAmount(price / 100);
+  }
   updateAdminCustomTemplateVisibility();
 }
 
@@ -2773,12 +2823,13 @@ function renderAdminCustomHistory() {
       const keyLabel = item.apiKey ? maskApiKey(item.apiKey) : "未保存 Key";
       const transportLabel = item.transportMode === "proxy" ? "代理" : "直连";
       const formatLabel = item.requestFormat === "json" ? "JSON 模板" : "OpenAI";
+      const priceLabel = formatPlatformPriceLabel(item.priceCents || billingState.priceCents);
       return `
         <div class="config-history-item" data-admin-custom-id="${escapeHtml(item.id || "")}">
           <button class="config-history-main" type="button" data-action="apply-admin-custom">
             <strong>${escapeHtml(item.title || configSnapshotTitle(item))}</strong>
             <span>${escapeHtml(endpoint)}</span>
-            <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${formatLabel} · ${transportLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
+            <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${formatLabel} · ${transportLabel} · ${priceLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
           </button>
         </div>
       `;
