@@ -1,13 +1,17 @@
 const CONFIG_KEY = "image2.canvas.config.v1";
-const CONFIG_VERSION = 2;
+const CONFIG_VERSION = 3;
 const CONFIG_HISTORY_KEY = "image2.canvas.config.history.v1";
 const GENERATION_LOGS_KEY = "image2.generation.logs.v1";
 const API_STATS_KEY = "image2.api.stats.v1";
 const FLOW_STATE_KEY = "image2.flow.state.v1";
 const CODE_ADMIN_PASSWORD_KEY = "image2.code.admin.password.v1";
+const LOGIN_CODE_COOLDOWN_KEY = "image2.login.code.cooldown.v1";
+const WALLET_SESSION_TOKEN_KEY = "image2.wallet.session.v1";
 const CONFIG_HISTORY_LIMIT = 12;
 const GENERATION_LOG_LIMIT = 30;
 const API_STATS_LIMIT = 80;
+const LOGIN_CODE_RESEND_COOLDOWN_SECONDS = 60;
+const FIXED_MODEL_NAME = "gpt-image-2";
 const API_STATS_OPEN_PHRASE = "apistats";
 const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
 const ANNOUNCEMENTS_SEEN_KEY = "image2.announcements.seenAt.v1";
@@ -110,6 +114,7 @@ const billingState = {
   platformEnabled: false,
   rechargeUrl: "https://api2img.shop/",
   directBaseUrl: "",
+  sessionToken: "",
   lastDirectConfig: null,
   platformRequestFormat: "openai",
   platformCustomTemplate: "",
@@ -157,6 +162,7 @@ let progressTotal = 0;
 let configHistory = [];
 let generationLogs = [];
 let apiStats = [];
+let apiUsageRecords = new Map();
 let activeGenerationLog = null;
 let isGenerating = false;
 let generationAbortController = null;
@@ -170,6 +176,8 @@ let siteHeartbeatInFlight = false;
 let siteVisitTracked = false;
 let announcementRefreshTimer = null;
 let announcementAutoOpenTimer = null;
+let loginCodeCooldownTimer = null;
+let loginCodeCooldownUntil = 0;
 let lastCodeAdminCsv = "";
 let lastCodeAdminFilename = "";
 const detailView = {
@@ -186,6 +194,8 @@ const detailView = {
 async function init() {
   fillControls();
   loadConfig();
+  loadWalletSessionToken();
+  loadLoginCodeCooldown();
   loadConfigHistory();
   loadGenerationLogs();
   loadApiStats();
@@ -324,15 +334,100 @@ function submitOnEnter(callback) {
   };
 }
 
-function onModelSelect() {
-  if ($("#modelName").value !== "custom") return;
-  const custom = prompt("输入自定义模型名称", config.modelName || "gpt-image-2");
-  if (!custom) {
-    $("#modelName").value = config.modelName || "gpt-image-2";
-    return;
+function loadWalletSessionToken() {
+  billingState.sessionToken = readWalletSessionToken();
+}
+
+function readWalletSessionToken() {
+  try {
+    return localStorage.getItem(WALLET_SESSION_TOKEN_KEY) || "";
+  } catch {
+    return "";
   }
-  ensureModelOption(custom);
-  $("#modelName").value = custom;
+}
+
+function persistWalletSessionToken(token) {
+  billingState.sessionToken = String(token || "").trim();
+  try {
+    if (billingState.sessionToken) localStorage.setItem(WALLET_SESSION_TOKEN_KEY, billingState.sessionToken);
+    else localStorage.removeItem(WALLET_SESSION_TOKEN_KEY);
+  } catch {}
+}
+
+function clearWalletSessionToken() {
+  persistWalletSessionToken("");
+}
+
+function currentWalletSessionToken() {
+  return billingState.sessionToken || readWalletSessionToken();
+}
+
+function walletSessionChanged(snapshot) {
+  return snapshot !== currentWalletSessionToken();
+}
+
+function loadLoginCodeCooldown() {
+  try {
+    const until = Number(localStorage.getItem(LOGIN_CODE_COOLDOWN_KEY) || 0);
+    loginCodeCooldownUntil = Number.isFinite(until) && until > Date.now() ? until : 0;
+  } catch {
+    loginCodeCooldownUntil = 0;
+  }
+  if (loginCodeCooldownUntil) {
+    startLoginCodeCooldownTimer();
+  } else {
+    updateSendLoginCodeButton();
+  }
+}
+
+function persistLoginCodeCooldown(until) {
+  loginCodeCooldownUntil = Math.max(0, Number(until) || 0);
+  try {
+    if (loginCodeCooldownUntil > Date.now()) localStorage.setItem(LOGIN_CODE_COOLDOWN_KEY, String(loginCodeCooldownUntil));
+    else localStorage.removeItem(LOGIN_CODE_COOLDOWN_KEY);
+  } catch {}
+}
+
+function startLoginCodeCooldown(seconds = LOGIN_CODE_RESEND_COOLDOWN_SECONDS) {
+  const duration = Math.max(1, Number(seconds) || LOGIN_CODE_RESEND_COOLDOWN_SECONDS);
+  persistLoginCodeCooldown(Date.now() + duration * 1000);
+  startLoginCodeCooldownTimer();
+}
+
+function startLoginCodeCooldownTimer() {
+  clearInterval(loginCodeCooldownTimer);
+  loginCodeCooldownTimer = setInterval(() => {
+    if (Date.now() >= loginCodeCooldownUntil) {
+      persistLoginCodeCooldown(0);
+      clearInterval(loginCodeCooldownTimer);
+      loginCodeCooldownTimer = null;
+    }
+    updateSendLoginCodeButton();
+  }, 1000);
+  updateSendLoginCodeButton();
+}
+
+function getLoginCodeCooldownRemaining() {
+  return Math.max(0, Math.ceil((loginCodeCooldownUntil - Date.now()) / 1000));
+}
+
+function updateSendLoginCodeButton() {
+  const button = $("#sendLoginCodeButton");
+  if (!button) return;
+  const remaining = getLoginCodeCooldownRemaining();
+  const locked = remaining > 0;
+  button.disabled = locked;
+  if (locked) {
+    button.innerHTML = `<i data-icon="rotate"></i><span>${remaining}s 后重发</span>`;
+  } else {
+    button.innerHTML = `<i data-icon="rotate"></i><span>发送验证码</span>`;
+  }
+  renderIcons();
+}
+
+function onModelSelect() {
+  const input = $("#modelName");
+  if (input) input.value = FIXED_MODEL_NAME;
 }
 
 async function generateImages(extra = {}) {
@@ -482,10 +577,23 @@ async function requestImages(endpoint, options) {
     headers["Content-Type"] = "application/json";
     const template = isPlatformApiSelected() ? billingState.platformCustomTemplate || defaultTemplate : config.customTemplate || defaultTemplate;
     const body = renderTemplate(template, options);
-    return sendAndParseImageRequest(endpoint, { method: "POST", headers, bodyType: "json", body, signal: options.abortSignal }, options, {
-      variant: "custom-json",
-      label: requestLogLabel(options),
-    });
+    return sendAndParseImageRequest(
+      endpoint,
+      {
+        method: "POST",
+        headers,
+        bodyType: "json",
+        body,
+        signal: options.abortSignal,
+        billingCount: options.count,
+        billingMode: options.mode,
+        billingModel: options.model,
+        billingGenerationId: options.generationId,
+        billingRequestId: platformBillingRequestId(options),
+      },
+      options,
+      { variant: "custom-json", label: requestLogLabel(options) },
+    );
   }
 
   const variants = ["compatible", "minimal"];
@@ -776,7 +884,14 @@ async function settlePlatformImage(result, options, index, context) {
         }
         applyPlatformRequestCost(options, index, Number(payload.chargedCents || options.platformPriceCents || billingState.priceCents || 0));
         renderWallet();
-        if (billingState.authenticated) loadBillingLedger({ silent: true }).then(renderWallet).catch(() => {});
+        if (billingState.authenticated) {
+          const sessionSnapshot = currentWalletSessionToken();
+          loadBillingLedger({ silent: true, sessionSnapshot })
+            .then(() => {
+              if (!walletSessionChanged(sessionSnapshot)) renderWallet();
+            })
+            .catch(() => {});
+        }
         return;
       } catch (error) {
         lastError = error;
@@ -959,11 +1074,19 @@ function isAbortError(error) {
 
 async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
   const requestLog = startRequestLog(endpoint, request, options, meta);
+  const billingRequestId = request.billingRequestId || options.billingRequestId || (options.generationId ? platformBillingRequestId(options) : "");
   try {
     const response = await sendImageRequest(endpoint, request);
+    const statsEndpoint = response.platformStatsEndpoint || endpoint;
+    const statsOptions = {
+      ...options,
+      billingRequestId,
+      statsApiKey: response.platformStatsApiKey || options.statsApiKey || config.apiKey,
+      model: response.platformStatsModel || options.model || "",
+    };
     const payload = await parseApiResponse(response, requestLog);
     if (isPlatformApiSelected()) refreshBilling();
-    await recordApiUsage(endpoint, options, requestLog, {
+    await recordApiUsage(statsEndpoint, statsOptions, requestLog, {
       status: requestLog?.status === "success" ? "success" : "failed",
       error: requestLog?.error || (requestLog?.status === "no-image" ? "接口返回成功，但没有图片数据" : ""),
     });
@@ -974,7 +1097,10 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
       error: error.message || String(error),
     });
     if (isPlatformApiSelected()) refreshBilling();
-    await recordApiUsage(endpoint, options, requestLog, { status: "failed", error: error.message || String(error) });
+    await recordApiUsage(endpoint, { ...options, billingRequestId, statsApiKey: options.statsApiKey || config.apiKey }, requestLog, {
+      status: "failed",
+      error: error.message || String(error),
+    });
     throw error;
   }
 }
@@ -1042,6 +1168,9 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
   }
   response.platformTicket = direct.ticket;
   response.platformPriceCents = direct.priceCents;
+  response.platformStatsEndpoint = direct.endpoint;
+  response.platformStatsModel = billingModel || getModelName();
+  response.platformStatsApiKey = direct.apiKey;
   return response;
 }
 
@@ -1090,28 +1219,49 @@ async function getPlatformGenerationTicket(options = {}) {
 }
 
 async function getPlatformDirectConfig(options = {}) {
-  const response = await apiFetch("/api/generate/direct-config", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      mode: options.mode || $("#modeSelect").value,
-      count: options.count || 1,
-      model: options.model || getModelName(),
-    }),
-    signal: options.signal,
-  });
-  const payload = await readJsonResponse(response);
-  if (!response.ok) throw new Error(payload?.error?.message || `推荐 API 配置获取失败：HTTP ${response.status}`);
-  if (!payload.ticket || !payload.endpoint || !payload.apiKey) throw new Error("推荐 API 配置不完整，请联系站长");
-  billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
-  if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
-  renderWallet();
-  return {
-    ticket: payload.ticket,
-    endpoint: payload.endpoint,
-    apiKey: payload.apiKey,
-    priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+  const requestBody = {
+    mode: options.mode || $("#modeSelect").value,
+    count: options.count || 1,
+    model: options.model || getModelName(),
   };
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await apiFetch("/api/generate/direct-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: options.signal,
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload?.error?.message || `推荐 API 配置获取失败：HTTP ${response.status}`);
+      if (!payload.ticket || !payload.endpoint || !payload.apiKey) throw new Error("推荐 API 配置不完整，请联系站长");
+      billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+      if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
+      renderWallet();
+      return {
+        ticket: payload.ticket,
+        endpoint: payload.endpoint,
+        apiKey: payload.apiKey,
+        priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableDirectConfigError(error, attempt)) break;
+      await wait(700 * attempt);
+    }
+  }
+  throw lastError || new Error("推荐 API 配置获取失败");
+}
+
+function isRetryableDirectConfigError(error, attempt) {
+  if (attempt >= 3) return false;
+  const text = cleanErrorMessage(error);
+  if (!text) return false;
+  if (/\b(401|403|400|404|409|422)\b|invalid|unauthorized|forbidden|权限|参数|格式|not configured|不完整/i.test(text)) {
+    return false;
+  }
+  return /\b(500|502|503|504|520|522|524)\b|timeout|timed out|failed to fetch|network|edgeone|gateway|temporar|abort|connection|socket|reset/i.test(text);
 }
 
 function platformDirectUrl(path) {
@@ -1826,8 +1976,9 @@ function syncSizeOptions() {
 }
 
 function getModelName() {
-  const value = $("#modelName").value;
-  return value === "custom" ? config.modelName || "gpt-image-2" : value;
+  const input = $("#modelName");
+  if (input) input.value = FIXED_MODEL_NAME;
+  return FIXED_MODEL_NAME;
 }
 
 function loadConfig() {
@@ -1838,12 +1989,11 @@ function loadConfig() {
     Object.assign(config, saved);
     if (Number(saved.configVersion || 1) < CONFIG_VERSION) {
       if (saved.transportMode === "proxy") config.transportMode = "direct";
-      if (!saved.modelName || saved.modelName === "gpt-image-1") config.modelName = "gpt-image-2";
     }
     if (!saved.rememberKey) config.apiKey = "";
-    if (saved.modelName) ensureModelOption(saved.modelName);
     config.apiProvider = "platform";
     config.multiImageMode = "single";
+    config.modelName = FIXED_MODEL_NAME;
   } catch {
     showToast("配置读取失败");
   }
@@ -1859,8 +2009,8 @@ function hydrateConfig() {
   if ($("#multiImageMode")) $("#multiImageMode").value = "single";
   if ($("#apiProviderSelect")) $("#apiProviderSelect").value = config.apiProvider || "platform";
   if ($("#customTemplate")) $("#customTemplate").value = config.customTemplate || defaultTemplate;
-  ensureModelOption(config.modelName || "gpt-image-2");
-  $("#modelName").value = config.modelName || "gpt-image-2";
+  if ($("#modelName")) $("#modelName").value = FIXED_MODEL_NAME;
+  config.modelName = FIXED_MODEL_NAME;
   updateTemplateVisibility();
   updateApiProviderUi();
 }
@@ -1876,7 +2026,7 @@ function saveConfigFromForm() {
   config.multiImageMode = "single";
   config.apiProvider = isCustomApiDebugEnabled() ? "custom" : "platform";
   config.customTemplate = $("#customTemplate")?.value.trim() || defaultTemplate;
-  config.modelName = getModelName();
+  config.modelName = FIXED_MODEL_NAME;
   delete config.id;
   delete config.title;
   delete config.updatedAt;
@@ -1926,7 +2076,7 @@ function saveActiveConfig() {
     multiImageMode: "single",
     apiProvider: "platform",
     customTemplate: config.customTemplate || defaultTemplate,
-    modelName: config.modelName || "gpt-image-2",
+    modelName: FIXED_MODEL_NAME,
     configVersion: CONFIG_VERSION,
   };
   localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted));
@@ -2039,7 +2189,8 @@ function switchConfigHistory(id) {
 
   Object.assign(config, item);
   normalizeConfiguredEditEndpoint();
-  ensureModelOption(config.modelName || "gpt-image-2");
+  config.modelName = FIXED_MODEL_NAME;
+  ensureModelOption(config.modelName);
   hydrateConfig();
   saveActiveConfig();
   showToast("已切换 API 配置");
@@ -2055,9 +2206,11 @@ function deleteConfigHistory(id) {
 async function loadBilling() {
   try {
     await loadBillingConfig();
+    const sessionSnapshot = currentWalletSessionToken();
     const meResponse = await apiFetch("/api/auth/me");
+    if (walletSessionChanged(sessionSnapshot)) return;
     if (meResponse.ok) applyBillingDashboard(await meResponse.json());
-    if (billingState.authenticated) await loadBillingLedger();
+    if (billingState.authenticated) await loadBillingLedger({ sessionSnapshot });
   } catch (error) {
     console.warn("充值信息读取失败", error);
   }
@@ -2080,10 +2233,12 @@ async function loadBillingConfig() {
 
 async function refreshBilling() {
   try {
+    const sessionSnapshot = currentWalletSessionToken();
     const response = await apiFetch("/api/auth/me");
+    if (walletSessionChanged(sessionSnapshot)) return;
     if (!response.ok) return;
     applyBillingDashboard(await response.json());
-    if (billingState.authenticated) await loadBillingLedger({ silent: true });
+    if (billingState.authenticated) await loadBillingLedger({ silent: true, sessionSnapshot });
     renderWallet();
   } catch (error) {
     console.warn("余额刷新失败", error);
@@ -2091,12 +2246,16 @@ async function refreshBilling() {
 }
 
 async function loadBillingLedger(options = {}) {
+  const sessionSnapshot = options.sessionSnapshot ?? currentWalletSessionToken();
   try {
     const response = await apiFetch("/api/billing/ledger");
+    if (walletSessionChanged(sessionSnapshot)) return;
     const payload = await readJsonResponse(response);
+    if (walletSessionChanged(sessionSnapshot)) return;
     if (!response.ok) throw new Error(payload?.error?.message || "流水读取失败");
     billingState.ledger = Array.isArray(payload.ledger) ? payload.ledger : [];
   } catch (error) {
+    if (walletSessionChanged(sessionSnapshot)) return;
     billingState.ledger = [];
     if (!options.silent) console.warn("流水读取失败", error);
   }
@@ -2229,6 +2388,8 @@ function applyBillingDashboard(payload) {
   billingState.customerId = user?.id ? String(user.id) : "";
   billingState.email = user?.email || "";
   billingState.balanceCents = Number(user?.balanceCents || 0);
+  if (payload.sessionToken) persistWalletSessionToken(payload.sessionToken);
+  if (!billingState.sessionToken) billingState.sessionToken = readWalletSessionToken();
   if (!billingState.authenticated) billingState.ledger = [];
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
@@ -2287,7 +2448,8 @@ async function sendLoginCode() {
   }
   const button = $("#sendLoginCodeButton");
   button.disabled = true;
-  button.textContent = "发送中...";
+  button.innerHTML = `<i data-icon="rotate"></i><span>发送中...</span>`;
+  renderIcons();
   try {
     const response = await apiFetch("/api/auth/send-code", {
       method: "POST",
@@ -2297,14 +2459,16 @@ async function sendLoginCode() {
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "验证码发送失败");
     $("#loginEmailInput").value = email;
+    startLoginCodeCooldown(LOGIN_CODE_RESEND_COOLDOWN_SECONDS);
     showToast("验证码已发送，请查看邮箱");
     $("#loginCodeInput").focus();
   } catch (error) {
+    if (error?.message && /429|等待|频繁|cooldown|rate/i.test(error.message)) {
+      startLoginCodeCooldown(LOGIN_CODE_RESEND_COOLDOWN_SECONDS);
+    }
     showToast(error.message || "验证码发送失败");
   } finally {
-    button.disabled = false;
-    button.innerHTML = `<i data-icon="rotate"></i><span>发送验证码</span>`;
-    renderIcons();
+    updateSendLoginCodeButton();
   }
 }
 
@@ -2323,7 +2487,8 @@ async function verifyLoginCode() {
   }
   const button = $("#loginButton");
   button.disabled = true;
-  button.textContent = "登录中...";
+  button.innerHTML = `<i data-icon="check"></i><span>登录中...</span>`;
+  renderIcons();
   try {
     const response = await apiFetch("/api/auth/verify", {
       method: "POST",
@@ -2333,7 +2498,7 @@ async function verifyLoginCode() {
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "登录失败");
     applyBillingDashboard({ ...payload, authenticated: true });
-    await loadBillingLedger({ silent: true });
+    await loadBillingLedger({ silent: true, sessionSnapshot: currentWalletSessionToken() });
     $("#loginCodeInput").value = "";
     renderWallet();
     showToast("登录成功，余额已同步");
@@ -2355,6 +2520,7 @@ async function logoutWallet() {
   billingState.email = "";
   billingState.balanceCents = 0;
   billingState.ledger = [];
+  clearWalletSessionToken();
   renderWallet();
   showToast("已退出登录");
 }
@@ -2732,7 +2898,7 @@ function readAdminCustomApiForm() {
     requestFormat: $("#adminCustomRequestFormat")?.value || "openai",
     transportMode: $("#adminCustomTransportMode")?.value || "direct",
     customTemplate: $("#adminCustomTemplate")?.value.trim() || defaultTemplate,
-    modelName: $("#adminCustomModelName")?.value.trim() || getModelName(),
+    modelName: FIXED_MODEL_NAME,
     priceCents: Math.max(1, Math.round(Number($("#adminCustomPriceYuan")?.value || 0) * 100)),
   };
 }
@@ -2747,7 +2913,7 @@ function applyGlobalApiInfo(item = {}) {
   billingState.platformEnabled = true;
   billingState.platformRequestFormat = item.requestFormat === "json" ? "json" : "openai";
   billingState.platformCustomTemplate = item.customTemplate || "";
-  billingState.platformModelName = item.modelName || "";
+  billingState.platformModelName = FIXED_MODEL_NAME;
 }
 
 function apiPricingStatus(debugConfig = {}, globalConfig = {}) {
@@ -2764,7 +2930,7 @@ function hydrateAdminCustomApiForm(item = {}) {
   if ($("#adminCustomRequestFormat")) $("#adminCustomRequestFormat").value = item.requestFormat || "openai";
   if ($("#adminCustomTransportMode")) $("#adminCustomTransportMode").value = item.transportMode || "direct";
   if ($("#adminCustomTemplate")) $("#adminCustomTemplate").value = item.customTemplate || defaultTemplate;
-  if ($("#adminCustomModelName")) $("#adminCustomModelName").value = item.modelName || config.modelName || "gpt-image-2";
+  if ($("#adminCustomModelName")) $("#adminCustomModelName").value = FIXED_MODEL_NAME;
   if ($("#adminCustomPriceYuan")) {
     const price = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
     $("#adminCustomPriceYuan").value = formatCodeAdminAmount(price / 100);
@@ -2796,10 +2962,8 @@ function applyCustomApiRuntimeConfig(item = {}) {
   config.customTemplate = item.customTemplate || defaultTemplate;
   config.multiImageMode = "single";
   config.apiProvider = customDebugState.enabled ? "custom" : "platform";
-  if (item.modelName) {
-    config.modelName = item.modelName;
-    ensureModelOption(config.modelName);
-  }
+  config.modelName = FIXED_MODEL_NAME;
+  if ($("#modelName")) $("#modelName").value = FIXED_MODEL_NAME;
   hydrateConfig();
   saveActiveConfig();
   updateApiProviderUi();
@@ -2858,7 +3022,7 @@ function updateRecommendedApiLabels() {
   const option = $('#apiProviderSelect option[value="platform"]');
   if (option) option.textContent = label;
   const intro = $("#platformPriceIntro");
-  if (intro) intro.textContent = "本站使用推荐 API 生图，登录并充值后即可稳定生成图片。";
+  if (intro) intro.textContent = "本站使用GPT官方满血Image2模型。";
 }
 
 function formatPlatformPriceLabel(cents) {
@@ -2918,9 +3082,15 @@ function apiUrl(path) {
 }
 
 function apiFetch(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const sessionToken = billingState.sessionToken || readWalletSessionToken();
+  if (sessionToken && !headers.has("X-Api2Image-Session")) {
+    headers.set("X-Api2Image-Session", sessionToken);
+  }
   return fetch(apiUrl(path), {
     credentials: "include",
     ...options,
+    headers,
   });
 }
 
@@ -3406,8 +3576,13 @@ function normalizeApiStat(entry) {
 
 async function recordApiUsage(endpoint, options = {}, requestLog = null, details = {}) {
   const now = Date.now();
-  const keyFingerprint = await fingerprintApiKey(config.apiKey);
+  const apiKeyForStats = options.statsApiKey || config.apiKey;
+  const keyFingerprint = await fingerprintApiKey(apiKeyForStats);
   const statKey = apiStatKey({ endpoint, keyFingerprint, mode: options.mode || "text", model: options.model || "" });
+  const requestId = apiUsageRequestId(options);
+  const requestRecordKey = requestId ? `${statKey}|${requestId}` : "";
+  const previousContribution = requestRecordKey ? apiUsageRecords.get(requestRecordKey) : null;
+  const contribution = apiUsageContribution(requestLog, details, options);
   const existing = apiStats.find((entry) => apiStatKey(entry) === statKey);
   const stat =
     existing ||
@@ -3416,7 +3591,7 @@ async function recordApiUsage(endpoint, options = {}, requestLog = null, details
       endpoint,
       endpointHost: endpointHostLabel(endpoint),
       keyFingerprint,
-      keyLabel: maskApiKey(config.apiKey) || "未填写 Key",
+      keyLabel: maskApiKey(apiKeyForStats) || "未填写 Key",
       mode: options.mode || "text",
       model: options.model || "",
       firstUsedAt: now,
@@ -3425,21 +3600,58 @@ async function recordApiUsage(endpoint, options = {}, requestLog = null, details
   stat.endpoint = endpoint || "";
   stat.endpointHost = endpointHostLabel(endpoint);
   stat.keyFingerprint = keyFingerprint;
-  stat.keyLabel = maskApiKey(config.apiKey) || "未填写 Key";
+  stat.keyLabel = maskApiKey(apiKeyForStats) || "未填写 Key";
   stat.mode = options.mode || stat.mode || "text";
   stat.model = options.model || stat.model || "";
-  stat.total += 1;
-  if (details.status === "success") stat.success += 1;
-  else stat.failed += 1;
-  stat.images += Number(requestLog?.imageCount || 0);
+  if (previousContribution) {
+    removeApiUsageContribution(stat, previousContribution);
+  }
+  addApiUsageContribution(stat, contribution);
   stat.lastUsedAt = now;
   stat.lastStatus = details.status || requestLog?.status || "";
   stat.lastHttpStatus = Number(requestLog?.httpStatus || 0);
   stat.lastError = details.error ? truncateText(details.error, 220) : requestLog?.error || "";
+  if (requestRecordKey) {
+    apiUsageRecords.set(requestRecordKey, contribution);
+    while (apiUsageRecords.size > 500) {
+      apiUsageRecords.delete(apiUsageRecords.keys().next().value);
+    }
+  }
 
   apiStats = mergeApiStats([stat, ...apiStats.filter((entry) => entry.id !== stat.id)]);
   saveApiStats();
   renderApiStats();
+}
+
+function apiUsageRequestId(options = {}) {
+  const value = String(options.billingRequestId || options.requestId || "").trim();
+  return value ? value.slice(0, 160) : "";
+}
+
+function apiUsageContribution(requestLog = null, details = {}, options = {}) {
+  const success = details.status === "success";
+  const returnedImages = Math.max(0, Math.round(Number(requestLog?.imageCount || 0)));
+  const requestedImages = Math.max(1, Math.round(Number(options.count || 1)));
+  return {
+    total: 1,
+    success: success ? 1 : 0,
+    failed: success ? 0 : 1,
+    images: success ? Math.min(returnedImages, requestedImages) : 0,
+  };
+}
+
+function addApiUsageContribution(stat, contribution) {
+  stat.total += Number(contribution.total || 0);
+  stat.success += Number(contribution.success || 0);
+  stat.failed += Number(contribution.failed || 0);
+  stat.images += Number(contribution.images || 0);
+}
+
+function removeApiUsageContribution(stat, contribution) {
+  stat.total = Math.max(0, stat.total - Number(contribution.total || 0));
+  stat.success = Math.max(0, stat.success - Number(contribution.success || 0));
+  stat.failed = Math.max(0, stat.failed - Number(contribution.failed || 0));
+  stat.images = Math.max(0, stat.images - Number(contribution.images || 0));
 }
 
 function mergeApiStats(items) {
@@ -3536,6 +3748,7 @@ function renderApiStats() {
 
 function clearApiStats() {
   apiStats = [];
+  apiUsageRecords = new Map();
   saveApiStats();
   renderApiStats();
   showToast("API 统计已清空");
@@ -3839,14 +4052,8 @@ function formatDurationLabel(milliseconds) {
 }
 
 function ensureModelOption(model) {
-  if (!model) return;
-  const select = $("#modelName");
-  if (![...select.options].some((option) => option.value === model)) {
-    const option = document.createElement("option");
-    option.value = model;
-    option.textContent = model;
-    select.insertBefore(option, select.querySelector('option[value="custom"]'));
-  }
+  const input = $("#modelName");
+  if (input) input.value = FIXED_MODEL_NAME;
 }
 
 function optionHtml(value, label) {

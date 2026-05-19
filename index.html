@@ -24,7 +24,7 @@
           <img class="brand-icon" src="./icon.png?v=2" alt="" aria-hidden="true" />
           <div>
             <h1>API 2 Image</h1>
-            <p id="platformPriceIntro">本站使用推荐 API 生图，登录并充值后即可稳定生成图片。</p>
+            <p id="platformPriceIntro">本站使用GPT官方满血Image2模型。</p>
           </div>
         </div>
 
@@ -91,15 +91,7 @@
           <textarea id="promptInput" rows="1" placeholder="您希望创作什么内容？"></textarea>
 
           <div class="composer-actions">
-            <select id="modelName" title="模型">
-              <option value="gpt-image-2">gpt-image-2</option>
-              <option value="gpt-image-1">gpt-image-1</option>
-              <option value="dall-e-3">dall-e-3</option>
-              <option value="flux">flux</option>
-              <option value="midjourney">midjourney</option>
-              <option value="nano-banana">Nano Banana</option>
-              <option value="custom">自定义模型</option>
-            </select>
+            <input id="modelName" type="hidden" value="gpt-image-2" />
             <button class="send-button" id="generateButton" title="生成" type="button">
               <i data-icon="arrow-right"></i>
             </button>
@@ -220,7 +212,7 @@
             <span>邮箱</span>
             <input id="loginEmailInput" type="email" autocomplete="email" placeholder="输入接收验证码的邮箱" />
           </label>
-          <div class="field-grid">
+          <div class="field-grid login-code-row">
             <label class="field">
               <span>验证码</span>
               <input id="loginCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码" />
@@ -389,10 +381,7 @@
             <textarea id="adminCustomTemplate" rows="8"></textarea>
           </label>
 
-          <label class="field">
-            <span>默认模型名</span>
-            <input id="adminCustomModelName" type="text" placeholder="gpt-image-2" />
-          </label>
+          <input id="adminCustomModelName" type="hidden" value="gpt-image-2" />
           <label class="field">
             <span>售价（元/张）</span>
             <input id="adminCustomPriceYuan" type="number" min="0.01" step="0.01" value="0.10" />

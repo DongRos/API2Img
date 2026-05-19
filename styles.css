@@ -1001,6 +1001,16 @@ svg {
   gap: 10px;
 }
 
+.login-code-row {
+  grid-template-columns: minmax(0, 1fr) 144px;
+  align-items: end;
+}
+
+.login-code-row .pill-button {
+  width: 100%;
+  white-space: nowrap;
+}
+
 .check-line {
   display: flex;
   align-items: center;
@@ -2091,6 +2101,14 @@ body[data-theme="light"] .wallet-panel {
 
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .login-code-row {
+    grid-template-columns: 1fr;
+  }
+
+  .login-code-row .pill-button {
+    width: 100%;
   }
 
 }

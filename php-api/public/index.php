@@ -42,7 +42,7 @@ function handle_cors(array $config): void
         header('Access-Control-Allow-Origin: ' . $origin);
         header('Access-Control-Allow-Credentials: true');
     }
-    header('Access-Control-Allow-Headers: Content-Type, X-Admin-Password');
+    header('Access-Control-Allow-Headers: Content-Type, X-Admin-Password, X-Api2Image-Session');
     header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
     header('Vary: Origin');
 }
@@ -149,6 +149,18 @@ function auth_send_code(PDO $pdo, array $config): void
     if ($email === '') {
         throw new HttpError('请输入有效邮箱', 400, 'invalid_email');
     }
+    $recent = $pdo->prepare(
+        "SELECT created_at
+         FROM email_codes
+         WHERE email = ? AND purpose = 'login'
+         ORDER BY id DESC
+         LIMIT 1"
+    );
+    $recent->execute([$email]);
+    $createdAt = (string)($recent->fetchColumn() ?: '');
+    if ($createdAt !== '' && (time() - strtotime($createdAt) < 60)) {
+        throw new HttpError('请等待 60 秒后重新发送验证码', 429, 'code_cooldown');
+    }
     enforce_rate_limit($pdo, $config, 'send_code_email', $email, 5, 3600);
     enforce_rate_limit($pdo, $config, 'send_code_ip', client_ip(), 20, 3600);
 
@@ -160,7 +172,14 @@ function auth_send_code(PDO $pdo, array $config): void
          VALUES (?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE), NULL, 0, ?, UTC_TIMESTAMP())'
     );
     $stmt->execute([$email, $codeHash, 'login', $ttl, secret_hash($config, 'ip', client_ip())]);
-    send_login_mail($config, $email, $code);
+    $codeId = (int)$pdo->lastInsertId();
+    try {
+        send_login_mail($config, $email, $code);
+    } catch (Throwable $error) {
+        $cleanup = $pdo->prepare('DELETE FROM email_codes WHERE id = ? AND used_at IS NULL');
+        $cleanup->execute([$codeId]);
+        throw $error;
+    }
     json_response(['ok' => true, 'message' => '验证码已发送']);
 }
 
@@ -232,7 +251,12 @@ function auth_verify(PDO $pdo, array $config): void
         $pdo->commit();
         set_session_cookie($config, $token, $days * 86400);
         $platform = platform_config($pdo, $config);
-        json_response(['ok' => true, 'user' => public_user($user), 'priceCents' => (int)$platform['price_cents']]);
+        json_response([
+            'ok' => true,
+            'user' => public_user($user),
+            'priceCents' => (int)$platform['price_cents'],
+            'sessionToken' => $token,
+        ]);
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
@@ -252,6 +276,7 @@ function auth_me(PDO $pdo, array $config): void
         'priceCents' => (int)$platform['price_cents'],
         'currency' => 'CNY',
         'rechargeUrl' => (string)$config['app']['recharge_url'],
+        'sessionToken' => $user ? current_session_token() : '',
     ]);
 }
 
@@ -393,6 +418,7 @@ function generate_ticket(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
+    $model = 'gpt-image-2';
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
@@ -406,6 +432,7 @@ function generate_ticket(PDO $pdo, array $config): void
         'mode' => $mode,
         'count' => $count,
         'price' => $price,
+        'model' => $model,
         'exp' => time() + 600,
         'nonce' => random_token(12),
     ], $token);
@@ -424,6 +451,7 @@ function generate_direct_config(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
+    $model = 'gpt-image-2';
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
@@ -442,6 +470,7 @@ function generate_direct_config(PDO $pdo, array $config): void
         'mode' => $mode,
         'count' => $count,
         'price' => $price,
+        'model' => $model,
         'exp' => time() + 600,
         'nonce' => random_token(12),
     ], random_token(32));
@@ -459,6 +488,7 @@ function generate_platform(PDO $pdo, array $config): void
 {
     $payload = read_json();
     $platform = platform_config($pdo, $config);
+    $model = 'gpt-image-2';
     $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
     if (!$ticket) {
         $user = require_user($pdo, $config);
@@ -467,6 +497,7 @@ function generate_platform(PDO $pdo, array $config): void
             'mode' => (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text',
             'count' => max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1))),
             'price' => (int)$platform['price_cents'],
+            'model' => $model,
         ];
     }
     $mode = (($ticket['mode'] ?? ($payload['mode'] ?? 'text')) === 'image') ? 'image' : 'text';
@@ -517,7 +548,7 @@ function settle_generation(PDO $pdo, array $config): void
         $requestId = 'settle_' . $imageId;
     }
     $price = max(1, (int)$ticket['price']);
-    $result = charge_generation_success($pdo, (int)$ticket['uid'], $requestId, (string)$ticket['mode'], (string)($payload['model'] ?? ''), $price, $imageId);
+    $result = charge_generation_success($pdo, (int)$ticket['uid'], $requestId, (string)$ticket['mode'], 'gpt-image-2', $price, $imageId);
     json_response([
         'ok' => true,
         'balanceCents' => (int)$result['balance'],
@@ -634,7 +665,7 @@ function fallback_platform_config(array $config): array
         'price_cents' => max(1, (int)($platform['price_cents'] ?? 10)),
         'upstream_cost_cents' => max(0, (int)($platform['upstream_cost_cents'] ?? 0)),
         'max_count' => max(1, (int)($platform['max_count'] ?? 4)),
-        'model_name' => trim((string)($platform['model_name'] ?? 'gpt-image-2')),
+        'model_name' => 'gpt-image-2',
         'request_format' => 'openai',
         'custom_template' => '',
         'source' => 'file',
@@ -659,7 +690,6 @@ function normalize_global_platform_config(array $value, array $fallback): array
     $price = max(1, (int)($value['priceCents'] ?? $value['price_cents'] ?? $fallback['price_cents']));
     $upstreamCost = max(0, (int)($value['upstreamCostCents'] ?? $value['upstream_cost_cents'] ?? $fallback['upstream_cost_cents']));
     $maxCount = max(1, (int)($value['maxCount'] ?? $value['max_count'] ?? $fallback['max_count']));
-    $modelName = trim((string)($value['modelName'] ?? $value['model_name'] ?? $fallback['model_name']));
     $requestFormat = (string)($value['requestFormat'] ?? $value['request_format'] ?? $fallback['request_format']);
     if (!in_array($requestFormat, ['openai', 'json'], true)) {
         $requestFormat = 'openai';
@@ -672,7 +702,7 @@ function normalize_global_platform_config(array $value, array $fallback): array
         'price_cents' => $price,
         'upstream_cost_cents' => $upstreamCost,
         'max_count' => $maxCount,
-        'model_name' => $modelName ?: 'gpt-image-2',
+        'model_name' => 'gpt-image-2',
         'request_format' => $requestFormat,
         'custom_template' => $customTemplate,
         'updated_at' => (int)($value['updatedAt'] ?? $value['updated_at'] ?? 0),
@@ -830,7 +860,7 @@ function force_count_fields(array $payload, int $count, bool $stringValues): arr
 
 function admin_create_redeem_codes(PDO $pdo, array $config): void
 {
-    require_admin($config);
+    require_admin($pdo, $config);
     $payload = read_json();
     $amount = max(1, (int)($payload['amountCents'] ?? 0));
     $count = max(1, min(1000, (int)($payload['count'] ?? 1)));
@@ -865,7 +895,7 @@ function admin_create_redeem_codes(PDO $pdo, array $config): void
 
 function admin_list_redeem_codes(PDO $pdo, array $config): void
 {
-    require_admin($config);
+    require_admin($pdo, $config);
     $stmt = $pdo->query('SELECT id, code_prefix, code_suffix, amount_cents, label, status, used_by_user_id, used_at, created_at FROM redeem_codes ORDER BY id DESC LIMIT 100');
     $codes = [];
     foreach ($stmt->fetchAll() as $row) {
@@ -885,7 +915,7 @@ function admin_list_redeem_codes(PDO $pdo, array $config): void
 
 function admin_get_custom_api(PDO $pdo, array $config): void
 {
-    require_admin($config);
+    require_admin($pdo, $config);
     $settings = read_admin_setting_json($pdo, 'custom_api_debug');
     $current = normalize_custom_api_config($settings['current'] ?? []);
     $history = normalize_custom_api_history($settings['history'] ?? []);
@@ -900,7 +930,7 @@ function admin_get_custom_api(PDO $pdo, array $config): void
 
 function admin_save_custom_api(PDO $pdo, array $config): void
 {
-    require_admin($config);
+    require_admin($pdo, $config);
     $payload = read_json();
     $settings = read_admin_setting_json($pdo, 'custom_api_debug');
     $current = normalize_custom_api_config($payload);
@@ -941,7 +971,7 @@ function admin_save_custom_api(PDO $pdo, array $config): void
 
 function admin_apply_custom_api_global(PDO $pdo, array $config): void
 {
-    require_admin($config);
+    require_admin($pdo, $config);
     $payload = read_json();
     $current = normalize_custom_api_config($payload);
     if ($current['textEndpoint'] === '' || $current['apiKey'] === '') {
@@ -1100,7 +1130,7 @@ function normalize_custom_api_config(array $value): array
         'requestFormat' => $requestFormat,
         'transportMode' => $transportMode,
         'customTemplate' => custom_api_template((string)($value['customTemplate'] ?? '')),
-        'modelName' => substr(trim((string)($value['modelName'] ?? 'gpt-image-2')), 0, 80) ?: 'gpt-image-2',
+        'modelName' => 'gpt-image-2',
         'priceCents' => custom_api_price_cents($value['priceCents'] ?? $value['price_cents'] ?? 10),
         'updatedAt' => (int)($value['updatedAt'] ?? 0),
     ];
@@ -1187,13 +1217,26 @@ function custom_api_history_key(array $item): string
     ]);
 }
 
-function require_admin(array $config): void
+function require_admin(PDO $pdo, array $config): void
 {
     $expected = trim((string)$config['security']['admin_password']);
     $provided = trim((string)($_SERVER['HTTP_X_ADMIN_PASSWORD'] ?? ''));
-    if ($expected === '' || !hash_equals($expected, $provided)) {
+    if ($expected === '') {
         throw new HttpError('管理员密码不正确', 401, 'admin_required');
     }
+    $locked = admin_password_locked_seconds($pdo, $config);
+    if ($locked > 0) {
+        throw new HttpError('管理员密码连续错误 3 次，请 ' . $locked . ' 秒后再试', 429, 'admin_password_locked');
+    }
+    if ($provided !== '' && hash_equals($expected, $provided)) {
+        clear_admin_password_failures($pdo, $config);
+        return;
+    }
+    $retryAfter = register_admin_password_failure($pdo, $config);
+    if ($retryAfter > 0) {
+        throw new HttpError('管理员密码连续错误 3 次，请 ' . $retryAfter . ' 秒后再试', 429, 'admin_password_locked');
+    }
+    throw new HttpError('管理员密码不正确', 401, 'admin_required');
 }
 
 function make_redeem_code(): string

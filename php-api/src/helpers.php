@@ -170,7 +170,17 @@ function is_proxy_request(): bool
 
 function current_session_token(): string
 {
-    return (string)($_COOKIE['api2image_session'] ?? '');
+    $candidates = [
+        $_SERVER['HTTP_X_API2IMAGE_SESSION'] ?? '',
+        $_COOKIE['api2image_session'] ?? '',
+    ];
+    foreach ($candidates as $candidate) {
+        $token = trim((string)$candidate);
+        if ($token !== '') {
+            return $token;
+        }
+    }
+    return '';
 }
 
 function current_user(PDO $pdo, array $config): ?array
@@ -256,6 +266,89 @@ function enforce_rate_limit(PDO $pdo, array $config, string $scope, string $key,
         }
         throw $error;
     }
+}
+
+function admin_password_failure_key(array $config): string
+{
+    return secret_hash($config, 'rate:admin_password', client_ip());
+}
+
+function admin_password_locked_seconds(PDO $pdo, array $config): int
+{
+    $keyHash = admin_password_failure_key($config);
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('SELECT * FROM rate_limits WHERE scope = ? AND key_hash = ? FOR UPDATE');
+        $stmt->execute(['admin_password', $keyHash]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            $pdo->commit();
+            return 0;
+        }
+        $windowStart = strtotime((string)$row['window_start_at']);
+        $elapsed = time() - $windowStart;
+        if ($elapsed >= 30 || (int)$row['count'] < 3) {
+            $pdo->commit();
+            return 0;
+        }
+        $pdo->commit();
+        return max(1, 30 - $elapsed);
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $error;
+    }
+}
+
+function register_admin_password_failure(PDO $pdo, array $config): int
+{
+    $keyHash = admin_password_failure_key($config);
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('SELECT * FROM rate_limits WHERE scope = ? AND key_hash = ? FOR UPDATE');
+        $stmt->execute(['admin_password', $keyHash]);
+        $row = $stmt->fetch();
+        $now = time();
+        if (!$row) {
+            $insert = $pdo->prepare('INSERT INTO rate_limits (scope, key_hash, count, window_start_at) VALUES (?, ?, 1, UTC_TIMESTAMP())');
+            $insert->execute(['admin_password', $keyHash]);
+            $pdo->commit();
+            return 0;
+        }
+
+        $windowStart = strtotime((string)$row['window_start_at']);
+        if ($now - $windowStart >= 30) {
+            $update = $pdo->prepare('UPDATE rate_limits SET count = 1, window_start_at = UTC_TIMESTAMP() WHERE id = ?');
+            $update->execute([(int)$row['id']]);
+            $pdo->commit();
+            return 0;
+        }
+
+        $count = (int)$row['count'];
+        if ($count >= 3) {
+            $pdo->commit();
+            return max(1, 30 - ($now - $windowStart));
+        }
+
+        $nextCount = $count + 1;
+        $update = $pdo->prepare('UPDATE rate_limits SET count = ?, window_start_at = CASE WHEN ? >= 3 THEN UTC_TIMESTAMP() ELSE window_start_at END WHERE id = ?');
+        $update->execute([$nextCount, $nextCount, (int)$row['id']]);
+        $pdo->commit();
+        return $nextCount >= 3 ? 30 : 0;
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        throw $error;
+    }
+}
+
+function clear_admin_password_failures(PDO $pdo, array $config): void
+{
+    $keyHash = admin_password_failure_key($config);
+    $stmt = $pdo->prepare('DELETE FROM rate_limits WHERE scope = ? AND key_hash = ?');
+    $stmt->execute(['admin_password', $keyHash]);
 }
 
 function send_login_mail(array $config, string $email, string $code): void
