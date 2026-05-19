@@ -336,6 +336,10 @@ async function generateImages(extra = {}) {
   const mode = extra.mode || $("#modeSelect").value;
   const usePlatformApi = isPlatformApiSelected();
   if (usePlatformApi && !billingState.platformEnabled) {
+    await loadBillingConfig();
+    renderWallet();
+  }
+  if (usePlatformApi && !billingState.platformEnabled) {
     $("#walletPanel").classList.add("open");
     showToast("推荐 API 暂未配置，请联系站长处理");
     return;
@@ -1884,20 +1888,24 @@ function deleteConfigHistory(id) {
 
 async function loadBilling() {
   try {
-    const configResponse = await apiFetch("/api/billing/config");
-    if (configResponse.ok) {
-      const info = await configResponse.json();
-      billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
-      billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
-      billingState.platformEnabled = Boolean(info.platformEnabled);
-      billingState.rechargeUrl = info.rechargeUrl || billingState.rechargeUrl;
-    }
+    await loadBillingConfig();
     const meResponse = await apiFetch("/api/auth/me");
     if (meResponse.ok) applyBillingDashboard(await meResponse.json());
     if (billingState.authenticated) await loadBillingLedger();
   } catch (error) {
     console.warn("充值信息读取失败", error);
   }
+}
+
+async function loadBillingConfig() {
+  const configResponse = await apiFetch("/api/billing/config");
+  const info = await readJsonResponse(configResponse);
+  if (!configResponse.ok) return false;
+  billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+  billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
+  billingState.platformEnabled = Boolean(info.platformEnabled);
+  billingState.rechargeUrl = info.rechargeUrl || billingState.rechargeUrl;
+  return billingState.platformEnabled;
 }
 
 async function refreshBilling() {
