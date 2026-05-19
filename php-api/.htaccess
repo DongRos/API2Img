@@ -1,0 +1,9 @@
+RewriteEngine On
+
+RewriteRule ^(config|src|sql|storage)(/|$) - [F,L]
+
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^public/ - [L]
+
+RewriteRule ^ public/index.php [QSA,L]
