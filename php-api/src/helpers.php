@@ -454,12 +454,12 @@ function create_ledger(PDO $pdo, int $userId, string $type, int $amountCents, in
 class HttpError extends RuntimeException
 {
     public int $status;
-    public string $code;
+    public string $errorCode;
 
     public function __construct(string $message, int $status = 400, string $code = '')
     {
         parent::__construct($message);
         $this->status = $status;
-        $this->code = $code;
+        $this->errorCode = $code;
     }
 }

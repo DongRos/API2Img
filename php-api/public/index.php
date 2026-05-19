@@ -26,7 +26,7 @@ try {
     if ($pdo instanceof PDO && $pdo->inTransaction()) {
         $pdo->rollBack();
     }
-    error_response($error->getMessage(), $error->status, $error->code);
+    error_response($error->getMessage(), $error->status, $error->errorCode);
 } catch (Throwable $error) {
     if ($pdo instanceof PDO && $pdo->inTransaction()) {
         $pdo->rollBack();
