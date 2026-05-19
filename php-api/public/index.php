@@ -158,7 +158,7 @@ function auth_send_code(PDO $pdo, array $config): void
     );
     $recent->execute([$email]);
     $createdAt = (string)($recent->fetchColumn() ?: '');
-    if ($createdAt !== '' && (time() - strtotime($createdAt) < 60)) {
+    if ($createdAt !== '' && utc_sql_age_seconds($createdAt) < 60) {
         throw new HttpError('请等待 60 秒后重新发送验证码', 429, 'code_cooldown');
     }
     enforce_rate_limit($pdo, $config, 'send_code_email', $email, 5, 3600);

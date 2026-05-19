@@ -33,6 +33,20 @@ function now_sql(): string
     return gmdate('Y-m-d H:i:s');
 }
 
+function utc_sql_age_seconds(string $value): int
+{
+    $value = trim($value);
+    if ($value === '') {
+        return PHP_INT_MAX;
+    }
+    $date = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value, new DateTimeZone('UTC'));
+    if (!$date) {
+        $timestamp = strtotime($value . ' UTC');
+        return $timestamp ? max(0, time() - $timestamp) : PHP_INT_MAX;
+    }
+    return max(0, time() - $date->getTimestamp());
+}
+
 function json_response(array $payload, int $status = 200, array $headers = []): void
 {
     http_response_code($status);
@@ -239,15 +253,14 @@ function enforce_rate_limit(PDO $pdo, array $config, string $scope, string $key,
         $stmt = $pdo->prepare('SELECT * FROM rate_limits WHERE scope = ? AND key_hash = ? FOR UPDATE');
         $stmt->execute([$scope, $keyHash]);
         $row = $stmt->fetch();
-        $now = time();
         if (!$row) {
             $insert = $pdo->prepare('INSERT INTO rate_limits (scope, key_hash, count, window_start_at) VALUES (?, ?, 1, UTC_TIMESTAMP())');
             $insert->execute([$scope, $keyHash]);
             $pdo->commit();
             return;
         }
-        $windowStart = strtotime((string)$row['window_start_at']);
-        if ($now - $windowStart >= $windowSeconds) {
+        $elapsed = utc_sql_age_seconds((string)$row['window_start_at']);
+        if ($elapsed >= $windowSeconds) {
             $update = $pdo->prepare('UPDATE rate_limits SET count = 1, window_start_at = UTC_TIMESTAMP() WHERE id = ?');
             $update->execute([(int)$row['id']]);
             $pdo->commit();
@@ -285,8 +298,7 @@ function admin_password_locked_seconds(PDO $pdo, array $config): int
             $pdo->commit();
             return 0;
         }
-        $windowStart = strtotime((string)$row['window_start_at']);
-        $elapsed = time() - $windowStart;
+        $elapsed = utc_sql_age_seconds((string)$row['window_start_at']);
         if ($elapsed >= 30 || (int)$row['count'] < 3) {
             $pdo->commit();
             return 0;
@@ -309,7 +321,6 @@ function register_admin_password_failure(PDO $pdo, array $config): int
         $stmt = $pdo->prepare('SELECT * FROM rate_limits WHERE scope = ? AND key_hash = ? FOR UPDATE');
         $stmt->execute(['admin_password', $keyHash]);
         $row = $stmt->fetch();
-        $now = time();
         if (!$row) {
             $insert = $pdo->prepare('INSERT INTO rate_limits (scope, key_hash, count, window_start_at) VALUES (?, ?, 1, UTC_TIMESTAMP())');
             $insert->execute(['admin_password', $keyHash]);
@@ -317,8 +328,8 @@ function register_admin_password_failure(PDO $pdo, array $config): int
             return 0;
         }
 
-        $windowStart = strtotime((string)$row['window_start_at']);
-        if ($now - $windowStart >= 30) {
+        $elapsed = utc_sql_age_seconds((string)$row['window_start_at']);
+        if ($elapsed >= 30) {
             $update = $pdo->prepare('UPDATE rate_limits SET count = 1, window_start_at = UTC_TIMESTAMP() WHERE id = ?');
             $update->execute([(int)$row['id']]);
             $pdo->commit();
@@ -328,7 +339,7 @@ function register_admin_password_failure(PDO $pdo, array $config): int
         $count = (int)$row['count'];
         if ($count >= 3) {
             $pdo->commit();
-            return max(1, 30 - ($now - $windowStart));
+            return max(1, 30 - $elapsed);
         }
 
         $nextCount = $count + 1;
@@ -409,12 +420,13 @@ function smtp_send(array $config, string $to, string $subject, string $body): vo
     $port = (int)$mail['smtp_port'];
     $secure = strtolower((string)$mail['smtp_secure']);
     $target = ($secure === 'ssl' ? 'ssl://' : '') . $host;
-    $socket = @stream_socket_client($target . ':' . $port, $errno, $errstr, 20, STREAM_CLIENT_CONNECT);
+    $timeout = max(5, min(20, (int)($mail['smtp_timeout_seconds'] ?? 8)));
+    $socket = @stream_socket_client($target . ':' . $port, $errno, $errstr, $timeout, STREAM_CLIENT_CONNECT);
     if (!$socket) {
         log_mail_error($config, "connect failed: {$errno} {$errstr}");
         throw new HttpError('验证码邮件发送失败，请检查 SMTP 配置', 500, 'mail_failed');
     }
-    stream_set_timeout($socket, 20);
+    stream_set_timeout($socket, $timeout);
     smtp_expect($socket, [220]);
     smtp_cmd($socket, 'EHLO api2image.top', [250]);
     if ($secure === 'tls') {
