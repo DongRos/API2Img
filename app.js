@@ -2443,15 +2443,25 @@ function renderLedgerList() {
   }
   list.innerHTML = billingState.ledger
     .map(
-      (item) => `
+      (item) => {
+        const amountCents = Number(item.amountCents || 0);
+        const amountClass = amountCents < 0 ? "negative" : amountCents > 0 ? "positive" : "";
+        const typeLabel = walletLedgerTypeLabel(item.type);
+        const note = String(item.note || "").trim();
+        const noteText = note ? `${typeLabel}：${note}` : typeLabel;
+        return `
         <article class="wallet-item">
-          <div>
-            <strong>${formatSignedMoney(item.amountCents)} 元</strong>
-            <span>${escapeHtml(walletLedgerTypeLabel(item.type))}${item.note ? ` · ${escapeHtml(item.note)}` : ""}</span>
+          <div class="wallet-item-top">
+            <strong class="wallet-amount ${amountClass}">${formatSignedMoney(item.amountCents)} 元</strong>
+            <span class="wallet-balance-after">余额 ${formatMoney(item.balanceAfterCents)} 元</span>
           </div>
-          <small>余额 ${formatMoney(item.balanceAfterCents)} 元 · ${formatWalletTime(item.createdAt)}</small>
+          <p class="wallet-ledger-note" title="${escapeHtml(noteText)}">
+            <span>${escapeHtml(typeLabel)}</span>${note ? `<em>${escapeHtml(note)}</em>` : ""}
+          </p>
+          <time class="wallet-ledger-time" datetime="${escapeHtml(String(item.createdAt || ""))}">${formatWalletTime(item.createdAt)}</time>
         </article>
-      `,
+      `;
+      },
     )
     .join("");
 }
