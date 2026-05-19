@@ -995,24 +995,38 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
     ]);
 }
 
-function ensure_admin_settings_table(PDO $pdo): void
+function ensure_admin_settings_table(PDO $pdo): bool
 {
-    $pdo->exec(
-        "CREATE TABLE IF NOT EXISTS admin_settings (
-          setting_key VARCHAR(80) NOT NULL,
-          setting_value MEDIUMTEXT NOT NULL,
-          updated_at DATETIME NOT NULL,
-          PRIMARY KEY (setting_key)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
-    );
+    try {
+        $pdo->exec(
+            "CREATE TABLE IF NOT EXISTS admin_settings (
+              setting_key VARCHAR(80) NOT NULL,
+              setting_value MEDIUMTEXT NOT NULL,
+              updated_at DATETIME NOT NULL,
+              PRIMARY KEY (setting_key)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
+        return true;
+    } catch (Throwable $error) {
+        return false;
+    }
 }
 
 function read_admin_setting_json(PDO $pdo, string $key): array
 {
-    ensure_admin_settings_table($pdo);
-    $stmt = $pdo->prepare('SELECT setting_value FROM admin_settings WHERE setting_key = ? LIMIT 1');
-    $stmt->execute([$key]);
-    $raw = (string)($stmt->fetchColumn() ?: '');
+    $raw = '';
+    if (ensure_admin_settings_table($pdo)) {
+        try {
+            $stmt = $pdo->prepare('SELECT setting_value FROM admin_settings WHERE setting_key = ? LIMIT 1');
+            $stmt->execute([$key]);
+            $raw = (string)($stmt->fetchColumn() ?: '');
+        } catch (Throwable $error) {
+            $raw = '';
+        }
+    }
+    if ($raw === '') {
+        $raw = read_admin_setting_log($pdo, $key);
+    }
     if ($raw === '') {
         return [];
     }
@@ -1022,14 +1036,48 @@ function read_admin_setting_json(PDO $pdo, string $key): array
 
 function write_admin_setting_json(PDO $pdo, string $key, array $value): void
 {
-    ensure_admin_settings_table($pdo);
     $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    $stmt = $pdo->prepare(
-        'INSERT INTO admin_settings (setting_key, setting_value, updated_at)
-         VALUES (?, ?, UTC_TIMESTAMP())
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = UTC_TIMESTAMP()'
-    );
-    $stmt->execute([$key, $json]);
+    if ($json === false) {
+        throw new HttpError('配置 JSON 编码失败', 500, 'setting_encode_failed');
+    }
+    if (ensure_admin_settings_table($pdo)) {
+        try {
+            $stmt = $pdo->prepare(
+                'INSERT INTO admin_settings (setting_key, setting_value, updated_at)
+                 VALUES (?, ?, UTC_TIMESTAMP())
+                 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = UTC_TIMESTAMP()'
+            );
+            $stmt->execute([$key, $json]);
+            return;
+        } catch (Throwable $error) {
+            // Fall through to admin_logs for virtual hosts that restrict table writes.
+        }
+    }
+    write_admin_setting_log($pdo, $key, $json);
+}
+
+function read_admin_setting_log(PDO $pdo, string $key): string
+{
+    try {
+        $stmt = $pdo->prepare("SELECT detail FROM admin_logs WHERE action = 'admin_setting' AND target_id = ? ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$key]);
+        return (string)($stmt->fetchColumn() ?: '');
+    } catch (Throwable $error) {
+        return '';
+    }
+}
+
+function write_admin_setting_log(PDO $pdo, string $key, string $json): void
+{
+    try {
+        $stmt = $pdo->prepare(
+            "INSERT INTO admin_logs (action, target_id, detail, created_at)
+             VALUES ('admin_setting', ?, ?, UTC_TIMESTAMP())"
+        );
+        $stmt->execute([$key, $json]);
+    } catch (Throwable $error) {
+        throw new HttpError('数据库无法保存站长配置，请导入最新版 schema.sql 或检查数据库写入权限', 500, 'setting_save_failed');
+    }
 }
 
 function normalize_custom_api_config(array $value): array
