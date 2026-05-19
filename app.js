@@ -199,11 +199,6 @@ async function init() {
   loadConfigHistory();
   loadGenerationLogs();
   loadApiStats();
-  await loadBilling();
-  await loadState();
-  await trackSiteVisit();
-  await loadSiteStats({ silent: true });
-  await loadAnnouncements({ silent: true });
   hydrateConfig();
   renderConfigHistory();
   renderGenerationLogs();
@@ -217,6 +212,17 @@ async function init() {
   renderIcons();
   autoGrow($("#promptInput"));
   startSiteHeartbeat();
+  loadBilling().catch((error) => console.warn("充值信息读取失败", error));
+  loadState()
+    .then(() => {
+      renderReferences();
+      renderResults();
+      renderIcons();
+    })
+    .catch((error) => console.warn("本地图片状态读取失败", error));
+  trackSiteVisit().catch((error) => console.warn("站点访问上报失败", error));
+  loadSiteStats({ silent: true }).catch((error) => console.warn("站点统计读取失败", error));
+  loadAnnouncements({ silent: true }).catch((error) => console.warn("公告读取失败", error));
 }
 
 function fillControls() {
@@ -1130,47 +1136,34 @@ async function sendImageRequest(endpoint, request) {
 
 async function fetchPlatformServerImageRequest(endpoint, request) {
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
-  const direct = await getPlatformDirectConfig({
+  const ticket = await getPlatformGenerationTicket({
     mode: billingMode || $("#modeSelect").value,
     count: billingCount || 1,
     model: billingModel || getModelName(),
     signal,
   });
-  const directRequest = {
-    ...serverRequest,
+  const platformUrl = platformDirectUrl("/api/generate/platform");
+  const response = await fetch(platformUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "omit",
+    body: JSON.stringify({
+      mode: billingMode || $("#modeSelect").value,
+      count: billingCount || 1,
+      model: billingModel || getModelName(),
+      requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
+      ticket: ticket.ticket,
+      request: {
+        ...serverRequest,
+        headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
+      },
+    }),
     signal,
-    headers: {
-      ...(serverRequest.headers || {}),
-      Authorization: `Bearer ${direct.apiKey}`,
-    },
-  };
-  let response = null;
-  try {
-    response = await fetchDirectImageRequest(direct.endpoint, directRequest);
-  } catch (error) {
-    response = await fetch(platformDirectUrl("/api/generate/platform"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "omit",
-      body: JSON.stringify({
-        mode: billingMode || $("#modeSelect").value,
-        count: billingCount || 1,
-        model: billingModel || getModelName(),
-        requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
-        ticket: direct.ticket,
-        request: {
-          ...serverRequest,
-          headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
-        },
-      }),
-      signal,
-    });
-  }
-  response.platformTicket = direct.ticket;
-  response.platformPriceCents = direct.priceCents;
-  response.platformStatsEndpoint = direct.endpoint;
+  });
+  response.platformTicket = ticket.ticket;
+  response.platformPriceCents = ticket.priceCents;
+  response.platformStatsEndpoint = platformUrl;
   response.platformStatsModel = billingModel || getModelName();
-  response.platformStatsApiKey = direct.apiKey;
   return response;
 }
 
@@ -1195,27 +1188,38 @@ function sanitizePlatformBrowserHeaders(headers) {
 }
 
 async function getPlatformGenerationTicket(options = {}) {
-  const response = await apiFetch("/api/generate/ticket", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      mode: options.mode || $("#modeSelect").value,
-      count: options.count || 1,
-      model: options.model || getModelName(),
-    }),
-    signal: options.signal,
-  });
-  const payload = await readJsonResponse(response);
-  if (!response.ok) throw new Error(payload?.error?.message || `生成票据获取失败：HTTP ${response.status}`);
-  if (!payload.ticket) throw new Error("生成票据缺失，请重试");
-  if (payload.directBaseUrl) billingState.directBaseUrl = normalizeDirectApiBase(payload.directBaseUrl);
-  billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
-  if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
-  renderWallet();
-  return {
-    ticket: payload.ticket,
-    priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+  const requestBody = {
+    mode: options.mode || $("#modeSelect").value,
+    count: options.count || 1,
+    model: options.model || getModelName(),
   };
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await apiFetch("/api/generate/ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: options.signal,
+      });
+      const payload = await readJsonResponse(response);
+      if (!response.ok) throw new Error(payload?.error?.message || `生成票据获取失败：HTTP ${response.status}`);
+      if (!payload.ticket) throw new Error("生成票据缺失，请重试");
+      if (payload.directBaseUrl) billingState.directBaseUrl = normalizeDirectApiBase(payload.directBaseUrl);
+      billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+      if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
+      renderWallet();
+      return {
+        ticket: payload.ticket,
+        priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+      };
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableDirectConfigError(error, attempt)) break;
+      await wait(500 * attempt);
+    }
+  }
+  throw lastError || new Error("生成票据获取失败，请重试");
 }
 
 async function getPlatformDirectConfig(options = {}) {
@@ -2205,12 +2209,19 @@ function deleteConfigHistory(id) {
 
 async function loadBilling() {
   try {
-    await loadBillingConfig();
     const sessionSnapshot = currentWalletSessionToken();
-    const meResponse = await apiFetch("/api/auth/me");
+    const [configResult, meResponse] = await Promise.allSettled([loadBillingConfig(), apiFetch("/api/auth/me")]);
+    if (configResult.status === "rejected") console.warn("充值配置读取失败", configResult.reason);
     if (walletSessionChanged(sessionSnapshot)) return;
-    if (meResponse.ok) applyBillingDashboard(await meResponse.json());
-    if (billingState.authenticated) await loadBillingLedger({ sessionSnapshot });
+    if (meResponse.status === "fulfilled" && meResponse.value.ok) applyBillingDashboard(await meResponse.value.json());
+    renderWallet();
+    if (billingState.authenticated) {
+      loadBillingLedger({ silent: true, sessionSnapshot })
+        .then(() => {
+          if (!walletSessionChanged(sessionSnapshot)) renderWallet();
+        })
+        .catch((error) => console.warn("流水读取失败", error));
+    }
   } catch (error) {
     console.warn("充值信息读取失败", error);
   }
@@ -2238,8 +2249,14 @@ async function refreshBilling() {
     if (walletSessionChanged(sessionSnapshot)) return;
     if (!response.ok) return;
     applyBillingDashboard(await response.json());
-    if (billingState.authenticated) await loadBillingLedger({ silent: true, sessionSnapshot });
     renderWallet();
+    if (billingState.authenticated) {
+      loadBillingLedger({ silent: true, sessionSnapshot })
+        .then(() => {
+          if (!walletSessionChanged(sessionSnapshot)) renderWallet();
+        })
+        .catch((error) => console.warn("流水读取失败", error));
+    }
   } catch (error) {
     console.warn("余额刷新失败", error);
   }
@@ -2498,10 +2515,15 @@ async function verifyLoginCode() {
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "登录失败");
     applyBillingDashboard({ ...payload, authenticated: true });
-    await loadBillingLedger({ silent: true, sessionSnapshot: currentWalletSessionToken() });
     $("#loginCodeInput").value = "";
     renderWallet();
     showToast("登录成功，余额已同步");
+    const sessionSnapshot = currentWalletSessionToken();
+    loadBillingLedger({ silent: true, sessionSnapshot })
+      .then(() => {
+        if (!walletSessionChanged(sessionSnapshot)) renderWallet();
+      })
+      .catch((error) => console.warn("流水读取失败", error));
   } catch (error) {
     showToast(error.message || "登录失败");
   } finally {

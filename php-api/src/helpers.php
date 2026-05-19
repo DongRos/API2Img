@@ -356,24 +356,40 @@ function send_login_mail(array $config, string $email, string $code): void
     $subject = 'API2image 登录验证码';
     $body = "你的 API2image 登录验证码是：{$code}\n\n验证码 10 分钟内有效。若不是你本人操作，请忽略这封邮件。";
     $smtpHost = trim((string)$config['mail']['smtp_host']);
+    $smtpError = null;
     if ($smtpHost !== '') {
         try {
             smtp_send($config, $email, $subject, $body);
+            return;
         } catch (HttpError $error) {
-            throw $error;
-        } catch (Throwable $error) {
+            $smtpError = $error;
             log_mail_error($config, $error->getMessage());
-            throw new HttpError('验证码邮件发送失败，请检查 SMTP 配置', 500, 'mail_failed');
+        } catch (Throwable $error) {
+            $smtpError = $error;
+            log_mail_error($config, $error->getMessage());
+        }
+    }
+
+    if (send_php_mail_fallback($config, $email, $subject, $body)) {
+        if ($smtpError) {
+            log_mail_error($config, 'SMTP failed, PHP mail fallback succeeded: ' . $smtpError->getMessage());
         }
         return;
     }
+
+    if ($smtpError) {
+        throw new HttpError('验证码邮件发送失败，请检查 SMTP 配置', 500, 'mail_failed');
+    }
+    throw new HttpError('验证码邮件发送失败，请稍后重试', 500, 'mail_failed');
+}
+
+function send_php_mail_fallback(array $config, string $email, string $subject, string $body): bool
+{
     $headers = [
         'From: ' . mail_from_header($config),
         'Content-Type: text/plain; charset=UTF-8',
     ];
-    if (!mail($email, '=?UTF-8?B?' . base64_encode($subject) . '?=', $body, implode("\r\n", $headers))) {
-        throw new HttpError('验证码邮件发送失败，请稍后重试', 500, 'mail_failed');
-    }
+    return @mail($email, '=?UTF-8?B?' . base64_encode($subject) . '?=', $body, implode("\r\n", $headers));
 }
 
 function mail_from_header(array $config): string
