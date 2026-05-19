@@ -21,6 +21,9 @@ const ANNOUNCEMENTS_REFRESH_INTERVAL_MS = 45000;
 const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
+const DEFAULT_PHP_API_BASE = "https://api2img.shop/php-api/index.php";
+const FAST_API_TIMEOUT_MS = 9000;
+const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
 const FLOW_META_STORE = "meta";
@@ -120,6 +123,7 @@ const billingState = {
   platformCustomTemplate: "",
   platformModelName: "",
   ledger: [],
+  ledgerLoading: false,
   activeOrder: null,
 };
 
@@ -180,6 +184,8 @@ let loginCodeCooldownTimer = null;
 let loginCodeCooldownUntil = 0;
 let lastCodeAdminCsv = "";
 let lastCodeAdminFilename = "";
+let billingReadyPromise = null;
+let directApiWarmupPromise = null;
 const detailView = {
   scale: 1,
   x: 0,
@@ -212,7 +218,7 @@ async function init() {
   renderIcons();
   autoGrow($("#promptInput"));
   startSiteHeartbeat();
-  loadBilling().catch((error) => console.warn("充值信息读取失败", error));
+  billingReadyPromise = loadBilling().catch((error) => console.warn("充值信息读取失败", error));
   loadState()
     .then(() => {
       renderReferences();
@@ -450,6 +456,9 @@ async function generateImages(extra = {}) {
 
   const mode = extra.mode || $("#modeSelect").value;
   const usePlatformApi = isPlatformApiSelected();
+  if (usePlatformApi) {
+    await ensurePlatformReadyForGeneration();
+  }
   if (usePlatformApi && !billingState.platformEnabled) {
     await loadBillingConfig();
     renderWallet();
@@ -570,6 +579,26 @@ async function generateImages(extra = {}) {
       setGenerating(false);
       hideProgress();
     }, 900);
+  }
+}
+
+async function ensurePlatformReadyForGeneration() {
+  const noticeTimer = setTimeout(() => showToast("正在同步钱包，请稍候..."), 450);
+  try {
+    if (billingReadyPromise) {
+      await Promise.race([billingReadyPromise, wait(FAST_API_TIMEOUT_MS)]);
+    }
+    if (!billingState.platformEnabled) {
+      await loadBillingConfig();
+    }
+    if (currentWalletSessionToken() && !billingState.authenticated) {
+      await refreshBilling();
+    }
+    warmDirectApiBase();
+  } catch (error) {
+    console.warn("生成前钱包同步失败", error);
+  } finally {
+    clearTimeout(noticeTimer);
   }
 }
 
@@ -873,7 +902,7 @@ async function settlePlatformImage(result, options, index, context) {
   try {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        const response = await apiFetch("/api/generate/settle", {
+        const response = await apiFetchPreferDirect("/api/generate/settle", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -882,6 +911,11 @@ async function settlePlatformImage(result, options, index, context) {
             requestId,
             model: options.model || getModelName(),
           }),
+          timeoutMs: FAST_API_TIMEOUT_MS,
+        }, {
+          directFirst: true,
+          timeoutMs: FAST_API_TIMEOUT_MS,
+          label: "扣费结算",
         });
         const payload = await readJsonResponse(response);
         if (!response.ok) throw new Error(payload?.error?.message || `结算失败：HTTP ${response.status}`);
@@ -995,18 +1029,18 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
           lastError = cleanErrorMessage(error);
           if (
             generationCancelled ||
-            options.apiProvider === "platform" ||
             isAbortError(error) ||
             attempt >= SINGLE_IMAGE_MAX_ATTEMPTS ||
             !shouldRetrySingleImageError(lastError)
           ) {
             break;
           }
+          const retryDelay = options.apiProvider === "platform" ? PLATFORM_GENERATION_RETRY_DELAY_MS : 900;
           updateProgress("重试单张生成", `第 ${absoluteIndex + 1}/${total} 张失败：${lastError}，正在重试`, currentProgress, {
             generated: offset + images.filter(Boolean).length,
             total,
           });
-          await wait(900);
+          await wait(retryDelay);
         }
       }
       if (!images[index] && lastError) errors.push(`第 ${absoluteIndex + 1}/${total} 张：${lastError}`);
@@ -1037,6 +1071,7 @@ function getSingleRequestConcurrency() {
 }
 
 function shouldUseSingleImageRequests(options, desired) {
+  if (options.apiProvider === "platform") return true;
   if (desired <= PLATFORM_MAX_BATCH_REQUEST_COUNT) return false;
   return true;
 }
@@ -1142,29 +1177,51 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
     model: billingModel || getModelName(),
     signal,
   });
-  const platformUrl = platformDirectUrl("/api/generate/platform");
-  const response = await fetch(platformUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "omit",
-    body: JSON.stringify({
-      mode: billingMode || $("#modeSelect").value,
-      count: billingCount || 1,
-      model: billingModel || getModelName(),
-      requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
-      ticket: ticket.ticket,
-      request: {
-        ...serverRequest,
-        headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
-      },
-    }),
-    signal,
-  });
+  const payload = {
+    mode: billingMode || $("#modeSelect").value,
+    count: billingCount || 1,
+    model: billingModel || getModelName(),
+    requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
+    ticket: ticket.ticket,
+    request: {
+      ...serverRequest,
+      headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
+    },
+  };
+  const { response, url: platformUrl } = await fetchPlatformGeneration(payload, signal);
   response.platformTicket = ticket.ticket;
   response.platformPriceCents = ticket.priceCents;
   response.platformStatsEndpoint = platformUrl;
   response.platformStatsModel = billingModel || getModelName();
   return response;
+}
+
+async function fetchPlatformGeneration(payload, signal) {
+  const urls = uniqueUrls([platformDirectUrl("/api/generate/platform"), apiUrl("/api/generate/platform")]);
+  let lastError = null;
+  let lastRetryableResponse = null;
+  for (const url of urls) {
+    try {
+      const response = await fetchWithTimeout(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: isDirectPhpApiUrl(url) ? "omit" : "include",
+        body: JSON.stringify(payload),
+        signal,
+      });
+      if (response.ok || !isRetryableHttpStatus(response.status)) {
+        return { response, url };
+      }
+      lastRetryableResponse = { response, url };
+      lastError = new Error(`推荐 API 请求失败：HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (signal?.aborted) throw error;
+      if (!isRetryableFetchError(error)) throw error;
+    }
+  }
+  if (lastRetryableResponse) return lastRetryableResponse;
+  throw lastError || new Error("推荐 API 请求失败");
 }
 
 function fetchDirectImageRequest(endpoint, request) {
@@ -1196,11 +1253,16 @@ async function getPlatformGenerationTicket(options = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const response = await apiFetch("/api/generate/ticket", {
+      const response = await apiFetchPreferDirect("/api/generate/ticket", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
         signal: options.signal,
+        timeoutMs: FAST_API_TIMEOUT_MS,
+      }, {
+        directFirst: true,
+        timeoutMs: FAST_API_TIMEOUT_MS,
+        label: "生成票据获取",
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload?.error?.message || `生成票据获取失败：HTTP ${response.status}`);
@@ -1269,8 +1331,7 @@ function isRetryableDirectConfigError(error, attempt) {
 }
 
 function platformDirectUrl(path) {
-  const base = normalizeDirectApiBase(billingState.directBaseUrl || "https://api2img.shop/php-api/index.php");
-  return `${base}${String(path || "").startsWith("/") ? path : `/${path}`}`;
+  return directPhpApiUrl(path);
 }
 
 function normalizeDirectApiBase(value) {
@@ -2216,6 +2277,8 @@ async function loadBilling() {
     if (meResponse.status === "fulfilled" && meResponse.value.ok) applyBillingDashboard(await meResponse.value.json());
     renderWallet();
     if (billingState.authenticated) {
+      billingState.ledgerLoading = true;
+      renderWallet();
       loadBillingLedger({ silent: true, sessionSnapshot })
         .then(() => {
           if (!walletSessionChanged(sessionSnapshot)) renderWallet();
@@ -2228,7 +2291,13 @@ async function loadBilling() {
 }
 
 async function loadBillingConfig() {
-  const configResponse = await apiFetch("/api/billing/config");
+  const configResponse = await apiFetchPreferDirect("/api/billing/config", {
+    timeoutMs: FAST_API_TIMEOUT_MS,
+  }, {
+    directFirst: true,
+    timeoutMs: FAST_API_TIMEOUT_MS,
+    label: "充值配置读取",
+  });
   const info = await readJsonResponse(configResponse);
   if (!configResponse.ok) return false;
   billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
@@ -2239,7 +2308,24 @@ async function loadBillingConfig() {
   billingState.platformRequestFormat = info.requestFormat === "json" ? "json" : "openai";
   billingState.platformCustomTemplate = info.customTemplate || "";
   billingState.platformModelName = info.modelName || "";
+  warmDirectApiBase();
   return billingState.platformEnabled;
+}
+
+function warmDirectApiBase() {
+  if (directApiWarmupPromise) return directApiWarmupPromise;
+  directApiWarmupPromise = fetchWithTimeout(directPhpApiUrl("/api/health"), {
+    method: "GET",
+    credentials: "omit",
+    cache: "no-store",
+  }, 5000)
+    .catch((error) => console.warn("PHP 接口预热失败", error))
+    .finally(() => {
+      setTimeout(() => {
+        directApiWarmupPromise = null;
+      }, 60000);
+    });
+  return directApiWarmupPromise;
 }
 
 async function refreshBilling() {
@@ -2251,6 +2337,8 @@ async function refreshBilling() {
     applyBillingDashboard(await response.json());
     renderWallet();
     if (billingState.authenticated) {
+      billingState.ledgerLoading = true;
+      renderWallet();
       loadBillingLedger({ silent: true, sessionSnapshot })
         .then(() => {
           if (!walletSessionChanged(sessionSnapshot)) renderWallet();
@@ -2265,15 +2353,23 @@ async function refreshBilling() {
 async function loadBillingLedger(options = {}) {
   const sessionSnapshot = options.sessionSnapshot ?? currentWalletSessionToken();
   try {
-    const response = await apiFetch("/api/billing/ledger");
+    const response = await apiFetchPreferDirect("/api/billing/ledger", {
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: Boolean(currentWalletSessionToken()),
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "流水读取",
+    });
     if (walletSessionChanged(sessionSnapshot)) return;
     const payload = await readJsonResponse(response);
     if (walletSessionChanged(sessionSnapshot)) return;
     if (!response.ok) throw new Error(payload?.error?.message || "流水读取失败");
     billingState.ledger = Array.isArray(payload.ledger) ? payload.ledger : [];
+    billingState.ledgerLoading = false;
   } catch (error) {
     if (walletSessionChanged(sessionSnapshot)) return;
     billingState.ledger = [];
+    billingState.ledgerLoading = false;
     if (!options.silent) console.warn("流水读取失败", error);
   }
 }
@@ -2408,6 +2504,7 @@ function applyBillingDashboard(payload) {
   if (payload.sessionToken) persistWalletSessionToken(payload.sessionToken);
   if (!billingState.sessionToken) billingState.sessionToken = readWalletSessionToken();
   if (!billingState.authenticated) billingState.ledger = [];
+  if (!billingState.authenticated) billingState.ledgerLoading = false;
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
   billingState.rechargeUrl = payload.rechargeUrl || billingState.rechargeUrl;
@@ -2435,6 +2532,10 @@ function renderLedgerList() {
   if (!list) return;
   if (!billingState.authenticated) {
     list.innerHTML = `<div class="log-empty">登录后显示余额流水。</div>`;
+    return;
+  }
+  if (billingState.ledgerLoading) {
+    list.innerHTML = `<div class="log-empty">正在同步余额流水...</div>`;
     return;
   }
   if (!billingState.ledger.length) {
@@ -2529,6 +2630,8 @@ async function verifyLoginCode() {
     renderWallet();
     showToast("登录成功，余额已同步");
     const sessionSnapshot = currentWalletSessionToken();
+    billingState.ledgerLoading = true;
+    renderWallet();
     loadBillingLedger({ silent: true, sessionSnapshot })
       .then(() => {
         if (!walletSessionChanged(sessionSnapshot)) renderWallet();
@@ -2552,6 +2655,7 @@ async function logoutWallet() {
   billingState.email = "";
   billingState.balanceCents = 0;
   billingState.ledger = [];
+  billingState.ledgerLoading = false;
   clearWalletSessionToken();
   renderWallet();
   showToast("已退出登录");
@@ -3114,16 +3218,98 @@ function apiUrl(path) {
 }
 
 function apiFetch(path, options = {}) {
+  return fetchApiUrl(apiUrl(path), options, "include");
+}
+
+async function apiFetchPreferDirect(path, options = {}, preference = {}) {
+  const urls = uniqueUrls([
+    ...(preference.directFirst ? [directPhpApiUrl(path), apiUrl(path)] : [apiUrl(path), directPhpApiUrl(path)]),
+  ]);
+  let lastError = null;
+  let lastRetryableResponse = null;
+  for (const url of urls) {
+    const direct = isDirectPhpApiUrl(url);
+    try {
+      const response = await fetchApiUrl(url, { ...options, timeoutMs: preference.timeoutMs || FAST_API_TIMEOUT_MS }, direct ? "omit" : "include");
+      if (response.ok || !shouldFallbackApiResponse(response, direct)) return response;
+      lastRetryableResponse = response;
+      lastError = new Error(`${preference.label || "请求"}失败：HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (options.signal?.aborted) throw error;
+      if (!isRetryableFetchError(error)) throw error;
+    }
+  }
+  if (lastRetryableResponse) return lastRetryableResponse;
+  throw lastError || new Error(`${preference.label || "请求"}失败`);
+}
+
+function fetchApiUrl(url, options = {}, credentials = "include") {
+  const { timeoutMs = 0, ...fetchOptions } = options;
   const headers = new Headers(options.headers || {});
   const sessionToken = billingState.sessionToken || readWalletSessionToken();
   if (sessionToken && !headers.has("X-Api2Image-Session")) {
     headers.set("X-Api2Image-Session", sessionToken);
   }
-  return fetch(apiUrl(path), {
-    credentials: "include",
-    ...options,
+  return fetchWithTimeout(url, {
+    ...fetchOptions,
+    credentials,
     headers,
-  });
+  }, timeoutMs);
+}
+
+function fetchWithTimeout(url, init = {}, timeoutMs = 0) {
+  if (!timeoutMs) return fetch(url, init);
+  const controller = new AbortController();
+  const externalSignal = init.signal;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const abortFromExternal = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+  }
+  return fetch(url, { ...init, signal: controller.signal })
+    .catch((error) => {
+      if (timedOut) throw new Error(`请求超时，请重试`);
+      throw error;
+    })
+    .finally(() => {
+      clearTimeout(timeout);
+      if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternal);
+    });
+}
+
+function directPhpApiUrl(path) {
+  const base = normalizeDirectApiBase(billingState.directBaseUrl || DEFAULT_PHP_API_BASE);
+  const value = String(path || "");
+  if (/^https?:\/\//i.test(value)) return value;
+  return `${base}${value.startsWith("/") ? value : `/${value}`}`;
+}
+
+function isDirectPhpApiUrl(url) {
+  return normalizeDirectApiBase(url).startsWith(normalizeDirectApiBase(billingState.directBaseUrl || DEFAULT_PHP_API_BASE));
+}
+
+function uniqueUrls(urls) {
+  return [...new Set(urls.filter(Boolean))];
+}
+
+function shouldFallbackApiResponse(response, direct) {
+  if (isRetryableHttpStatus(response.status)) return true;
+  if (direct && response.status === 401 && !currentWalletSessionToken()) return true;
+  return false;
+}
+
+function isRetryableHttpStatus(status) {
+  return [500, 502, 503, 504, 520, 522, 524].includes(Number(status));
+}
+
+function isRetryableFetchError(error) {
+  return /failed to fetch|network|timeout|timed out|请求超时|load failed|connection|socket|reset|abort/i.test(error?.message || String(error));
 }
 
 function updateApiProviderUi() {
