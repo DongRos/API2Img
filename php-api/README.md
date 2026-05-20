@@ -36,7 +36,7 @@ another hostname, add this before `app.js` in `index.html`:
 
 ```html
 <script>
-  window.API2IMAGE_API_BASE = "https://zj.tdyun.top/php-api/index.php";
+  window.API2IMAGE_API_BASE = "https://api.api2image.top";
 </script>
 ```
 

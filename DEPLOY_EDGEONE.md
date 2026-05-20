@@ -19,7 +19,7 @@ The repo already includes `edgeone.json` with these settings.
 Set this in EdgeOne Pages:
 
 ```text
-PHP_API_BASE_URL=https://zj.tdyun.top/php-api/index.php
+PHP_API_BASE_URL=https://your-php-api-host
 ```
 
 Use an HTTPS URL. The frontend is served from `https://api2image.top`, so the

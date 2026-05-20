@@ -790,14 +790,9 @@ function base64url_decode(string $value): string
 
 function call_platform_upstream(array $platform, string $endpoint, array $request): array
 {
-    $headers = [
+    return call_upstream_request($endpoint, $request, [
         'Authorization' => 'Bearer ' . (string)$platform['api_key'],
-    ];
-    $upstream = call_upstream_request($endpoint, $request, $headers);
-    if (should_retry_raw_multipart_file_fields($endpoint, $request, $upstream)) {
-        return call_upstream_request($endpoint, $request, $headers, false);
-    }
-    return $upstream;
+    ]);
 }
 
 function call_proxy_upstream(string $endpoint, array $request): array
@@ -805,7 +800,7 @@ function call_proxy_upstream(string $endpoint, array $request): array
     return call_upstream_request($endpoint, $request, []);
 }
 
-function call_upstream_request(string $endpoint, array $request, array $forcedHeaders, bool $normalizeFileFields = true): array
+function call_upstream_request(string $endpoint, array $request, array $forcedHeaders): array
 {
     $headers = [];
     foreach (($request['headers'] ?? []) as $key => $value) {
@@ -836,9 +831,7 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
                 }
                 $temp = data_url_to_temp_file((string)($file['dataUrl'] ?? ''));
                 $tempFiles[] = $temp['path'];
-                $field = $normalizeFileFields
-                    ? upstream_multipart_file_field($endpoint, (string)($file['field'] ?? 'image'), $fileIndex)
-                    : ((string)($file['field'] ?? 'image') ?: 'image');
+                $field = upstream_multipart_file_field($endpoint, (string)($file['field'] ?? 'image'), $fileIndex);
                 $filename = (string)($file['filename'] ?? 'image.png');
                 $body[$field] = new CURLFile($temp['path'], $temp['mime'], $filename);
                 $fileIndex++;
@@ -861,43 +854,6 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
             }
         }
     }
-}
-
-function should_retry_raw_multipart_file_fields(string $endpoint, array $request, array $upstream): bool
-{
-    if (($request['bodyType'] ?? '') !== 'multipart') {
-        return false;
-    }
-    if (!endpoint_host_matches($endpoint, '/(^|\.)manxiaobai\.online$/i')) {
-        return false;
-    }
-    if ((int)($upstream['status'] ?? 0) < 500) {
-        return false;
-    }
-    if (!multipart_file_fields_change_on_normalize($endpoint, $request)) {
-        return false;
-    }
-    $body = strtolower((string)($upstream['body'] ?? ''));
-    return strpos($body, 'image proxy failed') !== false || strpos($body, 'proxy failed') !== false;
-}
-
-function multipart_file_fields_change_on_normalize(string $endpoint, array $request): bool
-{
-    $index = 0;
-    foreach (($request['files'] ?? []) as $file) {
-        if (!is_array($file)) {
-            continue;
-        }
-        $field = (string)($file['field'] ?? 'image');
-        if ($field === '') {
-            $field = 'image';
-        }
-        if (upstream_multipart_file_field($endpoint, $field, $index) !== $field) {
-            return true;
-        }
-        $index++;
-    }
-    return false;
 }
 
 function upstream_multipart_file_field(string $endpoint, string $field, int $index): string
