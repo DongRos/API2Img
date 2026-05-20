@@ -668,16 +668,8 @@ async function requestImages(endpoint, options) {
     try {
       const payload =
         options.mode === "text" || !options.referenceImages.length
-          ? await requestTextImages(endpoint, headers, options, variantInfo.payloadVariant, variantInfo.stream, variantInfo.label)
-          : await requestEditImages(
-              endpoint,
-              headers,
-              options,
-              variantInfo.payloadVariant,
-              variantInfo.fileFieldMode,
-              variantInfo.label,
-              variantInfo.stream,
-            );
+          ? await requestTextImages(endpoint, headers, options, variantInfo.payloadVariant)
+          : await requestEditImages(endpoint, headers, options, variantInfo.payloadVariant, variantInfo.fileFieldMode, variantInfo.label);
       if (normalizeImages(payload, endpoint).length) return payload;
       lastError = new Error(`接口返回成功，但没有找到图片字段：${previewPayload(payload)}`);
       break;
@@ -774,9 +766,9 @@ function inferEditEndpoint(textEndpoint) {
   return "";
 }
 
-async function requestTextImages(endpoint, headers, options, variant, stream = false, variantLabel = variant) {
+async function requestTextImages(endpoint, headers, options, variant) {
   headers["Content-Type"] = "application/json";
-  const body = buildImageJsonBody(options, variant, { stream });
+  const body = buildImageJsonBody(options, variant);
   return sendAndParseImageRequest(
     endpoint,
     {
@@ -792,33 +784,18 @@ async function requestTextImages(endpoint, headers, options, variant, stream = f
       billingRequestId: platformBillingRequestId(options),
     },
     options,
-    { variant: variantLabel || variant, label: requestLogLabel(options) },
+    { variant, label: requestLogLabel(options) },
   );
 }
 
 function imageRequestVariants(options = {}) {
   if (options.mode === "image" && (options.referenceImages || []).length) {
-    const variants = isPlatformApiSelected()
-      ? [
-          { payloadVariant: "compatible", fileFieldMode: "array", label: "stream-array", stream: true },
-          { payloadVariant: "compatible", fileFieldMode: "single", label: "stream-single", stream: true },
-        ]
-      : [];
     return [
-      ...variants,
       { payloadVariant: "compatible", fileFieldMode: "array", label: "compatible-array" },
       { payloadVariant: "compatible", fileFieldMode: "single", label: "compatible-single" },
       { payloadVariant: "compatible", fileFieldMode: "indexed", label: "compatible-indexed" },
       { payloadVariant: "minimal", fileFieldMode: "single", label: "minimal-single" },
       { payloadVariant: "bare", fileFieldMode: "single", label: "bare-single" },
-    ];
-  }
-  if (isPlatformApiSelected()) {
-    return [
-      { payloadVariant: "compatible", fileFieldMode: "single", label: "stream", stream: true },
-      { payloadVariant: "compatible", fileFieldMode: "single", label: "compatible" },
-      { payloadVariant: "minimal", fileFieldMode: "single", label: "minimal" },
-      { payloadVariant: "bare", fileFieldMode: "single", label: "bare" },
     ];
   }
   return [
@@ -828,8 +805,8 @@ function imageRequestVariants(options = {}) {
   ];
 }
 
-async function requestEditImages(endpoint, headers, options, variant, fileFieldMode = "single", variantLabel = variant, stream = false) {
-  const fields = buildImageFormFields(options, variant, endpoint, { stream });
+async function requestEditImages(endpoint, headers, options, variant, fileFieldMode = "single", variantLabel = variant) {
+  const fields = buildImageFormFields(options, variant, endpoint);
   const requestImages = await normalizeReferenceImagesForRequest(options.referenceImages || []);
   const files = requestImages.map((image, index) => ({
     field: imageUploadFieldName(endpoint, index, fileFieldMode),
@@ -981,18 +958,17 @@ function replaceImageExtension(filename, extension) {
   return /\.[a-z0-9]{1,8}$/i.test(clean) ? clean.replace(/\.[a-z0-9]{1,8}$/i, `.${extension}`) : `${clean}.${extension}`;
 }
 
-function buildImageJsonBody(options, variant, requestHints = {}) {
+function buildImageJsonBody(options, variant) {
   const body = {
     model: options.model,
     prompt: buildPrompt(options),
   };
   appendCoreImageFields(body, options, variant);
   appendCompatibleImageFields(body, options, variant);
-  appendImageStreamFields(body, requestHints);
   return body;
 }
 
-function buildImageFormFields(options, variant, endpoint = "", requestHints = {}) {
+function buildImageFormFields(options, variant, endpoint = "") {
   const fields = {
     model: options.model,
     prompt: buildPrompt(options),
@@ -1000,16 +976,9 @@ function buildImageFormFields(options, variant, endpoint = "", requestHints = {}
   appendCoreImageFields(fields, options, variant);
   appendCompatibleImageFields(fields, options, variant);
   appendImageEditCompatibilityFields(fields, options, variant);
-  appendImageStreamFields(fields, requestHints);
   if (fields.n != null) fields.n = String(fields.n);
   if (fields.seed != null) fields.seed = String(fields.seed);
   return fields;
-}
-
-function appendImageStreamFields(fields, requestHints = {}) {
-  if (!requestHints.stream) return;
-  fields.stream = true;
-  fields.partial_images = 1;
 }
 
 function appendImageEditCompatibilityFields(fields, options, variant) {
@@ -1542,6 +1511,7 @@ async function fetchPlatformGeneration(payload, signal) {
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
       noHttpFallback: true,
+      noFetchErrorFallback: true,
       maxFetchErrorFallbackMs: 8000,
     });
     return { response, url: response.apiFetchUrl || url };
@@ -4005,6 +3975,7 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
       lastError = error;
       if (options.signal?.aborted) throw error;
       if (!isRetryableFetchError(error)) throw error;
+      if (preference.noFetchErrorFallback) throw error;
       const maxFallbackMs = Number(preference.maxFetchErrorFallbackMs || 0);
       if (maxFallbackMs > 0 && Date.now() - startedAt > maxFallbackMs) throw error;
     }
