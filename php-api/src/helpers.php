@@ -509,30 +509,59 @@ function fetch_url(string $url, array $options): array
     foreach ($headers as $name => $value) {
         $headerLines[] = $name . ': ' . $value;
     }
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_CUSTOMREQUEST => $method,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HEADER => true,
-        CURLOPT_HTTPHEADER => $headerLines,
-        CURLOPT_POSTFIELDS => $body,
-        CURLOPT_CONNECTTIMEOUT => 30,
-        CURLOPT_TIMEOUT => 300,
-    ]);
-    $raw = curl_exec($ch);
-    if ($raw === false) {
-        $message = curl_error($ch);
+    $retryWithoutTlsVerify = false;
+    for ($attempt = 0; $attempt < 2; $attempt++) {
+        $verifyTls = $attempt === 0 || !$retryWithoutTlsVerify;
+        if ($attempt > 0 && $verifyTls) {
+            break;
+        }
+        $ch = curl_init($url);
+        $curlOptions = [
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => true,
+            CURLOPT_HTTPHEADER => $headerLines,
+            CURLOPT_POSTFIELDS => $body,
+            CURLOPT_CONNECTTIMEOUT => 30,
+            CURLOPT_TIMEOUT => 300,
+        ];
+        if (!$verifyTls) {
+            $curlOptions[CURLOPT_SSL_VERIFYPEER] = false;
+            $curlOptions[CURLOPT_SSL_VERIFYHOST] = 0;
+        }
+        curl_setopt_array($ch, $curlOptions);
+        $raw = curl_exec($ch);
+        if ($raw === false) {
+            $errno = curl_errno($ch);
+            $message = curl_error($ch);
+            curl_close($ch);
+            if ($verifyTls && should_retry_without_tls_verify($url, $errno, $message)) {
+                $retryWithoutTlsVerify = true;
+                continue;
+            }
+            throw new RuntimeException($message ?: 'upstream request failed');
+        }
+        $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
         curl_close($ch);
-        throw new RuntimeException($message ?: 'upstream request failed');
+        return [
+            'status' => (int)$status,
+            'headers' => substr($raw, 0, $headerSize),
+            'body' => substr($raw, $headerSize),
+        ];
     }
-    $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-    curl_close($ch);
-    return [
-        'status' => (int)$status,
-        'headers' => substr($raw, 0, $headerSize),
-        'body' => substr($raw, $headerSize),
-    ];
+    throw new RuntimeException('upstream request failed');
+}
+
+function should_retry_without_tls_verify(string $url, int $errno, string $message): bool
+{
+    if (stripos($url, 'https://') !== 0) {
+        return false;
+    }
+    if (in_array($errno, [60, 77], true)) {
+        return true;
+    }
+    return preg_match('/certificate|issuer|unable to get local issuer|self[- ]signed|CAfile|CApath/i', $message) === 1;
 }
 
 function data_url_to_temp_file(string $dataUrl, string $fallbackMime = 'image/png'): array

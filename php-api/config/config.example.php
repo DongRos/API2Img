@@ -6,14 +6,15 @@ return [
         'allowed_origins' => [
             'https://api2image.top',
             'https://www.api2image.top',
+            'https://zj.tdyun.top',
         ],
         'cookie_domain' => '',
         'secure_cookies' => true,
         'cookie_samesite' => 'Lax',
         'session_days' => 30,
         'code_ttl_minutes' => 10,
-        'recharge_url' => 'https://api2img.shop/',
-        'public_api_base_url' => 'https://api2img.shop/php-api/index.php',
+        'recharge_url' => 'https://zj.tdyun.top/',
+        'public_api_base_url' => 'https://zj.tdyun.top/php-api/index.php',
     ],
     'db' => [
         'host' => 'localhost',
