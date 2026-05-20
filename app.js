@@ -43,31 +43,14 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const ratioPresets = [
-  {
-    label: "自适应",
-    value: "auto",
-    sizes: [
-      "auto",
-      "1024x1024",
-      "1536x1024",
-      "1024x1536",
-      "2048x2048",
-      "2048x1536",
-      "1536x2048",
-      "2560x1440",
-      "1440x2560",
-      "3840x2160",
-      "2160x3840",
-      "4096x4096",
-    ],
-  },
-  { label: "1:1 方图", value: "1:1", sizes: ["1024x1024", "1536x1536", "2048x2048", "3072x3072", "4096x4096"] },
-  { label: "4:3 横图", value: "4:3", sizes: ["1024x768", "1600x1200", "2048x1536", "3072x2304", "4096x3072"] },
-  { label: "3:4 竖图", value: "3:4", sizes: ["768x1024", "1200x1600", "1536x2048", "2304x3072", "3072x4096"] },
-  { label: "16:9 宽屏", value: "16:9", sizes: ["1280x720", "1920x1080", "2560x1440", "3840x2160"] },
-  { label: "9:16 竖屏", value: "9:16", sizes: ["720x1280", "1080x1920", "1440x2560", "2160x3840"] },
-  { label: "2:3 海报", value: "2:3", sizes: ["1024x1536", "1365x2048", "2048x3072", "2731x4096"] },
-  { label: "3:2 摄影", value: "3:2", sizes: ["1536x1024", "2048x1365", "3072x2048", "4096x2731"] },
+  { label: "自适应", value: "auto", sizes: ["auto"] },
+  { label: "1:1 方图", value: "1:1", sizes: ["auto"] },
+  { label: "4:3 横图", value: "4:3", sizes: ["auto"] },
+  { label: "3:4 竖图", value: "3:4", sizes: ["auto"] },
+  { label: "16:9 宽屏", value: "16:9", sizes: ["auto"] },
+  { label: "9:16 竖屏", value: "9:16", sizes: ["auto"] },
+  { label: "2:3 海报", value: "2:3", sizes: ["auto"] },
+  { label: "3:2 摄影", value: "3:2", sizes: ["auto"] },
 ];
 
 const qualityPresets = [
@@ -862,7 +845,7 @@ function appendCoreImageFields(target, options, variant) {
 function effectiveRequestSize(options = {}) {
   const selected = String(options.size || "").trim();
   if (selected && selected !== "auto") return selected;
-  return inferAutoRequestSize(options) || DEFAULT_IMAGE_SIZE;
+  return "";
 }
 
 function inferAutoRequestSize(options = {}) {
