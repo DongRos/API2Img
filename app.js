@@ -243,24 +243,34 @@ async function init() {
   renderResults();
   renderIcons();
   autoGrow($("#promptInput"));
-  startSiteHeartbeat();
-  billingReadyPromise = loadBilling().catch((error) => console.warn("充值信息读取失败", error));
   afterFirstPaint(() => {
-    loadState()
-      .then(() => {
-        renderReferences();
-        renderResults();
-        renderIcons();
-      })
-      .catch((error) => console.warn("本地图片状态读取失败", error));
-    trackSiteVisit().catch((error) => console.warn("站点访问上报失败", error));
-    loadSiteStats({ silent: true }).catch((error) => console.warn("站点统计读取失败", error));
-    loadAnnouncements({ silent: true }).catch((error) => console.warn("公告读取失败", error));
+    runWhenIdle(() => {
+      billingReadyPromise = loadBilling().catch((error) => console.warn("充值信息读取失败", error));
+      loadState()
+        .then(() => {
+          renderReferences();
+          renderResults();
+          renderIcons();
+        })
+        .catch((error) => console.warn("本地图片状态读取失败", error));
+      startSiteHeartbeat();
+      trackSiteVisit().catch((error) => console.warn("站点访问上报失败", error));
+      loadSiteStats({ silent: true }).catch((error) => console.warn("站点统计读取失败", error));
+      loadAnnouncements({ silent: true }).catch((error) => console.warn("公告读取失败", error));
+    }, 350);
   });
 }
 
 function afterFirstPaint(callback) {
   requestAnimationFrame(() => setTimeout(callback, 0));
+}
+
+function runWhenIdle(callback, timeout = 500) {
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(callback, { timeout });
+    return;
+  }
+  setTimeout(callback, Math.min(timeout, 500));
 }
 
 function fillControls() {
@@ -2916,17 +2926,18 @@ function deleteConfigHistory(id) {
 async function loadBilling() {
   try {
     const sessionSnapshot = currentWalletSessionToken();
-    const [configResult, meResponse] = await Promise.allSettled([
-      loadBillingConfig(),
-      apiFetchPreferDirect("/api/auth/me", { timeoutMs: FAST_API_TIMEOUT_MS }, {
+    const requests = [loadBillingConfig()];
+    if (sessionSnapshot) {
+      requests.push(apiFetchPreferDirect("/api/auth/me", { timeoutMs: FAST_API_TIMEOUT_MS }, {
         directFirst: true,
         timeoutMs: FAST_API_TIMEOUT_MS,
         label: "登录状态读取",
-      }),
-    ]);
+      }));
+    }
+    const [configResult, meResponse] = await Promise.allSettled(requests);
     if (configResult.status === "rejected") console.warn("充值配置读取失败", configResult.reason);
     if (walletSessionChanged(sessionSnapshot)) return;
-    if (meResponse.status === "fulfilled" && meResponse.value.ok) applyBillingDashboard(await readJsonResponse(meResponse.value));
+    if (meResponse?.status === "fulfilled" && meResponse.value.ok) applyBillingDashboard(await readJsonResponse(meResponse.value));
     renderWallet();
     if (billingState.authenticated) {
       billingState.ledgerLoading = true;
@@ -3409,7 +3420,7 @@ async function unlockCodeAdminPanel() {
   button.textContent = "验证中...";
   setCodeAdminAuthStatus("正在验证管理员密码");
   try {
-    const response = await apiFetchPreferDirect("/api/admin/redeem-codes", {
+    const response = await apiFetchPreferDirect("/api/admin/ping", {
       headers: { "X-Admin-Password": password },
       timeoutMs: ADMIN_API_TIMEOUT_MS,
     }, {
@@ -3423,7 +3434,7 @@ async function unlockCodeAdminPanel() {
     codeAdminState.authenticated = true;
     applyCodeAdminAuthState();
     selectCodeAdminSection(codeAdminState.pendingSection || "codes");
-    await loadSiteStats({ silent: true });
+    loadSiteStats({ silent: true });
     renderApiStats();
     startSiteStatsPolling();
     setCodeAdminAuthStatus("已进入站长后台");

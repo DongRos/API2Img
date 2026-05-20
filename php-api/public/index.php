@@ -106,6 +106,10 @@ function route_request(PDO $pdo, array $config): void
         admin_create_redeem_codes($pdo, $config);
         return;
     }
+    if ($method === 'GET' && $path === '/api/admin/ping') {
+        admin_ping($pdo, $config);
+        return;
+    }
     if ($method === 'GET' && $path === '/api/admin/redeem-codes') {
         admin_list_redeem_codes($pdo, $config);
         return;
@@ -1221,6 +1225,12 @@ function admin_list_redeem_codes(PDO $pdo, array $config): void
         ];
     }
     json_response(['ok' => true, 'codes' => $codes]);
+}
+
+function admin_ping(PDO $pdo, array $config): void
+{
+    require_admin($pdo, $config);
+    json_response(['ok' => true]);
 }
 
 function admin_get_custom_api(PDO $pdo, array $config): void
