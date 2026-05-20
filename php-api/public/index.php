@@ -414,7 +414,7 @@ function billing_ledger(PDO $pdo, array $config): void
             'balanceAfterCents' => (int)$item['balance_after_cents'],
             'relatedId' => (string)$item['related_id'],
             'note' => (string)$item['note'],
-            'createdAt' => strtotime((string)$item['created_at']) * 1000,
+            'createdAt' => utc_sql_timestamp_ms((string)$item['created_at']),
         ];
     }
     json_response(['ok' => true, 'ledger' => $items]);
@@ -524,11 +524,10 @@ function generate_platform(PDO $pdo, array $config): void
         $bodyPayload = json_decode($upstream['body'], true);
         $images = is_array($bodyPayload) ? json_images($bodyPayload) : [];
         if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
-            $message = is_array($bodyPayload) ? (string)($bodyPayload['error']['message'] ?? $bodyPayload['message'] ?? '站点 API 生成失败') : '站点 API 生成失败';
-            throw new RuntimeException($message);
+            throw new RuntimeException(platform_upstream_error_message($upstream, is_array($bodyPayload) ? $bodyPayload : null));
         }
         if (!count($images)) {
-            throw new RuntimeException('站点 API 没有返回图片');
+            throw new RuntimeException(platform_upstream_no_image_message($upstream, is_array($bodyPayload) ? $bodyPayload : null));
         }
         json_response([
             'ok' => true,
@@ -538,6 +537,81 @@ function generate_platform(PDO $pdo, array $config): void
     } catch (Throwable $error) {
         throw new HttpError($error->getMessage() ?: '生成失败，未扣费', 502, 'platform_failed');
     }
+}
+
+function platform_upstream_error_message(array $upstream, ?array $bodyPayload): string
+{
+    $status = (int)($upstream['status'] ?? 0);
+    $message = platform_json_error_message($bodyPayload);
+    if ($message !== '') {
+        return $status > 0 ? "Upstream HTTP {$status}: {$message}" : $message;
+    }
+    $preview = platform_body_preview((string)($upstream['body'] ?? ''));
+    if ($preview !== '') {
+        return $status > 0 ? "Upstream HTTP {$status}: {$preview}" : $preview;
+    }
+    return $status > 0 ? "Upstream HTTP {$status} failed" : 'Upstream request failed';
+}
+
+function platform_upstream_no_image_message(array $upstream, ?array $bodyPayload): string
+{
+    $status = (int)($upstream['status'] ?? 0);
+    $preview = platform_json_error_message($bodyPayload);
+    if ($preview === '') {
+        $preview = platform_body_preview((string)($upstream['body'] ?? ''));
+    }
+    if ($preview !== '') {
+        return $status > 0 ? "Upstream HTTP {$status}: no image returned ({$preview})" : "No image returned ({$preview})";
+    }
+    return $status > 0 ? "Upstream HTTP {$status}: no image returned" : 'Upstream response did not contain an image';
+}
+
+function platform_json_error_message(?array $payload): string
+{
+    if (!$payload) {
+        return '';
+    }
+    $candidates = [
+        $payload['error']['message'] ?? null,
+        $payload['error']['detail'] ?? null,
+        $payload['error']['type'] ?? null,
+        $payload['error'] ?? null,
+        $payload['message'] ?? null,
+        $payload['detail'] ?? null,
+        $payload['msg'] ?? null,
+    ];
+    foreach ($candidates as $candidate) {
+        if (is_array($candidate)) {
+            $candidate = json_encode($candidate, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+        $text = trim((string)$candidate);
+        if ($text === '') {
+            continue;
+        }
+        $code = '';
+        if (isset($payload['error']) && is_array($payload['error']) && isset($payload['error']['code'])) {
+            $code = trim((string)$payload['error']['code']);
+        } elseif (isset($payload['code'])) {
+            $code = trim((string)$payload['code']);
+        }
+        if ($code !== '' && stripos($text, $code) === false) {
+            $text .= ' (code: ' . $code . ')';
+        }
+        return $text;
+    }
+    return '';
+}
+
+function platform_body_preview(string $body): string
+{
+    $text = trim(preg_replace('/\s+/u', ' ', $body));
+    if ($text === '') {
+        return '';
+    }
+    $text = preg_replace('/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=\s]+/i', '[image omitted]', $text);
+    $text = preg_replace('/[A-Za-z0-9+\/_-]{180,}={0,2}/', '[base64 omitted]', $text);
+    $limit = function_exists('mb_substr') ? mb_substr($text, 0, 360) : substr($text, 0, 360);
+    return trim($limit);
 }
 
 function settle_generation(PDO $pdo, array $config): void
@@ -1000,8 +1074,8 @@ function admin_list_redeem_codes(PDO $pdo, array $config): void
             'label' => (string)$row['label'],
             'status' => (string)$row['status'],
             'usedByUserId' => $row['used_by_user_id'] ? (int)$row['used_by_user_id'] : 0,
-            'usedAt' => $row['used_at'] ? strtotime((string)$row['used_at']) * 1000 : 0,
-            'createdAt' => strtotime((string)$row['created_at']) * 1000,
+            'usedAt' => $row['used_at'] ? utc_sql_timestamp_ms((string)$row['used_at']) : 0,
+            'createdAt' => utc_sql_timestamp_ms((string)$row['created_at']),
         ];
     }
     json_response(['ok' => true, 'codes' => $codes]);

@@ -792,6 +792,8 @@ function imageRequestVariants(options = {}) {
   if (options.mode === "image" && (options.referenceImages || []).length) {
     return [
       { payloadVariant: "compatible", fileFieldMode: "array", label: "compatible-array" },
+      { payloadVariant: "compatible", fileFieldMode: "single", label: "compatible-single" },
+      { payloadVariant: "compatible", fileFieldMode: "indexed", label: "compatible-indexed" },
       { payloadVariant: "minimal", fileFieldMode: "single", label: "minimal-single" },
       { payloadVariant: "bare", fileFieldMode: "single", label: "bare-single" },
     ];
@@ -1319,12 +1321,16 @@ function isUncertainChargedError(message) {
 
 function shouldRetryWithMinimalPayload(message, variant, options = {}) {
   if (Number(options.count || 1) > 1 || isFatalImageError(message) || isUncertainChargedError(message)) return false;
-  const editFormatError = /image proxy failed|no image|missing|required|file|multipart|form[- ]?data|field|invalid|unknown|unrecognized|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param|response_format/i;
+  const retryableEditError = /\b(400|405|408|409|422|500|502|503|504|520|522|524)\b|bad gateway|gateway timeout|service unavailable|internal server error|server error|platform_failed|站点 API 生成失败|生成失败|上游服务异常|没有返回图片|no image|image proxy failed|upstream request failed/i;
+  const editFormatError = /image proxy failed|no image|missing|required|file|multipart|form[- ]?data|field|invalid|unknown|unrecognized|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param|response_format|output_format|moderation/i;
   if (options.mode === "image" && variant === "compatible") {
-    return editFormatError.test(message);
+    return editFormatError.test(message) || retryableEditError.test(message);
   }
   if (options.mode === "image" && variant === "minimal") {
-    return /no image|missing|required|image|file|multipart|form[- ]?data|field|invalid|unknown|unrecognized|unsupported|not support|size|dimension|resolution|parameter|param/i.test(message);
+    return (
+      /no image|missing|required|image|file|multipart|form[- ]?data|field|invalid|unknown|unrecognized|unsupported|not support|size|dimension|resolution|parameter|param/i.test(message) ||
+      retryableEditError.test(message)
+    );
   }
   if (variant === "compatible") {
     return /invalid|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param/i.test(message);
@@ -1692,8 +1698,9 @@ async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") 
   }
   const imageCount = normalizeImages(payload, imageBaseUrl || response.url || "").length;
   if (!response.ok) {
+    const responseCode = String(payload?.error?.code || payload?.code || "").trim();
     const message = payload?.error?.message || payload?.message || responseText || `请求失败：${response.status}`;
-    const formatted = formatHttpError(response.status, message);
+    const formatted = appendErrorCode(formatHttpError(response.status, message), responseCode);
     completeRequestLog(requestLog, {
       status: "failed",
       httpStatus: response.status,
@@ -1703,11 +1710,12 @@ async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") 
       responsePreview: summarizeLogValue(parsedJson ? payload : text),
       error: formatted,
     });
-    throw new Error(formatted);
+    throw imageRequestError(formatted, responseCode);
   }
   const embeddedError = payload?.error || payload?.message;
   if (embeddedError && !imageCount) {
-    const formatted = formatHttpError(response.status, embeddedError);
+    const responseCode = String(payload?.error?.code || payload?.code || "").trim();
+    const formatted = appendErrorCode(formatHttpError(response.status, embeddedError), responseCode);
     completeRequestLog(requestLog, {
       status: "failed",
       httpStatus: response.status,
@@ -1717,7 +1725,7 @@ async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") 
       responsePreview: summarizeLogValue(parsedJson ? payload : text),
       error: formatted,
     });
-    throw new Error(formatted);
+    throw imageRequestError(formatted, responseCode);
   }
   completeRequestLog(requestLog, {
     status: imageCount ? "success" : "no-image",
@@ -1759,8 +1767,20 @@ function dedupe(items) {
   return [...new Set(items.filter(Boolean))];
 }
 
+function imageRequestError(message, code = "") {
+  const error = new Error(message);
+  if (code) error.code = code;
+  return error;
+}
+
+function appendErrorCode(message, code = "") {
+  const cleanCode = String(code || "").trim();
+  if (!cleanCode || String(message || "").includes(cleanCode)) return String(message || "");
+  return `${message} (${cleanCode})`;
+}
+
 function cleanErrorMessage(error) {
-  return formatHttpError(0, error?.message || String(error));
+  return appendErrorCode(formatHttpError(0, error?.message || String(error)), error?.code);
 }
 
 function isBalanceError(text = "") {
@@ -4094,6 +4114,7 @@ function formatCount(value) {
 function formatWalletTime(timestamp) {
   if (!timestamp) return "";
   return new Date(timestamp).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",

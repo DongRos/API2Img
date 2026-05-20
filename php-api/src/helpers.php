@@ -47,6 +47,20 @@ function utc_sql_age_seconds(string $value): int
     return max(0, time() - $date->getTimestamp());
 }
 
+function utc_sql_timestamp_ms(string $value): int
+{
+    $value = trim($value);
+    if ($value === '') {
+        return 0;
+    }
+    $date = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value, new DateTimeZone('UTC'));
+    if (!$date) {
+        $timestamp = strtotime($value . ' UTC');
+        return $timestamp ? (int)$timestamp * 1000 : 0;
+    }
+    return (int)$date->getTimestamp() * 1000;
+}
+
 function json_response(array $payload, int $status = 200, array $headers = []): void
 {
     discard_accidental_output();
@@ -248,8 +262,8 @@ function public_user(array $user): array
         'email' => (string)$user['email'],
         'balanceCents' => (int)$user['balance_cents'],
         'status' => (string)$user['status'],
-        'createdAt' => strtotime((string)$user['created_at']) * 1000,
-        'lastLoginAt' => $user['last_login_at'] ? strtotime((string)$user['last_login_at']) * 1000 : 0,
+        'createdAt' => utc_sql_timestamp_ms((string)$user['created_at']),
+        'lastLoginAt' => $user['last_login_at'] ? utc_sql_timestamp_ms((string)$user['last_login_at']) : 0,
     ];
 }
 
