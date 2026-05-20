@@ -29,6 +29,8 @@ const GENERATION_READY_WAIT_MS = 2200;
 const ADMIN_API_TIMEOUT_MS = 8000;
 const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
+const RESULT_CACHE_TIMEOUT_MS = 4500;
+const IMAGE_DIMENSION_TIMEOUT_MS = 2200;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
 const FLOW_META_STORE = "meta";
@@ -677,7 +679,7 @@ async function requestImages(endpoint, options) {
         options.mode === "text" || !options.referenceImages.length
           ? await requestTextImages(endpoint, headers, options, variant)
           : await requestEditImages(endpoint, headers, options, variant);
-      if (normalizeImages(payload).length) return payload;
+      if (normalizeImages(payload, endpoint).length) return payload;
       lastError = new Error(`接口返回成功，但没有找到图片字段：${previewPayload(payload)}`);
       break;
     } catch (error) {
@@ -912,10 +914,25 @@ async function commitGeneratedImage(src, options, index, context) {
   state.latestGenerationId = options.generationId || "";
   state.results.unshift(result);
   if (context) context.created.push(result);
+  updateRunningGenerationImageCount(context?.created?.length || state.results.filter((item) => item.generationId === options.generationId).length);
   renderResults();
-  await persistState();
+  void finalizeResultAsset(result.id, src, options);
+  void persistState();
+  const total = Math.max(1, Number(options.batchTotal || options.count || 1));
+  const generated = Math.min(total, context?.created?.length || 1);
+  updateProgress("已生成图片", `已生成 ${generated}/${total} 张，正在继续整理结果`, Math.max(currentProgress, 84), {
+    generated,
+    total,
+  });
   await settlePlatformImage(result, options, index, context);
   return result;
+}
+
+function updateRunningGenerationImageCount(imageCount) {
+  if (!activeGenerationLog) return;
+  activeGenerationLog.imageCount = Math.max(Number(activeGenerationLog.imageCount || 0), Number(imageCount || 0));
+  saveGenerationLogs();
+  renderGenerationLogs();
 }
 
 function applyPlatformRequestCost(options, index, amountCents = null) {
@@ -1036,7 +1053,7 @@ async function requestImageBatch(endpoint, options, context) {
       options.platformPriceCents = payload.platformPriceCents || options.platformPriceCents;
       if (context) context.platformTicket = payload.platformTicket;
     }
-    images = normalizeImages(payload).slice(0, desired);
+    images = normalizeImages(payload, endpoint).slice(0, desired);
     await commitGeneratedImages(images, options, 0, context);
     updateProgress("接收生成结果", `接口返回 ${images.length}/${desired} 张图片`, 82, { generated: images.length, total: desired });
     if (images.length < desired && desired > 1) {
@@ -1086,7 +1103,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
             oneOptions.platformPriceCents = payload.platformPriceCents || oneOptions.platformPriceCents;
             if (context) context.platformTicket = payload.platformTicket;
           }
-          const source = normalizeImages(payload)[0] || "";
+          const source = normalizeImages(payload, endpoint)[0] || "";
           if (!source) throw new Error("接口没有返回图片");
           images[index] = source;
           await commitGeneratedImage(source, oneOptions, absoluteIndex, context);
@@ -1191,7 +1208,8 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
       model: response.platformStatsModel || options.model || "",
       apiDisplayName: response.platformStatsDisplayName || response.platformDisplayName || options.apiDisplayName,
     };
-    const payload = await parseApiResponse(response, requestLog);
+    const imageBaseUrl = response.platformStatsEndpoint || endpoint;
+    const payload = tagPayloadImageBaseUrl(await parseApiResponse(response, requestLog, imageBaseUrl), imageBaseUrl);
     if (isPlatformApiSelected()) refreshBilling();
     await recordApiUsage(statsEndpoint, statsOptions, requestLog, {
       status: requestLog?.status === "success" ? "success" : "failed",
@@ -1480,7 +1498,7 @@ function shouldFallbackToDirect(response) {
   return response.status === 504 && /text\/html|text\/plain/i.test(contentType);
 }
 
-async function parseApiResponse(response, requestLog = null) {
+async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") {
   const contentType = response.headers.get("content-type") || "";
   if (contentType.startsWith("image/")) {
     const payload = { data: [{ url: await blobToDataUrl(await response.blob()) }] };
@@ -1528,7 +1546,7 @@ async function parseApiResponse(response, requestLog = null) {
       throw new Error(message);
     }
   }
-  const imageCount = normalizeImages(payload).length;
+  const imageCount = normalizeImages(payload, imageBaseUrl || response.url || "").length;
   if (!response.ok) {
     const message = payload?.error?.message || payload?.message || responseText || `请求失败：${response.status}`;
     const formatted = formatHttpError(response.status, message);
@@ -1688,23 +1706,36 @@ function formatHttpError(status, message) {
   return addApiGuidance(text.slice(0, 260) || `请求失败${code ? `：${code}` : ""}`);
 }
 
-function normalizeImages(payload) {
+function tagPayloadImageBaseUrl(payload, baseUrl = "") {
+  if (payload && typeof payload === "object") {
+    Object.defineProperty(payload, "__imageBaseUrl", {
+      value: baseUrl,
+      configurable: true,
+      enumerable: false,
+      writable: true,
+    });
+  }
+  return payload;
+}
+
+function normalizeImages(payload, baseUrl = "") {
   const images = [];
-  collectImages(payload, images, new Set(), 0, "");
+  const resolvedBaseUrl = baseUrl || (payload && typeof payload === "object" ? payload.__imageBaseUrl || "" : "");
+  collectImages(payload, images, new Set(), 0, "", resolvedBaseUrl);
   return images;
 }
 
-function collectImages(value, images, seen, depth, keyPath) {
+function collectImages(value, images, seen, depth, keyPath, baseUrl = "") {
   if (value == null || depth > 8) return;
 
   if (typeof value === "string") {
     const parsed = tryParseJsonValue(value);
     if (parsed != null && typeof parsed !== "string") {
-      collectImages(parsed, images, seen, depth + 1, keyPath);
+      collectImages(parsed, images, seen, depth + 1, keyPath, baseUrl);
       return;
     }
 
-    for (const source of normalizeImageSources(value, keyPath)) {
+    for (const source of normalizeImageSources(value, keyPath, baseUrl)) {
       if (source && !seen.has(source)) {
         seen.add(source);
         images.push(source);
@@ -1714,13 +1745,14 @@ function collectImages(value, images, seen, depth, keyPath) {
   }
 
   if (Array.isArray(value)) {
-    value.forEach((item, index) => collectImages(item, images, seen, depth + 1, `${keyPath}[${index}]`));
+    value.forEach((item, index) => collectImages(item, images, seen, depth + 1, `${keyPath}[${index}]`, baseUrl));
     return;
   }
 
   if (typeof value !== "object") return;
   for (const [key, nested] of Object.entries(value)) {
-    collectImages(nested, images, seen, depth + 1, keyPath ? `${keyPath}.${key}` : key);
+    if (key === "__imageBaseUrl") continue;
+    collectImages(nested, images, seen, depth + 1, keyPath ? `${keyPath}.${key}` : key, baseUrl);
   }
 }
 
@@ -1728,7 +1760,7 @@ function normalizeImageSource(source, keyPath = "") {
   return normalizeImageSources(source, keyPath)[0] || "";
 }
 
-function normalizeImageSources(source, keyPath = "") {
+function normalizeImageSources(source, keyPath = "", baseUrl = "") {
   const value = String(source || "").trim();
   if (!value || looksLikeHtml(value)) return [];
   const imageField = isImageFieldKeyPath(keyPath);
@@ -1756,6 +1788,18 @@ function normalizeImageSources(source, keyPath = "") {
     if (isLikelyImageUrl(url) || (imageField && !isExcludedImageUrl(url))) addSource(url);
   });
 
+  if (imageField) {
+    const absoluteValueUrl = resolveImageUrl(value, baseUrl);
+    if (absoluteValueUrl && isLikelyImageUrl(absoluteValueUrl)) addSource(absoluteValueUrl);
+  }
+
+  const relativeUrls = value.match(/(?:^|[\s"'(])((?:\/|\.\/|\.\.\/)[^\s"'<>),]+(?:\.(?:png|jpe?g|webp|gif|bmp|avif)(?:[?#][^\s"'<>),]*)?))/gi) || [];
+  relativeUrls.forEach((match) => {
+    const relative = match.replace(/^[\s"'(]+/, "");
+    const absolute = resolveImageUrl(relative, baseUrl);
+    if (absolute && (isLikelyImageUrl(absolute) || imageField)) addSource(absolute);
+  });
+
   const imageBase64 = value.match(/[A-Za-z0-9+/_-]{220,}={0,2}/)?.[0];
   if (imageBase64 && (imageField || looksLikeImageBase64(imageBase64)) && !dataUrls.length) {
     const imageBase64Items = value.match(/[A-Za-z0-9+/_-]{220,}={0,2}/g) || [];
@@ -1764,6 +1808,18 @@ function normalizeImageSources(source, keyPath = "") {
     });
   }
   return sources;
+}
+
+function resolveImageUrl(value, baseUrl = "") {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^https?:\/\//i.test(text) || text.startsWith("data:image/")) return text;
+  if (!baseUrl || !/^(?:\/|\.\/|\.\.\/)/.test(text)) return "";
+  try {
+    return new URL(text, baseUrl).toString();
+  } catch {
+    return "";
+  }
 }
 
 function looksLikeImageBase64(value) {
@@ -1788,6 +1844,7 @@ function cleanImageSource(source) {
 function isLikelyImageUrl(url) {
   const clean = url.replace(/[.。]$/, "");
   if (isExcludedImageUrl(clean)) return false;
+  if (/\/v\d+\/images\/(?:generations|edits)\b/i.test(clean)) return false;
   if (/\.(png|jpe?g|webp|gif|bmp|avif)(\?|#|$)/i.test(clean)) return true;
   if (/[?&](format|type|mime)=image/i.test(clean)) return true;
   if (/\/(generated|generations|image|images|file|files|asset|assets|download|output|result)\b/i.test(clean)) return true;
@@ -1843,10 +1900,10 @@ function nextSeed(seed, offset) {
 }
 
 async function createResult(src, options, index) {
-  const [savedSrc, dimensions] = await Promise.all([persistableImageSource(src), getImageDimensionsSafe(src)]);
+  const dimensions = dimensionsFromOptions(options);
   return {
     id: makeId(),
-    src: savedSrc,
+    src,
     prompt: options.prompt,
     model: options.model,
     size: options.size,
@@ -1856,6 +1913,53 @@ async function createResult(src, options, index) {
     width: dimensions.width,
     height: dimensions.height,
   };
+}
+
+async function finalizeResultAsset(resultId, source, options = {}) {
+  try {
+    const savedSrc = await persistableImageSource(source, RESULT_CACHE_TIMEOUT_MS);
+    const dimensions = await getImageDimensionsSafe(savedSrc || source, IMAGE_DIMENSION_TIMEOUT_MS);
+    const result = state.results.find((item) => item.id === resultId);
+    if (!result) return;
+    let changed = false;
+    if (savedSrc && savedSrc !== result.src) {
+      result.src = savedSrc;
+      changed = true;
+    }
+    if (dimensions.width > 1 || dimensions.height > 1) {
+      if (result.width !== dimensions.width || result.height !== dimensions.height) {
+        result.width = dimensions.width;
+        result.height = dimensions.height;
+        changed = true;
+      }
+    } else if (!result.width || !result.height) {
+      const fallback = dimensionsFromOptions(options);
+      result.width = fallback.width;
+      result.height = fallback.height;
+      changed = true;
+    }
+    if (!changed) return;
+    renderResults();
+    await persistState();
+  } catch (error) {
+    console.warn("图片后台缓存失败", error);
+  }
+}
+
+function dimensionsFromOptions(options = {}) {
+  const selected = String(effectiveRequestSize(options) || "").trim();
+  const match = selected.match(/^(\d{2,5})x(\d{2,5})$/i);
+  if (match) {
+    return {
+      width: Math.max(1, Number(match[1]) || 1),
+      height: Math.max(1, Number(match[2]) || 1),
+    };
+  }
+  if (options.ratio && /^\d+:\d+$/.test(String(options.ratio))) {
+    const [width, height] = String(options.ratio).split(":").map((value) => Math.max(1, Number(value) || 1));
+    return { width, height };
+  }
+  return { width: 1, height: 1 };
 }
 
 function renderResults() {
@@ -3949,15 +4053,15 @@ function idbGetAll(db, storeName) {
   });
 }
 
-async function persistableImageSource(src) {
+async function persistableImageSource(src, timeoutMs = RESULT_CACHE_TIMEOUT_MS) {
   if (!src || src.startsWith("data:")) return src;
   if ((config.transportMode === "proxy" || isPlatformApiSelected()) && /^https?:\/\//i.test(src)) {
     try {
-      const response = await fetch("/api/cache-image", {
+      const response = await fetchWithTimeout("/api/cache-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: src }),
-      });
+      }, timeoutMs);
       const payload = await response.json();
       if (response.ok && payload.dataUrl) return payload.dataUrl;
     } catch {
@@ -3966,7 +4070,7 @@ async function persistableImageSource(src) {
   }
 
   try {
-    const response = await fetch(src, { cache: "no-store" });
+    const response = await fetchWithTimeout(src, { cache: "no-store" }, timeoutMs);
     if (!response.ok) return src;
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.startsWith("image/")) return src;
@@ -4830,11 +4934,23 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mime });
 }
 
-function getImageDimensionsSafe(src) {
+function getImageDimensionsSafe(src, timeoutMs = 0) {
   return new Promise((resolve) => {
+    if (!src) {
+      resolve({ width: 1, height: 1 });
+      return;
+    }
     const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth || 1, height: image.naturalHeight || 1 });
-    image.onerror = () => resolve({ width: 1, height: 1 });
+    let timer = null;
+    const finish = (dimensions) => {
+      if (timer) clearTimeout(timer);
+      image.onload = null;
+      image.onerror = null;
+      resolve(dimensions);
+    };
+    image.onload = () => finish({ width: image.naturalWidth || 1, height: image.naturalHeight || 1 });
+    image.onerror = () => finish({ width: 1, height: 1 });
+    if (timeoutMs > 0) timer = setTimeout(() => finish({ width: 1, height: 1 }), timeoutMs);
     image.src = src;
   });
 }
