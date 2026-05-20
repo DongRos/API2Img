@@ -3420,7 +3420,7 @@ async function unlockCodeAdminPanel() {
   button.textContent = "验证中...";
   setCodeAdminAuthStatus("正在验证管理员密码");
   try {
-    const response = await apiFetchPreferDirect("/api/admin/ping", {
+    const response = await apiFetchPreferDirect(`/api/admin/ping?t=${Date.now()}`, {
       headers: { "X-Admin-Password": password },
       timeoutMs: ADMIN_API_TIMEOUT_MS,
     }, {
