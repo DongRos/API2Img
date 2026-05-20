@@ -522,7 +522,7 @@ function generate_platform(PDO $pdo, array $config): void
     try {
         $upstream = call_platform_upstream($platform, $endpoint, $request);
         $bodyPayload = json_decode($upstream['body'], true);
-        $images = is_array($bodyPayload) ? json_images($bodyPayload) : [];
+        $images = upstream_response_images($upstream, is_array($bodyPayload) ? $bodyPayload : null);
         if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
             throw new RuntimeException(platform_upstream_error_message($upstream, is_array($bodyPayload) ? $bodyPayload : null));
         }
@@ -612,6 +612,129 @@ function platform_body_preview(string $body): string
     $text = preg_replace('/[A-Za-z0-9+\/_-]{180,}={0,2}/', '[base64 omitted]', $text);
     $limit = function_exists('mb_substr') ? mb_substr($text, 0, 360) : substr($text, 0, 360);
     return trim($limit);
+}
+
+function upstream_response_images(array $upstream, ?array $bodyPayload): array
+{
+    if (is_array($bodyPayload)) {
+        return json_images($bodyPayload);
+    }
+    $body = (string)($upstream['body'] ?? '');
+    if ($body === '') {
+        return [];
+    }
+    $contentType = strtolower(upstream_content_type((string)($upstream['headers'] ?? '')));
+    if (strpos($contentType, 'text/event-stream') !== false) {
+        $images = event_stream_images($body);
+        if (count($images)) {
+            return $images;
+        }
+    }
+    return json_images(['stream' => $body]);
+}
+
+function event_stream_images(string $body): array
+{
+    $events = parse_event_stream($body);
+    if (!count($events)) {
+        return [];
+    }
+    $final = [];
+    $fallback = [];
+    foreach ($events as $event) {
+        $data = trim((string)($event['data'] ?? ''));
+        if ($data === '' || $data === '[DONE]') {
+            continue;
+        }
+        $decoded = json_decode($data, true);
+        $payload = is_array($decoded) ? $decoded : ['stream' => $data];
+        $images = json_images($payload);
+        if (!count($images)) {
+            continue;
+        }
+        if (event_stream_event_is_final((string)($event['event'] ?? ''), $payload)) {
+            foreach ($images as $image) {
+                $final[] = $image;
+            }
+        } else {
+            foreach ($images as $image) {
+                $fallback[] = $image;
+            }
+        }
+    }
+    $images = count($final) ? $final : $fallback;
+    return dedupe_image_sources($images);
+}
+
+function parse_event_stream(string $body): array
+{
+    $body = str_replace(["\r\n", "\r"], "\n", $body);
+    $lines = explode("\n", $body);
+    $events = [];
+    $current = ['event' => '', 'data' => []];
+    $hasData = false;
+    foreach ($lines as $line) {
+        if (trim($line) === '') {
+            if ($hasData) {
+                $events[] = [
+                    'event' => trim((string)$current['event']),
+                    'data' => implode("\n", $current['data']),
+                ];
+            }
+            $current = ['event' => '', 'data' => []];
+            $hasData = false;
+            continue;
+        }
+        if (starts_with($line, 'event:')) {
+            $current['event'] = trim(substr($line, 6));
+            continue;
+        }
+        if (starts_with($line, 'data:')) {
+            $current['data'][] = ltrim(substr($line, 5));
+            $hasData = true;
+        }
+    }
+    if ($hasData) {
+        $events[] = [
+            'event' => trim((string)$current['event']),
+            'data' => implode("\n", $current['data']),
+        ];
+    }
+    return $events;
+}
+
+function event_stream_event_is_final(string $eventName, array $payload): bool
+{
+    $markers = [$eventName];
+    foreach (['type', 'event', 'status', 'finish_reason', 'object'] as $key) {
+        if (isset($payload[$key]) && is_scalar($payload[$key])) {
+            $markers[] = (string)$payload[$key];
+        }
+    }
+    if (isset($payload['data']) && is_array($payload['data'])) {
+        foreach (['type', 'event', 'status', 'finish_reason', 'object'] as $key) {
+            if (isset($payload['data'][$key]) && is_scalar($payload['data'][$key])) {
+                $markers[] = (string)$payload['data'][$key];
+            }
+        }
+    }
+    $text = strtolower(implode(' ', $markers));
+    return preg_match('/completed|complete|final|done|result|output|success|finish/', $text) === 1;
+}
+
+function dedupe_image_sources(array $images): array
+{
+    $seen = [];
+    $clean = [];
+    foreach ($images as $image) {
+        $key = json_encode($image, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($key === false || isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $clean[] = $image;
+    }
+    return $clean;
 }
 
 function settle_generation(PDO $pdo, array $config): void
@@ -891,7 +1014,7 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
             $headers[(string)$key] = (string)$value;
         }
     }
-    $headers['Accept'] = $headers['Accept'] ?? 'application/json';
+    $headers['Accept'] = $headers['Accept'] ?? (request_wants_event_stream($request) ? 'text/event-stream, application/json' : 'application/json');
     $headers['Expect'] = '';
     $headers['Connection'] = 'close';
     $headers['User-Agent'] = $headers['User-Agent'] ?? 'API2Image/1.0';
@@ -933,6 +1056,25 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
             }
         }
     }
+}
+
+function request_wants_event_stream(array $request): bool
+{
+    if (($request['bodyType'] ?? '') === 'multipart') {
+        $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
+        return truthy_request_value($fields['stream'] ?? null);
+    }
+    $body = json_decode((string)($request['body'] ?? ''), true);
+    return is_array($body) && truthy_request_value($body['stream'] ?? null);
+}
+
+function truthy_request_value($value): bool
+{
+    if (is_bool($value)) {
+        return $value;
+    }
+    $text = strtolower(trim((string)$value));
+    return in_array($text, ['1', 'true', 'yes', 'on'], true);
 }
 
 function normalize_image_edit_multipart_request(array $request): array
