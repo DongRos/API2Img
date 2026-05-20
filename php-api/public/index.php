@@ -908,8 +908,7 @@ function upstream_multipart_file_field(array $request, string $field, int $index
 
 function endpoint_requires_server_proxy(string $endpoint): bool
 {
-    return endpoint_host_matches($endpoint, '/(^|\.)manxiaobai\.online$/i')
-        || endpoint_host_matches($endpoint, '/(^|\.)zhangsan\.yun$/i');
+    return false;
 }
 
 function endpoint_host_matches(string $endpoint, string $pattern): bool
@@ -1250,9 +1249,6 @@ function normalize_custom_api_config(array $value): array
     $editEndpoint = sanitize_custom_api_url((string)($value['editEndpoint'] ?? ''));
     $transportMode = (string)($value['transportMode'] ?? 'proxy');
     if (!in_array($transportMode, ['direct', 'proxy'], true)) {
-        $transportMode = 'proxy';
-    }
-    if (endpoint_requires_server_proxy($textEndpoint) || endpoint_requires_server_proxy($editEndpoint)) {
         $transportMode = 'proxy';
     }
     return [

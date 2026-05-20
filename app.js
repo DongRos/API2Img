@@ -2781,27 +2781,12 @@ function normalizeApiDisplayName(value, index = 0) {
   return isSiteApiDisplayName(text) ? text : siteApiDisplayName(index);
 }
 
-function endpointHostMatches(endpoint, pattern) {
-  try {
-    return pattern.test(new URL(String(endpoint || "")).host);
-  } catch {
-    return false;
-  }
-}
-
 function requiresServerProxyEndpoint(endpoint) {
-  return isKnownServerProxyEndpoint(endpoint);
-}
-
-function isKnownServerProxyEndpoint(endpoint) {
-  return endpointHostMatches(endpoint, /(^|\.)manxiaobai\.online$/i)
-    || endpointHostMatches(endpoint, /(^|\.)zhangsan\.yun$/i);
+  return false;
 }
 
 function normalizeCustomTransportMode(textEndpoint = "", editEndpoint = "", transportMode = "") {
-  const selected = transportMode === "direct" ? "direct" : "proxy";
-  if (requiresServerProxyEndpoint(textEndpoint) || requiresServerProxyEndpoint(editEndpoint)) return "proxy";
-  return selected;
+  return transportMode === "direct" ? "direct" : "proxy";
 }
 
 function adminEndpointHistoryLabel(item = {}) {
