@@ -802,7 +802,7 @@ function call_proxy_upstream(string $endpoint, array $request): array
 
 function call_upstream_request(string $endpoint, array $request, array $forcedHeaders): array
 {
-    $request = normalize_manxiaobai_multipart_request($endpoint, $request);
+    $request = normalize_image_edit_multipart_request($request);
     $headers = [];
     foreach (($request['headers'] ?? []) as $key => $value) {
         $lower = strtolower((string)$key);
@@ -832,7 +832,7 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
                 }
                 $temp = data_url_to_temp_file((string)($file['dataUrl'] ?? ''));
                 $tempFiles[] = $temp['path'];
-                $field = upstream_multipart_file_field($endpoint, (string)($file['field'] ?? 'image'), $fileIndex);
+                $field = upstream_multipart_file_field($request, (string)($file['field'] ?? 'image'), $fileIndex);
                 $filename = (string)($file['filename'] ?? 'image.png');
                 $body[$field] = new CURLFile($temp['path'], $temp['mime'], $filename);
                 $fileIndex++;
@@ -857,9 +857,13 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
     }
 }
 
-function normalize_manxiaobai_multipart_request(string $endpoint, array $request): array
+function normalize_image_edit_multipart_request(array $request): array
 {
-    if (($request['bodyType'] ?? '') !== 'multipart' || !endpoint_host_matches($endpoint, '/(^|\.)manxiaobai\.online$/i')) {
+    if (($request['bodyType'] ?? '') !== 'multipart') {
+        return $request;
+    }
+    $variant = (string)($request['payloadVariant'] ?? 'compatible');
+    if ($variant !== 'compatible') {
         return $request;
     }
     $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
@@ -873,13 +877,26 @@ function normalize_manxiaobai_multipart_request(string $endpoint, array $request
     return $request;
 }
 
-function upstream_multipart_file_field(string $endpoint, string $field, int $index): string
+function upstream_multipart_file_field(array $request, string $field, int $index): string
 {
     $field = trim($field) !== '' ? trim($field) : 'image';
-    if (endpoint_host_matches($endpoint, '/(^|\.)manxiaobai\.online$/i') && preg_match('/^image(?:_\d+)?$|^image\[\]$/', $field)) {
+    $mode = (string)($request['fileFieldMode'] ?? '');
+    if ($mode === 'array' && preg_match('/^image(?:_\d+)?$|^image(?:\[\d*\])?$/', $field)) {
         return $index <= 0 ? 'image[]' : 'image[' . $index . ']';
     }
+    if ($mode === 'indexed' && preg_match('/^image(?:_\d+)?$|^image(?:\[\d*\])?$/', $field)) {
+        return 'image[' . $index . ']';
+    }
+    if ($mode === 'single' && preg_match('/^image(?:_\d+)?$|^image(?:\[\d*\])?$/', $field)) {
+        return $index <= 0 ? 'image' : 'image_' . ($index + 1);
+    }
     return $field;
+}
+
+function endpoint_requires_server_proxy(string $endpoint): bool
+{
+    return endpoint_host_matches($endpoint, '/(^|\.)manxiaobai\.online$/i')
+        || endpoint_host_matches($endpoint, '/(^|\.)zhangsan\.yun$/i');
 }
 
 function endpoint_host_matches(string $endpoint, string $pattern): bool
@@ -1222,7 +1239,7 @@ function normalize_custom_api_config(array $value): array
     if (!in_array($transportMode, ['direct', 'proxy'], true)) {
         $transportMode = 'proxy';
     }
-    if (endpoint_host_matches($textEndpoint, '/(^|\.)manxiaobai\.online$/i') || endpoint_host_matches($editEndpoint, '/(^|\.)manxiaobai\.online$/i')) {
+    if (endpoint_requires_server_proxy($textEndpoint) || endpoint_requires_server_proxy($editEndpoint)) {
         $transportMode = 'proxy';
     }
     return [

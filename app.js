@@ -656,21 +656,21 @@ async function requestImages(endpoint, options) {
     );
   }
 
-  const variants = ["compatible", "minimal", "bare"];
+  const variants = imageRequestVariants(options);
   let lastError = null;
 
-  for (const [variantIndex, variant] of variants.entries()) {
+  for (const variantInfo of variants) {
     try {
       const payload =
         options.mode === "text" || !options.referenceImages.length
-          ? await requestTextImages(endpoint, headers, options, variant)
-          : await requestEditImages(endpoint, headers, options, variant);
+          ? await requestTextImages(endpoint, headers, options, variantInfo.payloadVariant)
+          : await requestEditImages(endpoint, headers, options, variantInfo.payloadVariant, variantInfo.fileFieldMode, variantInfo.label);
       if (normalizeImages(payload, endpoint).length) return payload;
       lastError = new Error(`接口返回成功，但没有找到图片字段：${previewPayload(payload)}`);
       break;
     } catch (error) {
       lastError = error;
-      if (!shouldRetryWithMinimalPayload(cleanErrorMessage(error), variant, options)) break;
+      if (!shouldRetryWithMinimalPayload(cleanErrorMessage(error), variantInfo.payloadVariant, options)) break;
     }
   }
 
@@ -783,10 +783,25 @@ async function requestTextImages(endpoint, headers, options, variant) {
   );
 }
 
-async function requestEditImages(endpoint, headers, options, variant) {
+function imageRequestVariants(options = {}) {
+  if (options.mode === "image" && (options.referenceImages || []).length) {
+    return [
+      { payloadVariant: "compatible", fileFieldMode: "array", label: "compatible-array" },
+      { payloadVariant: "minimal", fileFieldMode: "single", label: "minimal-single" },
+      { payloadVariant: "bare", fileFieldMode: "single", label: "bare-single" },
+    ];
+  }
+  return [
+    { payloadVariant: "compatible", fileFieldMode: "single", label: "compatible" },
+    { payloadVariant: "minimal", fileFieldMode: "single", label: "minimal" },
+    { payloadVariant: "bare", fileFieldMode: "single", label: "bare" },
+  ];
+}
+
+async function requestEditImages(endpoint, headers, options, variant, fileFieldMode = "single", variantLabel = variant) {
   const fields = buildImageFormFields(options, variant, endpoint);
   const files = options.referenceImages.map((image, index) => ({
-    field: imageUploadFieldName(endpoint, index),
+    field: imageUploadFieldName(endpoint, index, fileFieldMode),
     filename: image.name || `reference-${index + 1}.png`,
     dataUrl: image.dataUrl,
   }));
@@ -799,6 +814,8 @@ async function requestEditImages(endpoint, headers, options, variant) {
       bodyType: "multipart",
       fields,
       files,
+      payloadVariant: variant,
+      fileFieldMode,
       signal: options.abortSignal,
       billingCount: options.count,
       billingMode: options.mode,
@@ -807,12 +824,13 @@ async function requestEditImages(endpoint, headers, options, variant) {
       billingRequestId: platformBillingRequestId(options),
     },
     options,
-    { variant, label: requestLogLabel(options) },
+    { variant: variantLabel, label: requestLogLabel(options) },
   );
 }
 
-function imageUploadFieldName(endpoint, index) {
-  if (requiresArrayImageField(endpoint)) return "image[]";
+function imageUploadFieldName(endpoint, index, mode = "single") {
+  if (mode === "array") return "image[]";
+  if (mode === "indexed") return `image[${index}]`;
   return index === 0 ? "image" : `image_${index + 1}`;
 }
 
@@ -833,14 +851,14 @@ function buildImageFormFields(options, variant, endpoint = "") {
   };
   appendCoreImageFields(fields, options, variant);
   appendCompatibleImageFields(fields, options, variant);
-  appendEndpointSpecificImageFields(fields, options, endpoint);
+  appendImageEditCompatibilityFields(fields, options, variant);
   if (fields.n != null) fields.n = String(fields.n);
   if (fields.seed != null) fields.seed = String(fields.seed);
   return fields;
 }
 
-function appendEndpointSpecificImageFields(fields, options, endpoint) {
-  if (!isManxiaobaiEndpoint(endpoint)) return;
+function appendImageEditCompatibilityFields(fields, options, variant) {
+  if (variant !== "compatible" || options.mode !== "image") return;
   if (!fields.size) fields.size = String(options.size || "").trim() || "auto";
   fields.response_format = "b64_json";
 }
@@ -1175,6 +1193,13 @@ function isUncertainChargedError(message) {
 
 function shouldRetryWithMinimalPayload(message, variant, options = {}) {
   if (Number(options.count || 1) > 1 || isFatalImageError(message) || isUncertainChargedError(message)) return false;
+  const editFormatError = /image proxy failed|no image|missing|required|file|multipart|form[- ]?data|field|invalid|unknown|unrecognized|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param|response_format/i;
+  if (options.mode === "image" && variant === "compatible") {
+    return editFormatError.test(message);
+  }
+  if (options.mode === "image" && variant === "minimal") {
+    return /no image|missing|required|image|file|multipart|form[- ]?data|field|invalid|unknown|unrecognized|unsupported|not support|size|dimension|resolution|parameter|param/i.test(message);
+  }
   if (variant === "compatible") {
     return /invalid|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param/i.test(message);
   }
@@ -2639,15 +2664,12 @@ function endpointHostMatches(endpoint, pattern) {
 }
 
 function requiresServerProxyEndpoint(endpoint) {
-  return isManxiaobaiEndpoint(endpoint);
+  return isKnownServerProxyEndpoint(endpoint);
 }
 
-function requiresArrayImageField(endpoint) {
-  return isManxiaobaiEndpoint(endpoint);
-}
-
-function isManxiaobaiEndpoint(endpoint) {
-  return endpointHostMatches(endpoint, /(^|\.)manxiaobai\.online$/i);
+function isKnownServerProxyEndpoint(endpoint) {
+  return endpointHostMatches(endpoint, /(^|\.)manxiaobai\.online$/i)
+    || endpointHostMatches(endpoint, /(^|\.)zhangsan\.yun$/i);
 }
 
 function normalizeCustomTransportMode(textEndpoint = "", editEndpoint = "", transportMode = "") {
@@ -4684,6 +4706,8 @@ function summarizeRequestForLog(request) {
     headers: sanitizeForLog(request.headers || {}),
   };
   if (request.bodyType === "multipart") {
+    if (request.payloadVariant) summary.payloadVariant = request.payloadVariant;
+    if (request.fileFieldMode) summary.fileFieldMode = request.fileFieldMode;
     summary.fields = sanitizeForLog(request.fields || {});
     summary.files = (request.files || []).map((file) => ({
       field: file.field,
