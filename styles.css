@@ -1650,6 +1650,12 @@ button:disabled {
   font-size: 12px;
 }
 
+.config-history-main .config-history-url {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
 .config-history-main small {
   margin-top: 5px;
   color: var(--muted);

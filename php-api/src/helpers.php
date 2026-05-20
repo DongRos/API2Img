@@ -516,7 +516,8 @@ function fetch_url(string $url, array $options): array
         CURLOPT_HEADER => true,
         CURLOPT_HTTPHEADER => $headerLines,
         CURLOPT_POSTFIELDS => $body,
-        CURLOPT_TIMEOUT => 120,
+        CURLOPT_CONNECTTIMEOUT => 30,
+        CURLOPT_TIMEOUT => 300,
     ]);
     $raw = curl_exec($ch);
     if ($raw === false) {

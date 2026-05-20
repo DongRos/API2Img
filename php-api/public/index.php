@@ -122,6 +122,10 @@ function route_request(PDO $pdo, array $config): void
         admin_apply_custom_api_global($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/admin/proxy-image') {
+        admin_proxy_image($pdo, $config);
+        return;
+    }
 
     error_response('接口不存在', 404, 'not_found');
 }
@@ -786,13 +790,32 @@ function base64url_decode(string $value): string
 
 function call_platform_upstream(array $platform, string $endpoint, array $request): array
 {
+    return call_upstream_request($endpoint, $request, [
+        'Authorization' => 'Bearer ' . (string)$platform['api_key'],
+    ]);
+}
+
+function call_proxy_upstream(string $endpoint, array $request): array
+{
+    return call_upstream_request($endpoint, $request, []);
+}
+
+function call_upstream_request(string $endpoint, array $request, array $forcedHeaders): array
+{
     $headers = [];
     foreach (($request['headers'] ?? []) as $key => $value) {
-        if (strtolower((string)$key) === 'content-type') {
+        $lower = strtolower((string)$key);
+        if ($lower === 'content-type') {
             $headers['Content-Type'] = (string)$value;
+        } elseif ($lower === 'authorization') {
+            $headers['Authorization'] = (string)$value;
         }
     }
-    $headers['Authorization'] = 'Bearer ' . (string)$platform['api_key'];
+    foreach ($forcedHeaders as $key => $value) {
+        if ((string)$value !== '') {
+            $headers[(string)$key] = (string)$value;
+        }
+    }
     $tempFiles = [];
     try {
         if (($request['bodyType'] ?? '') === 'multipart') {
@@ -801,15 +824,17 @@ function call_platform_upstream(array $platform, string $endpoint, array $reques
             foreach (($request['fields'] ?? []) as $key => $value) {
                 $body[(string)$key] = (string)$value;
             }
+            $fileIndex = 0;
             foreach (($request['files'] ?? []) as $file) {
                 if (!is_array($file)) {
                     continue;
                 }
                 $temp = data_url_to_temp_file((string)($file['dataUrl'] ?? ''));
                 $tempFiles[] = $temp['path'];
-                $field = (string)($file['field'] ?? 'image');
+                $field = upstream_multipart_file_field($endpoint, (string)($file['field'] ?? 'image'), $fileIndex);
                 $filename = (string)($file['filename'] ?? 'image.png');
                 $body[$field] = new CURLFile($temp['path'], $temp['mime'], $filename);
+                $fileIndex++;
             }
         } else {
             $body = (string)($request['body'] ?? '');
@@ -829,6 +854,21 @@ function call_platform_upstream(array $platform, string $endpoint, array $reques
             }
         }
     }
+}
+
+function upstream_multipart_file_field(string $endpoint, string $field, int $index): string
+{
+    $field = trim($field) !== '' ? trim($field) : 'image';
+    if (endpoint_host_matches($endpoint, '/(^|\.)manxiaobai\.online$/i') && preg_match('/^image(?:_\d+)?$|^image\[\]$/', $field)) {
+        return $index <= 0 ? 'image[]' : 'image[' . $index . ']';
+    }
+    return $field;
+}
+
+function endpoint_host_matches(string $endpoint, string $pattern): bool
+{
+    $host = parse_url($endpoint, PHP_URL_HOST);
+    return is_string($host) && preg_match($pattern, $host) === 1;
 }
 
 function enforce_platform_request_count(array $request, int $count): array
@@ -1036,6 +1076,38 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
     ]);
 }
 
+function admin_proxy_image(PDO $pdo, array $config): void
+{
+    require_admin($pdo, $config);
+    $payload = read_json();
+    $endpoint = sanitize_custom_api_url((string)($payload['endpoint'] ?? ''));
+    $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
+    if ($endpoint === '') {
+        throw new HttpError('API URL 不能为空', 400, 'invalid_proxy_endpoint');
+    }
+
+    try {
+        $upstream = call_proxy_upstream($endpoint, $request);
+    } catch (Throwable $error) {
+        throw new HttpError($error->getMessage() ?: '上游接口请求失败', 502, 'admin_proxy_failed');
+    }
+
+    $contentType = upstream_content_type((string)($upstream['headers'] ?? '')) ?: 'application/json; charset=utf-8';
+    http_response_code((int)($upstream['status'] ?? 200));
+    header('Content-Type: ' . $contentType);
+    header('Cache-Control: no-store');
+    echo (string)($upstream['body'] ?? '');
+    exit;
+}
+
+function upstream_content_type(string $headers): string
+{
+    if (preg_match('/^Content-Type:\s*([^\r\n]+)/mi', $headers, $matches)) {
+        return trim($matches[1]);
+    }
+    return '';
+}
+
 function ensure_admin_settings_table(PDO $pdo): bool
 {
     try {
@@ -1127,16 +1199,21 @@ function normalize_custom_api_config(array $value): array
     if (!in_array($requestFormat, ['openai', 'json'], true)) {
         $requestFormat = 'openai';
     }
-    $transportMode = (string)($value['transportMode'] ?? 'direct');
+    $textEndpoint = sanitize_custom_api_url((string)($value['textEndpoint'] ?? ''));
+    $editEndpoint = sanitize_custom_api_url((string)($value['editEndpoint'] ?? ''));
+    $transportMode = (string)($value['transportMode'] ?? 'proxy');
     if (!in_array($transportMode, ['direct', 'proxy'], true)) {
-        $transportMode = 'direct';
+        $transportMode = 'proxy';
+    }
+    if (endpoint_host_matches($textEndpoint, '/(^|\.)manxiaobai\.online$/i') || endpoint_host_matches($editEndpoint, '/(^|\.)manxiaobai\.online$/i')) {
+        $transportMode = 'proxy';
     }
     return [
         'id' => preg_replace('/[^\w-]/', '', (string)($value['id'] ?? '')),
         'enabled' => (bool)($value['enabled'] ?? false),
         'title' => trim((string)($value['title'] ?? '')),
-        'textEndpoint' => sanitize_custom_api_url((string)($value['textEndpoint'] ?? '')),
-        'editEndpoint' => sanitize_custom_api_url((string)($value['editEndpoint'] ?? '')),
+        'textEndpoint' => $textEndpoint,
+        'editEndpoint' => $editEndpoint,
         'apiKey' => trim((string)($value['apiKey'] ?? '')),
         'requestFormat' => $requestFormat,
         'transportMode' => $transportMode,

@@ -26,6 +26,7 @@ const DEFAULT_PHP_API_BASE = "https://api2img.shop/php-api/index.php";
 const FAST_API_TIMEOUT_MS = 6500;
 const GENERATION_READY_WAIT_MS = 2200;
 const ADMIN_API_TIMEOUT_MS = 8000;
+const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
@@ -94,7 +95,7 @@ const config = {
   apiKey: "",
   rememberKey: false,
   requestFormat: "openai",
-  transportMode: "direct",
+  transportMode: "proxy",
   customTemplate: defaultTemplate,
   multiImageMode: "single",
   modelName: "gpt-image-2",
@@ -770,7 +771,7 @@ async function requestTextImages(endpoint, headers, options, variant) {
 async function requestEditImages(endpoint, headers, options, variant) {
   const fields = buildImageFormFields(options, variant);
   const files = options.referenceImages.map((image, index) => ({
-    field: index === 0 ? "image" : `image_${index + 1}`,
+    field: imageUploadFieldName(endpoint, index),
     filename: image.name || `reference-${index + 1}.png`,
     dataUrl: image.dataUrl,
   }));
@@ -793,6 +794,11 @@ async function requestEditImages(endpoint, headers, options, variant) {
     options,
     { variant, label: requestLogLabel(options) },
   );
+}
+
+function imageUploadFieldName(endpoint, index) {
+  if (requiresArrayImageField(endpoint)) return "image[]";
+  return index === 0 ? "image" : `image_${index + 1}`;
 }
 
 function buildImageJsonBody(options, variant) {
@@ -1165,13 +1171,35 @@ async function sendImageRequest(endpoint, request) {
     return fetchDirectImageRequest(endpoint, request);
   }
 
+  return fetchCustomProxyImageRequest(endpoint, request);
+}
+
+async function fetchCustomProxyImageRequest(endpoint, request) {
   const { signal, ...proxyRequest } = request;
-  const proxyResponse = await fetch("/api/proxy-image", {
+  const password = adminPassword();
+  if (password) {
+    return apiFetchPreferDirect("/api/admin/proxy-image", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify({ endpoint, request: proxyRequest }),
+      signal,
+      timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
+      label: "自定义 API 代理",
+    });
+  }
+
+  const proxyResponse = await fetchWithTimeout("/api/proxy-image", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ endpoint, request: proxyRequest }),
     signal,
-  });
+  }, CUSTOM_API_PROXY_TIMEOUT_MS);
   if (shouldFallbackToDirect(proxyResponse)) {
     showToast("线上代理超时，正在尝试浏览器直连");
     return fetchDirectImageRequest(endpoint, request);
@@ -1348,6 +1376,7 @@ function normalizeDirectApiBase(value) {
 
 function shouldFallbackToDirect(response) {
   if (config.transportMode !== "proxy") return false;
+  if (requiresServerProxyEndpoint(config.textEndpoint || config.editEndpoint)) return false;
   const contentType = response.headers.get("content-type") || "";
   return response.status === 504 && /text\/html|text\/plain/i.test(contentType);
 }
@@ -2074,12 +2103,10 @@ function loadConfig() {
   try {
     const saved = JSON.parse(raw);
     Object.assign(config, saved);
-    if (Number(saved.configVersion || 1) < CONFIG_VERSION) {
-      if (saved.transportMode === "proxy") config.transportMode = "direct";
-    }
     if (!saved.rememberKey) config.apiKey = "";
     config.apiProvider = "platform";
     config.multiImageMode = "single";
+    config.transportMode = normalizeCustomTransportMode(config.textEndpoint || "", config.editEndpoint || "", config.transportMode || "proxy");
     config.modelName = FIXED_MODEL_NAME;
   } catch {
     showToast("配置读取失败");
@@ -2092,7 +2119,7 @@ function hydrateConfig() {
   if ($("#apiKey")) $("#apiKey").value = config.apiKey || "";
   if ($("#rememberKey")) $("#rememberKey").checked = Boolean(config.rememberKey);
   if ($("#requestFormat")) $("#requestFormat").value = config.requestFormat || "openai";
-  if ($("#transportMode")) $("#transportMode").value = config.transportMode || "direct";
+  if ($("#transportMode")) $("#transportMode").value = config.transportMode || "proxy";
   if ($("#multiImageMode")) $("#multiImageMode").value = "single";
   if ($("#apiProviderSelect")) $("#apiProviderSelect").value = config.apiProvider || "platform";
   if ($("#customTemplate")) $("#customTemplate").value = config.customTemplate || defaultTemplate;
@@ -2229,6 +2256,37 @@ function isSiteApiDisplayName(value) {
 function normalizeApiDisplayName(value, index = 0) {
   const text = String(value || "").trim();
   return isSiteApiDisplayName(text) ? text : siteApiDisplayName(index);
+}
+
+function endpointHostMatches(endpoint, pattern) {
+  try {
+    return pattern.test(new URL(String(endpoint || "")).host);
+  } catch {
+    return false;
+  }
+}
+
+function requiresServerProxyEndpoint(endpoint) {
+  return endpointHostMatches(endpoint, /(^|\.)manxiaobai\.online$/i);
+}
+
+function requiresArrayImageField(endpoint) {
+  return endpointHostMatches(endpoint, /(^|\.)manxiaobai\.online$/i);
+}
+
+function normalizeCustomTransportMode(textEndpoint = "", editEndpoint = "", transportMode = "") {
+  const selected = transportMode === "direct" ? "direct" : "proxy";
+  if (requiresServerProxyEndpoint(textEndpoint) || requiresServerProxyEndpoint(editEndpoint)) return "proxy";
+  return selected;
+}
+
+function adminEndpointHistoryLabel(item = {}) {
+  const textEndpoint = String(item.textEndpoint || "").trim();
+  const editEndpoint = String(item.editEndpoint || "").trim();
+  if (textEndpoint && editEndpoint) return `文生图：${textEndpoint} · 图生图：${editEndpoint}`;
+  if (textEndpoint) return `文生图：${textEndpoint}`;
+  if (editEndpoint) return `图生图：${editEndpoint}`;
+  return "未设置 URL";
 }
 
 function configSnapshotTitle(snapshot, index = 0) {
@@ -3157,13 +3215,16 @@ function restoreAdminCustomApiForm() {
 }
 
 function readAdminCustomApiForm() {
+  const textEndpoint = $("#adminCustomTextEndpoint")?.value.trim() || "";
+  const editEndpoint = $("#adminCustomEditEndpoint")?.value.trim() || "";
+  const transportMode = normalizeCustomTransportMode(textEndpoint, editEndpoint, $("#adminCustomTransportMode")?.value || "proxy");
   return {
     enabled: Boolean($("#adminCustomApiEnabled")?.checked),
-    textEndpoint: $("#adminCustomTextEndpoint")?.value.trim() || "",
-    editEndpoint: $("#adminCustomEditEndpoint")?.value.trim() || "",
+    textEndpoint,
+    editEndpoint,
     apiKey: $("#adminCustomApiKey")?.value.trim() || "",
     requestFormat: $("#adminCustomRequestFormat")?.value || "openai",
-    transportMode: $("#adminCustomTransportMode")?.value || "direct",
+    transportMode,
     customTemplate: $("#adminCustomTemplate")?.value.trim() || defaultTemplate,
     modelName: FIXED_MODEL_NAME,
     priceCents: Math.max(1, Math.round(Number($("#adminCustomPriceYuan")?.value || 0) * 100)),
@@ -3196,7 +3257,9 @@ function hydrateAdminCustomApiForm(item = {}) {
   if ($("#adminCustomEditEndpoint")) $("#adminCustomEditEndpoint").value = item.editEndpoint || "";
   if ($("#adminCustomApiKey")) $("#adminCustomApiKey").value = item.apiKey || "";
   if ($("#adminCustomRequestFormat")) $("#adminCustomRequestFormat").value = item.requestFormat || "openai";
-  if ($("#adminCustomTransportMode")) $("#adminCustomTransportMode").value = item.transportMode || "direct";
+  if ($("#adminCustomTransportMode")) {
+    $("#adminCustomTransportMode").value = normalizeCustomTransportMode(item.textEndpoint || "", item.editEndpoint || "", item.transportMode || "proxy");
+  }
   if ($("#adminCustomTemplate")) $("#adminCustomTemplate").value = item.customTemplate || defaultTemplate;
   if ($("#adminCustomModelName")) $("#adminCustomModelName").value = FIXED_MODEL_NAME;
   if ($("#adminCustomPriceYuan")) {
@@ -3226,7 +3289,7 @@ function applyCustomApiRuntimeConfig(item = {}) {
   config.apiKey = item.apiKey || "";
   config.rememberKey = false;
   config.requestFormat = item.requestFormat || "openai";
-  config.transportMode = item.transportMode || "direct";
+  config.transportMode = normalizeCustomTransportMode(item.textEndpoint || "", item.editEndpoint || "", item.transportMode || "proxy");
   config.customTemplate = item.customTemplate || defaultTemplate;
   config.multiImageMode = "single";
   config.apiProvider = customDebugState.enabled ? "custom" : "platform";
@@ -3253,6 +3316,7 @@ function renderAdminCustomHistory() {
   list.innerHTML = customDebugState.history
     .map((item, index) => {
       const displayName = uniqueHistoryDisplayName(item, index, usedNames);
+      const endpointLabel = adminEndpointHistoryLabel(item);
       const keyLabel = item.apiKey ? maskApiKey(item.apiKey) : "未保存 Key";
       const transportLabel = item.transportMode === "proxy" ? "代理" : "直连";
       const formatLabel = item.requestFormat === "json" ? "JSON 模板" : "OpenAI";
@@ -3261,7 +3325,7 @@ function renderAdminCustomHistory() {
         <div class="config-history-item" data-admin-custom-id="${escapeHtml(item.id || "")}">
           <button class="config-history-main" type="button" data-action="apply-admin-custom">
             <strong>${escapeHtml(displayName)}</strong>
-            <span>${escapeHtml("站点 API 配置")}</span>
+            <span class="config-history-url" title="${escapeHtml(endpointLabel)}">${escapeHtml(endpointLabel)}</span>
             <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${formatLabel} · ${transportLabel} · ${priceLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
           </button>
         </div>

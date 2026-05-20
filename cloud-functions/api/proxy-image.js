@@ -37,7 +37,7 @@ export async function onRequestPost({ request }) {
       }
     }
 
-    const upstream = await fetchWithTimeout(endpoint, init, 25000);
+    const upstream = await fetchWithTimeout(endpoint, init, 300000);
     const contentType = upstream.headers.get("content-type") || "application/json; charset=utf-8";
     const responseBytes = await upstream.arrayBuffer();
 
@@ -59,7 +59,7 @@ export async function onRequestPost({ request }) {
       return jsonResponse(504, {
         error: {
           code: "edgeone_proxy_timeout",
-          message: "EdgeOne 代理等待上游生图超时。请在网页设置里切换到“浏览器直连”，或降低生成数量后重试。",
+          message: "代理等待上游生图超时。请降低生成数量后重试，或改用站长后台的服务器代理配置。",
         },
       });
     }
