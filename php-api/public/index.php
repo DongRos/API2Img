@@ -817,6 +817,10 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
             $headers[(string)$key] = (string)$value;
         }
     }
+    $headers['Accept'] = $headers['Accept'] ?? 'application/json';
+    $headers['Expect'] = '';
+    $headers['Connection'] = 'close';
+    $headers['User-Agent'] = $headers['User-Agent'] ?? 'API2Image/1.0';
     $tempFiles = [];
     try {
         if (($request['bodyType'] ?? '') === 'multipart') {
@@ -869,6 +873,15 @@ function normalize_image_edit_multipart_request(array $request): array
     $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
     if (!isset($fields['size']) || trim((string)$fields['size']) === '') {
         $fields['size'] = 'auto';
+    }
+    if (!isset($fields['output_format']) || trim((string)$fields['output_format']) === '') {
+        $fields['output_format'] = 'png';
+    }
+    if (!isset($fields['moderation']) || trim((string)$fields['moderation']) === '') {
+        $fields['moderation'] = 'auto';
+    }
+    if (!isset($fields['quality']) || trim((string)$fields['quality']) === '') {
+        $fields['quality'] = 'auto';
     }
     if (!isset($fields['response_format']) || trim((string)$fields['response_format']) === '') {
         $fields['response_format'] = 'b64_json';

@@ -29,6 +29,11 @@ const GENERATION_READY_WAIT_MS = 2200;
 const ADMIN_API_TIMEOUT_MS = 8000;
 const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
+const REFERENCE_API_MAX_BYTES = 2 * 1024 * 1024;
+const REFERENCE_API_MAX_DIMENSION = 1536;
+const REFERENCE_API_JPEG_QUALITY_START = 0.86;
+const REFERENCE_API_JPEG_QUALITY_MIN = 0.72;
+const REFERENCE_API_JPEG_QUALITY_STEP = 0.06;
 const RESULT_CACHE_TIMEOUT_MS = 4500;
 const IMAGE_DIMENSION_TIMEOUT_MS = 2200;
 const FLOW_DB_NAME = "image2.flow.history";
@@ -800,10 +805,14 @@ function imageRequestVariants(options = {}) {
 
 async function requestEditImages(endpoint, headers, options, variant, fileFieldMode = "single", variantLabel = variant) {
   const fields = buildImageFormFields(options, variant, endpoint);
-  const files = options.referenceImages.map((image, index) => ({
+  const requestImages = await normalizeReferenceImagesForRequest(options.referenceImages || []);
+  const files = requestImages.map((image, index) => ({
     field: imageUploadFieldName(endpoint, index, fileFieldMode),
     filename: image.name || `reference-${index + 1}.png`,
     dataUrl: image.dataUrl,
+    normalizedForApi: Boolean(image.normalizedForApi),
+    originalBytes: image.originalBytes || "",
+    outputBytes: image.outputBytes || "",
   }));
 
   return sendAndParseImageRequest(
@@ -834,6 +843,119 @@ function imageUploadFieldName(endpoint, index, mode = "single") {
   return index === 0 ? "image" : `image_${index + 1}`;
 }
 
+async function normalizeReferenceImagesForRequest(images = []) {
+  return Promise.all(images.map((image, index) => normalizeReferenceImageForApi(image, index)));
+}
+
+async function normalizeReferenceImageForApi(image, index = 0) {
+  const dataUrl = String(image?.dataUrl || "");
+  if (!dataUrl.startsWith("data:image/")) return image;
+  try {
+    const originalBlob = dataUrlToBlob(dataUrl);
+    if (!/^image\/(?:png|jpe?g|webp)$/i.test(originalBlob.type || "")) return image;
+    const dimensions = await imageBlobDimensions(originalBlob);
+    const longest = Math.max(dimensions.width || 1, dimensions.height || 1);
+    if (originalBlob.size <= REFERENCE_API_MAX_BYTES && longest <= REFERENCE_API_MAX_DIMENSION) return image;
+
+    const compressedBlob = await compressReferenceImageBlob(originalBlob, dimensions);
+    return {
+      ...image,
+      name: replaceImageExtension(image?.name || `reference-${index + 1}.png`, "jpg"),
+      dataUrl: await blobToDataUrl(compressedBlob),
+      normalizedForApi: true,
+      originalBytes: originalBlob.size,
+      outputBytes: compressedBlob.size,
+      originalWidth: dimensions.width,
+      originalHeight: dimensions.height,
+    };
+  } catch (error) {
+    console.warn("参考图压缩失败，继续使用原图", error);
+    return image;
+  }
+}
+
+async function imageBlobDimensions(blob) {
+  if ("createImageBitmap" in window) {
+    const bitmap = await createImageBitmap(blob);
+    const dimensions = { width: bitmap.width || 1, height: bitmap.height || 1 };
+    if (typeof bitmap.close === "function") bitmap.close();
+    return dimensions;
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: image.naturalWidth || 1, height: image.naturalHeight || 1 });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片尺寸读取失败"));
+    };
+    image.src = url;
+  });
+}
+
+async function compressReferenceImageBlob(blob, dimensions) {
+  const longest = Math.max(dimensions.width || 1, dimensions.height || 1);
+  const scale = longest > REFERENCE_API_MAX_DIMENSION ? REFERENCE_API_MAX_DIMENSION / longest : 1;
+  const width = Math.max(1, Math.round((dimensions.width || 1) * scale));
+  const height = Math.max(1, Math.round((dimensions.height || 1) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("当前浏览器不支持图片压缩");
+  const bitmap = await imageBlobToDrawable(blob);
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(bitmap, 0, 0, width, height);
+  if (typeof bitmap.close === "function") bitmap.close();
+
+  let output = null;
+  for (
+    let quality = REFERENCE_API_JPEG_QUALITY_START;
+    quality >= REFERENCE_API_JPEG_QUALITY_MIN - 0.001;
+    quality -= REFERENCE_API_JPEG_QUALITY_STEP
+  ) {
+    output = await canvasToBlob(canvas, "image/jpeg", Math.max(REFERENCE_API_JPEG_QUALITY_MIN, quality));
+    if (output.size <= REFERENCE_API_MAX_BYTES) break;
+  }
+  if (!output) throw new Error("参考图压缩失败");
+  return output;
+}
+
+async function imageBlobToDrawable(blob) {
+  if ("createImageBitmap" in window) return createImageBitmap(blob);
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片载入失败"));
+    };
+    image.src = url;
+  });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("图片压缩失败"));
+    }, type, quality);
+  });
+}
+
+function replaceImageExtension(filename, extension) {
+  const clean = String(filename || "").trim() || "reference.png";
+  return /\.[a-z0-9]{1,8}$/i.test(clean) ? clean.replace(/\.[a-z0-9]{1,8}$/i, `.${extension}`) : `${clean}.${extension}`;
+}
+
 function buildImageJsonBody(options, variant) {
   const body = {
     model: options.model,
@@ -860,6 +982,9 @@ function buildImageFormFields(options, variant, endpoint = "") {
 function appendImageEditCompatibilityFields(fields, options, variant) {
   if (variant !== "compatible" || options.mode !== "image") return;
   if (!fields.size) fields.size = String(options.size || "").trim() || "auto";
+  fields.output_format = "png";
+  fields.moderation = "auto";
+  if (!fields.quality) fields.quality = "auto";
   fields.response_format = "b64_json";
 }
 
@@ -1125,7 +1250,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
             generationCancelled ||
             isAbortError(error) ||
             attempt >= SINGLE_IMAGE_MAX_ATTEMPTS ||
-            !shouldRetrySingleImageError(lastError)
+            !shouldRetrySingleImageError(lastError, options)
           ) {
             break;
           }
@@ -1176,9 +1301,10 @@ function isFatalImageError(message) {
   );
 }
 
-function shouldRetrySingleImageError(message) {
+function shouldRetrySingleImageError(message, options = {}) {
   return (
     !isFatalImageError(message) &&
+    !(options.apiProvider === "platform" && isUncertainChargedError(message)) &&
     /\b(500|502|503|504|520|522|524)\b|timeout|timed out|bad gateway|gateway|temporar|network|failed to fetch|没有返回图片|no image|internal_error|server_error|stream error|received from peer|rst_stream|reset/i.test(
       message,
     )
@@ -1186,7 +1312,7 @@ function shouldRetrySingleImageError(message) {
 }
 
 function isUncertainChargedError(message) {
-  return /failed to fetch|network|timeout|timed out|\b(504|524)\b|edgeone_proxy_timeout|代理等待上游生图超时|上游接口超时|请求超时|连接中断|connection|aborted/i.test(
+  return /failed to fetch|network|timeout|timed out|\b(504|524)\b|edgeone_proxy_timeout|代理等待上游生图超时|上游接口超时|请求超时|连接中断|connection|aborted|tcp|reset|received from peer|rst_stream|stream error/i.test(
     message || "",
   );
 }
@@ -4712,6 +4838,9 @@ function summarizeRequestForLog(request) {
     summary.files = (request.files || []).map((file) => ({
       field: file.field,
       filename: file.filename,
+      normalizedForApi: Boolean(file.normalizedForApi),
+      originalBytes: file.originalBytes || "",
+      outputBytes: file.outputBytes || "",
       dataUrl: summarizeImageData(file.dataUrl || ""),
     }));
   } else {
