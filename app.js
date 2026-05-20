@@ -22,6 +22,7 @@ const ANNOUNCEMENTS_REFRESH_INTERVAL_MS = 45000;
 const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
+const DEFAULT_IMAGE_SIZE = "1024x1024";
 const DEFAULT_PHP_API_BASE = "https://api2img.shop/php-api/index.php";
 const FAST_API_TIMEOUT_MS = 6500;
 const GENERATION_READY_WAIT_MS = 2200;
@@ -641,7 +642,7 @@ async function requestImages(endpoint, options) {
     );
   }
 
-  const variants = ["compatible", "minimal"];
+  const variants = ["compatible", "minimal", "bare"];
   let lastError = null;
 
   for (const [variantIndex, variant] of variants.entries()) {
@@ -806,7 +807,7 @@ function buildImageJsonBody(options, variant) {
     model: options.model,
     prompt: buildPrompt(options),
   };
-  appendCoreImageFields(body, options);
+  appendCoreImageFields(body, options, variant);
   appendCompatibleImageFields(body, options, variant);
   return body;
 }
@@ -816,16 +817,35 @@ function buildImageFormFields(options, variant) {
     model: options.model,
     prompt: buildPrompt(options),
   };
-  appendCoreImageFields(fields, options);
+  appendCoreImageFields(fields, options, variant);
   appendCompatibleImageFields(fields, options, variant);
   if (fields.n != null) fields.n = String(fields.n);
   if (fields.seed != null) fields.seed = String(fields.seed);
   return fields;
 }
 
-function appendCoreImageFields(target, options) {
-  if (options.size && options.size !== "auto") target.size = options.size;
+function appendCoreImageFields(target, options, variant) {
+  if (variant === "bare") return;
+  const size = effectiveRequestSize(options);
+  if (size) target.size = size;
   if (options.count > 1) target.n = options.count;
+}
+
+function effectiveRequestSize(options = {}) {
+  const selected = String(options.size || "").trim();
+  if (selected && selected !== "auto") return selected;
+  return inferAutoRequestSize(options) || DEFAULT_IMAGE_SIZE;
+}
+
+function inferAutoRequestSize(options = {}) {
+  const prompt = `${options.prompt || ""}\n${options.negativePrompt || ""}`;
+  if (/海报|竖版|竖屏|手机壁纸|小红书|封面|portrait|poster|vertical|9:16|2:3/i.test(prompt)) {
+    return "1024x1536";
+  }
+  if (/横版|横屏|宽屏|banner|横幅|landscape|wide|16:9|3:2/i.test(prompt)) {
+    return "1536x1024";
+  }
+  return "";
 }
 
 function appendCompatibleImageFields(target, options, variant) {
@@ -1118,15 +1138,14 @@ function isUncertainChargedError(message) {
 }
 
 function shouldRetryWithMinimalPayload(message, variant, options = {}) {
-  return (
-    variant === "compatible" &&
-    Number(options.count || 1) <= 1 &&
-    !isFatalImageError(message) &&
-    !isUncertainChargedError(message) &&
-    /invalid|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param/i.test(
-      message,
-    )
-  );
+  if (Number(options.count || 1) > 1 || isFatalImageError(message) || isUncertainChargedError(message)) return false;
+  if (variant === "compatible") {
+    return /invalid|unsupported|not support|quality|size|seed|\bn\b|count|parameter|param/i.test(message);
+  }
+  if (variant === "minimal") {
+    return /invalid|unsupported|not support|size|dimension|resolution|parameter|param/i.test(message);
+  }
+  return false;
 }
 
 function isAbortError(error) {
@@ -1182,12 +1201,13 @@ async function fetchCustomImageRequest(endpoint, request) {
   let lastMode = "";
 
   for (const mode of modes) {
+    const startedAt = Date.now();
     try {
       const response =
         mode === "direct"
           ? await fetchDirectImageRequest(endpoint, request)
           : await fetchCustomProxyImageRequest(endpoint, request);
-      if (response.ok || !shouldSwitchCustomTransport(response, mode, endpoint)) {
+      if (response.ok || !shouldSwitchCustomTransport(response, mode, endpoint, Date.now() - startedAt)) {
         if (lastError && mode !== preferredMode) {
           showToast(mode === "proxy" ? "浏览器直连失败，已切到服务器代理" : "服务器代理异常，已尝试浏览器直连");
         }
@@ -1198,7 +1218,7 @@ async function fetchCustomImageRequest(endpoint, request) {
     } catch (error) {
       lastMode = mode;
       lastError = error;
-      if (!shouldSwitchCustomTransportError(error)) break;
+      if (!shouldSwitchCustomTransportError(error, Date.now() - startedAt)) break;
     }
   }
 
@@ -1239,8 +1259,9 @@ function customTransportLabel(mode) {
   return mode === "direct" ? "浏览器直连" : "服务器代理";
 }
 
-function shouldSwitchCustomTransport(response, mode, endpoint = "") {
+function shouldSwitchCustomTransport(response, mode, endpoint = "", elapsedMs = 0) {
   if (!response) return false;
+  if (elapsedMs > 8000) return false;
   if (mode === "direct") {
     return response.status === 405 || isRetryableHttpStatus(response.status);
   }
@@ -1248,7 +1269,8 @@ function shouldSwitchCustomTransport(response, mode, endpoint = "") {
   return shouldFallbackToDirect(response);
 }
 
-function shouldSwitchCustomTransportError(error) {
+function shouldSwitchCustomTransportError(error, elapsedMs = 0) {
+  if (elapsedMs > 8000) return false;
   return isRetryableFetchError(error) || /cors|cross-?origin|preflight/i.test(error?.message || String(error));
 }
 
@@ -1294,6 +1316,8 @@ async function fetchPlatformGeneration(payload, signal) {
       directFirst: true,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
+      noHttpFallback: true,
+      maxFetchErrorFallbackMs: 8000,
     });
     return { response, url: response.apiFetchUrl || url };
   } catch (error) {
@@ -3489,16 +3513,19 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
   let lastRetryableResponse = null;
   for (const url of urls) {
     const direct = isDirectPhpApiUrl(url);
+    const startedAt = Date.now();
     try {
       const response = await fetchApiUrl(url, { ...options, timeoutMs: preference.timeoutMs || FAST_API_TIMEOUT_MS }, direct ? "omit" : "include");
       response.apiFetchUrl = url;
-      if (response.ok || !shouldFallbackApiResponse(response, direct)) return response;
+      if (response.ok || !shouldFallbackApiResponse(response, direct, preference)) return response;
       lastRetryableResponse = response;
       lastError = new Error(`${preference.label || "请求"}失败：HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
       if (options.signal?.aborted) throw error;
       if (!isRetryableFetchError(error)) throw error;
+      const maxFallbackMs = Number(preference.maxFetchErrorFallbackMs || 0);
+      if (maxFallbackMs > 0 && Date.now() - startedAt > maxFallbackMs) throw error;
     }
   }
   if (lastRetryableResponse) return lastRetryableResponse;
@@ -3559,7 +3586,8 @@ function uniqueUrls(urls) {
   return [...new Set(urls.filter(Boolean))];
 }
 
-function shouldFallbackApiResponse(response, direct) {
+function shouldFallbackApiResponse(response, direct, preference = {}) {
+  if (preference.noHttpFallback) return false;
   if (isRetryableHttpStatus(response.status)) return true;
   if (direct && response.status === 401 && !currentWalletSessionToken()) return true;
   return false;
