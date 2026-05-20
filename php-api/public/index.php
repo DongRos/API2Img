@@ -279,6 +279,7 @@ function auth_me(PDO $pdo, array $config): void
         'currency' => 'CNY',
         'rechargeUrl' => (string)$config['app']['recharge_url'],
         'sessionToken' => $user ? current_session_token() : '',
+        'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
     ]);
 }
 
@@ -338,6 +339,7 @@ function billing_config(PDO $pdo, array $config): void
         'requestFormat' => (string)$platform['request_format'],
         'customTemplate' => (string)$platform['custom_template'],
         'modelName' => (string)$platform['model_name'],
+        'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
     ]);
 }
 
@@ -444,6 +446,7 @@ function generate_ticket(PDO $pdo, array $config): void
         'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
         'priceCents' => $price,
         'balanceCents' => current_balance($pdo, (int)$user['id']),
+        'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
     ]);
 }
 
@@ -479,10 +482,9 @@ function generate_direct_config(PDO $pdo, array $config): void
     json_response([
         'ok' => true,
         'ticket' => $ticket,
-        'endpoint' => $endpoint,
-        'apiKey' => (string)$platform['api_key'],
         'priceCents' => $price,
         'balanceCents' => current_balance($pdo, (int)$user['id']),
+        'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
     ]);
 }
 
@@ -670,6 +672,7 @@ function fallback_platform_config(array $config): array
         'model_name' => 'gpt-image-2',
         'request_format' => 'openai',
         'custom_template' => '',
+        'display_name' => '站点配置1',
         'source' => 'file',
     ];
 }
@@ -697,6 +700,7 @@ function normalize_global_platform_config(array $value, array $fallback): array
         $requestFormat = 'openai';
     }
     $customTemplate = custom_api_template((string)($value['customTemplate'] ?? $value['custom_template'] ?? $fallback['custom_template']));
+    $displayName = custom_api_safe_display_name((string)($value['displayName'] ?? $value['display_name'] ?? $value['title'] ?? $fallback['display_name'] ?? ''), 1);
     return [
         'text_endpoint' => $textEndpoint,
         'edit_endpoint' => $editEndpoint,
@@ -707,6 +711,7 @@ function normalize_global_platform_config(array $value, array $fallback): array
         'model_name' => 'gpt-image-2',
         'request_format' => $requestFormat,
         'custom_template' => $customTemplate,
+        'display_name' => $displayName,
         'updated_at' => (int)($value['updatedAt'] ?? $value['updated_at'] ?? 0),
         'source' => 'database',
     ];
@@ -724,6 +729,7 @@ function public_global_platform_config(array $platform): array
         'modelName' => (string)$platform['model_name'],
         'requestFormat' => (string)$platform['request_format'],
         'customTemplate' => (string)$platform['custom_template'],
+        'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
         'updatedAt' => (int)($platform['updated_at'] ?? 0),
         'source' => (string)($platform['source'] ?? 'file'),
     ];
@@ -945,8 +951,9 @@ function admin_save_custom_api(PDO $pdo, array $config): void
         $snapshot = $current;
         $snapshot['enabled'] = false;
         $snapshot['id'] = $snapshot['id'] ?: random_token(8);
-        $snapshot['title'] = custom_api_config_title($snapshot);
         $snapshot['updatedAt'] = time() * 1000;
+        $snapshot = custom_api_prepare_history_snapshot($snapshot, $history);
+        $current['title'] = $snapshot['title'];
         $key = custom_api_history_key($snapshot);
         $filtered = [];
         foreach ($history as $item) {
@@ -990,7 +997,8 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
     $snapshot = $current;
     $snapshot['enabled'] = false;
     $snapshot['id'] = $snapshot['id'] ?: random_token(8);
-    $snapshot['title'] = custom_api_config_title($snapshot);
+    $snapshot = custom_api_prepare_history_snapshot($snapshot, $history);
+    $current['title'] = $snapshot['title'];
     $key = custom_api_history_key($snapshot);
     $filtered = [];
     foreach ($history as $item) {
@@ -1014,6 +1022,7 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
         'modelName' => $current['modelName'],
         'requestFormat' => $current['requestFormat'],
         'customTemplate' => $current['customTemplate'],
+        'displayName' => $current['title'],
         'updatedAt' => $current['updatedAt'],
     ]);
     $global = public_global_platform_config(platform_config($pdo, $config));
@@ -1153,6 +1162,8 @@ function normalize_custom_api_history($value): array
         return [];
     }
     $items = [];
+    $usedTitles = [];
+    $nextNumber = 1;
     foreach ($value as $item) {
         if (!is_array($item)) {
             continue;
@@ -1162,8 +1173,18 @@ function normalize_custom_api_history($value): array
         if ($clean['id'] === '') {
             $clean['id'] = random_token(8);
         }
-        if ($clean['title'] === '') {
-            $clean['title'] = custom_api_config_title($clean);
+        $title = custom_api_existing_display_name($clean['title']);
+        if ($title === '' || isset($usedTitles[$title])) {
+            while (isset($usedTitles['站点配置' . $nextNumber])) {
+                $nextNumber++;
+            }
+            $title = '站点配置' . $nextNumber;
+        }
+        $clean['title'] = $title;
+        $usedTitles[$title] = true;
+        $number = custom_api_display_name_number($title);
+        if ($number >= $nextNumber) {
+            $nextNumber = $number + 1;
         }
         if ($clean['textEndpoint'] !== '' || $clean['editEndpoint'] !== '' || $clean['apiKey'] !== '') {
             $items[] = $clean;
@@ -1198,12 +1219,53 @@ function custom_api_template(string $template): string
 
 function custom_api_config_title(array $item): string
 {
-    $endpoint = (string)($item['textEndpoint'] ?: $item['editEndpoint']);
-    if ($endpoint === '') {
-        return (string)($item['modelName'] ?? 'API Config');
+    return custom_api_safe_display_name((string)($item['title'] ?? ''), 1);
+}
+
+function custom_api_prepare_history_snapshot(array $snapshot, array $history): array
+{
+    $key = custom_api_history_key($snapshot);
+    foreach ($history as $item) {
+        if (custom_api_history_key($item) === $key) {
+            $snapshot['id'] = (string)($item['id'] ?? $snapshot['id'] ?? random_token(8));
+            $snapshot['title'] = custom_api_safe_display_name((string)($item['title'] ?? ''), 1);
+            return $snapshot;
+        }
     }
-    $host = parse_url($endpoint, PHP_URL_HOST);
-    return $host ? $host : preg_replace('#^https?://#i', '', explode('/', $endpoint)[0]);
+    $snapshot['title'] = custom_api_safe_display_name('', custom_api_next_display_number($history));
+    return $snapshot;
+}
+
+function custom_api_safe_display_name(string $title, int $fallbackNumber = 1): string
+{
+    $existing = custom_api_existing_display_name($title);
+    if ($existing !== '') {
+        return $existing;
+    }
+    return '站点配置' . max(1, $fallbackNumber);
+}
+
+function custom_api_existing_display_name(string $title): string
+{
+    $title = trim($title);
+    return preg_match('/^站点配置[1-9][0-9]*$/u', $title) ? $title : '';
+}
+
+function custom_api_display_name_number(string $title): int
+{
+    if (preg_match('/^站点配置([1-9][0-9]*)$/u', trim($title), $matches)) {
+        return (int)$matches[1];
+    }
+    return 0;
+}
+
+function custom_api_next_display_number(array $history): int
+{
+    $max = 0;
+    foreach ($history as $item) {
+        $max = max($max, custom_api_display_name_number((string)($item['title'] ?? '')));
+    }
+    return $max + 1;
 }
 
 function custom_api_history_key(array $item): string

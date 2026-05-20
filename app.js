@@ -14,6 +14,7 @@ const LOGIN_CODE_RESEND_COOLDOWN_SECONDS = 60;
 const FIXED_MODEL_NAME = "gpt-image-2";
 const API_STATS_OPEN_PHRASE = "apistats";
 const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
+const SITE_API_DISPLAY_PREFIX = "站点配置";
 const ANNOUNCEMENTS_SEEN_KEY = "image2.announcements.seenAt.v1";
 const SITE_VISIT_TRACK_KEY = "image2.site.visit.tracked.v1";
 const SITE_HEARTBEAT_INTERVAL_MS = 30000;
@@ -125,6 +126,7 @@ const billingState = {
   platformRequestFormat: "openai",
   platformCustomTemplate: "",
   platformModelName: "",
+  platformDisplayName: "站点配置1",
   ledger: [],
   ledgerLoading: false,
   activeOrder: null,
@@ -516,6 +518,7 @@ async function generateImages(extra = {}) {
     apiProvider: usePlatformApi ? "platform" : "custom",
     platformPriceCents: usePlatformApi ? billingState.priceCents : 0,
   };
+  options.apiDisplayName = currentApiDisplayName(endpoint, options);
   if (usePlatformApi && billingState.configLoaded) {
     const requiredCents = options.count * billingState.priceCents;
     if (billingState.balanceCents < requiredCents) {
@@ -1130,6 +1133,7 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
       billingRequestId,
       statsApiKey: response.platformStatsApiKey || options.statsApiKey || config.apiKey,
       model: response.platformStatsModel || options.model || "",
+      apiDisplayName: response.platformStatsDisplayName || response.platformDisplayName || options.apiDisplayName,
     };
     const payload = await parseApiResponse(response, requestLog);
     if (isPlatformApiSelected()) refreshBilling();
@@ -1198,6 +1202,7 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
   response.platformTicket = ticket.ticket;
   response.platformPriceCents = ticket.priceCents;
   response.platformStatsEndpoint = platformUrl;
+  response.platformStatsDisplayName = ticket.displayName || billingState.platformDisplayName;
   response.platformStatsModel = billingModel || getModelName();
   return response;
 }
@@ -1265,11 +1270,13 @@ async function getPlatformGenerationTicket(options = {}) {
       if (!payload.ticket) throw new Error("生成票据缺失，请重试");
       if (payload.directBaseUrl) billingState.directBaseUrl = normalizeDirectApiBase(payload.directBaseUrl);
       billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+      billingState.platformDisplayName = normalizeApiDisplayName(payload.displayName || billingState.platformDisplayName);
       if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
       renderWallet();
       return {
         ticket: payload.ticket,
         priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+        displayName: billingState.platformDisplayName,
       };
     } catch (error) {
       lastError = error;
@@ -1302,15 +1309,15 @@ async function getPlatformDirectConfig(options = {}) {
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw new Error(payload?.error?.message || `站点 API 配置获取失败：HTTP ${response.status}`);
-      if (!payload.ticket || !payload.endpoint || !payload.apiKey) throw new Error("站点 API 配置不完整，请联系站长");
+      if (!payload.ticket) throw new Error("站点 API 配置不完整，请联系站长");
       billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+      billingState.platformDisplayName = normalizeApiDisplayName(payload.displayName || billingState.platformDisplayName);
       if (Number.isFinite(Number(payload.balanceCents))) billingState.balanceCents = Number(payload.balanceCents);
       renderWallet();
       return {
         ticket: payload.ticket,
-        endpoint: payload.endpoint,
-        apiKey: payload.apiKey,
         priceCents: Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS),
+        displayName: billingState.platformDisplayName,
       };
     } catch (error) {
       lastError = error;
@@ -2210,13 +2217,47 @@ function configHistoryKey(item) {
   ].join("|");
 }
 
-function configSnapshotTitle(snapshot) {
-  const endpoint = snapshot.textEndpoint || snapshot.editEndpoint || "";
-  try {
-    return endpoint ? new URL(endpoint).host : snapshot.modelName || "API Config";
-  } catch {
-    return endpoint.replace(/^https?:\/\//i, "").split("/")[0] || snapshot.modelName || "API Config";
+function siteApiDisplayName(index = 0) {
+  const value = Math.max(1, Number(index) + 1);
+  return `${SITE_API_DISPLAY_PREFIX}${value}`;
+}
+
+function isSiteApiDisplayName(value) {
+  return new RegExp(`^${SITE_API_DISPLAY_PREFIX}\\d+$`).test(String(value || "").trim());
+}
+
+function normalizeApiDisplayName(value, index = 0) {
+  const text = String(value || "").trim();
+  return isSiteApiDisplayName(text) ? text : siteApiDisplayName(index);
+}
+
+function configSnapshotTitle(snapshot, index = 0) {
+  return normalizeApiDisplayName(snapshot?.title || snapshot?.displayName || "", index);
+}
+
+function currentApiDisplayName(endpoint = "", options = {}, index = 0) {
+  if (options.apiDisplayName) return normalizeApiDisplayName(options.apiDisplayName, index);
+  if (options.apiProvider === "platform" || isDirectPhpApiUrl(endpoint) || endpoint === "/api/generate/platform") {
+    return normalizeApiDisplayName(billingState.platformDisplayName, index);
   }
+  return normalizeApiDisplayName(customDebugState.current?.title || config.title || "", index);
+}
+
+function visibleLogApiName(entry = {}, index = 0) {
+  return normalizeApiDisplayName(entry.apiDisplayName || entry.endpointDisplayName || entry.displayName || "", index);
+}
+
+function uniqueHistoryDisplayName(item = {}, index = 0, usedNames = new Set()) {
+  let name = isSiteApiDisplayName(item.title || item.displayName) ? String(item.title || item.displayName).trim() : "";
+  if (!name || usedNames.has(name)) {
+    let offset = 0;
+    do {
+      name = siteApiDisplayName(index + offset);
+      offset += 1;
+    } while (usedNames.has(name));
+  }
+  usedNames.add(name);
+  return name;
 }
 
 function renderConfigHistory() {
@@ -2228,17 +2269,18 @@ function renderConfigHistory() {
     return;
   }
 
+  const usedNames = new Set();
   list.innerHTML = configHistory
-    .map((item) => {
-      const endpoint = item.textEndpoint || item.editEndpoint || "未设置 URL";
+    .map((item, index) => {
+      const displayName = uniqueHistoryDisplayName(item, index, usedNames);
       const keyLabel = item.apiKey ? maskApiKey(item.apiKey) : "未保存 Key";
       const transportLabel = item.transportMode === "direct" ? "直连" : "代理";
       const multiLabel = item.multiImageMode === "batch" ? "单次批量" : "逐张稳定";
       return `
         <div class="config-history-item" data-config-id="${escapeHtml(item.id)}">
           <button class="config-history-main" type="button" data-action="switch-config">
-            <strong>${escapeHtml(item.title)}</strong>
-            <span>${escapeHtml(endpoint)}</span>
+            <strong>${escapeHtml(displayName)}</strong>
+            <span>${escapeHtml("站点 API 配置")}</span>
             <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${escapeHtml(item.requestFormat || "openai")} · ${transportLabel} · ${multiLabel} · ${keyLabel}</small>
           </button>
           <button class="icon-button config-history-delete" type="button" data-action="delete-config" title="删除配置">
@@ -2331,6 +2373,7 @@ async function loadBillingConfig() {
   billingState.platformRequestFormat = info.requestFormat === "json" ? "json" : "openai";
   billingState.platformCustomTemplate = info.customTemplate || "";
   billingState.platformModelName = info.modelName || "";
+  billingState.platformDisplayName = normalizeApiDisplayName(info.displayName || billingState.platformDisplayName);
   warmDirectApiBase();
   return billingState.platformEnabled;
 }
@@ -2535,9 +2578,11 @@ function applyBillingDashboard(payload) {
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
   billingState.rechargeUrl = payload.rechargeUrl || billingState.rechargeUrl;
+  billingState.platformDisplayName = normalizeApiDisplayName(payload.displayName || billingState.platformDisplayName);
   billingState.lastDirectConfig = {
     ...(billingState.lastDirectConfig || {}),
     priceCents: billingState.priceCents,
+    displayName: billingState.platformDisplayName,
   };
 }
 
@@ -3085,6 +3130,7 @@ async function applyCustomApiAsGlobal() {
     billingState.platformRequestFormat = serverConfig.requestFormat === "json" ? "json" : "openai";
     billingState.platformCustomTemplate = serverConfig.customTemplate || "";
     billingState.platformModelName = serverConfig.modelName || "";
+    billingState.platformDisplayName = normalizeApiDisplayName(serverConfig.displayName || serverConfig.title || billingState.platformDisplayName);
     applyCustomApiRuntimeConfig(serverConfig);
     hydrateAdminCustomApiForm(serverConfig);
     renderAdminCustomHistory();
@@ -3135,6 +3181,7 @@ function applyGlobalApiInfo(item = {}) {
   billingState.platformRequestFormat = item.requestFormat === "json" ? "json" : "openai";
   billingState.platformCustomTemplate = item.customTemplate || "";
   billingState.platformModelName = FIXED_MODEL_NAME;
+  billingState.platformDisplayName = normalizeApiDisplayName(item.displayName || item.title || billingState.platformDisplayName);
 }
 
 function apiPricingStatus(debugConfig = {}, globalConfig = {}) {
@@ -3202,9 +3249,10 @@ function renderAdminCustomHistory() {
     list.innerHTML = `<div class="config-history-empty">保存后会在服务器保留最近 ${CONFIG_HISTORY_LIMIT} 条配置</div>`;
     return;
   }
+  const usedNames = new Set();
   list.innerHTML = customDebugState.history
-    .map((item) => {
-      const endpoint = item.textEndpoint || item.editEndpoint || "未设置 URL";
+    .map((item, index) => {
+      const displayName = uniqueHistoryDisplayName(item, index, usedNames);
       const keyLabel = item.apiKey ? maskApiKey(item.apiKey) : "未保存 Key";
       const transportLabel = item.transportMode === "proxy" ? "代理" : "直连";
       const formatLabel = item.requestFormat === "json" ? "JSON 模板" : "OpenAI";
@@ -3212,8 +3260,8 @@ function renderAdminCustomHistory() {
       return `
         <div class="config-history-item" data-admin-custom-id="${escapeHtml(item.id || "")}">
           <button class="config-history-main" type="button" data-action="apply-admin-custom">
-            <strong>${escapeHtml(item.title || configSnapshotTitle(item))}</strong>
-            <span>${escapeHtml(endpoint)}</span>
+            <strong>${escapeHtml(displayName)}</strong>
+            <span>${escapeHtml("站点 API 配置")}</span>
             <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${formatLabel} · ${transportLabel} · ${priceLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
           </button>
         </div>
@@ -3647,6 +3695,7 @@ function saveGenerationLogs() {
 }
 
 function startGenerationLog(endpoint, options) {
+  const apiDisplayName = currentApiDisplayName(endpoint, options);
   const log = {
     id: makeId(),
     generationId: options.generationId || "",
@@ -3655,6 +3704,7 @@ function startGenerationLog(endpoint, options) {
     endedAt: 0,
     durationMs: 0,
     endpoint,
+    apiDisplayName,
     options: summarizeOptionsForLog(options),
     imageCount: 0,
     costCents: 0,
@@ -3683,6 +3733,7 @@ function finishGenerationLog(status, details = {}) {
 
 function startRequestLog(endpoint, request, options, meta = {}) {
   if (!activeGenerationLog) return null;
+  const apiDisplayName = currentApiDisplayName(endpoint, options);
   const entry = {
     id: makeId(),
     label: meta.label || requestLogLabel(options),
@@ -3692,6 +3743,7 @@ function startRequestLog(endpoint, request, options, meta = {}) {
     endedAt: 0,
     durationMs: 0,
     endpoint,
+    apiDisplayName,
     prompt: buildPrompt(options),
     params: summarizeOptionsForLog(options),
     request: summarizeRequestForLog(request),
@@ -3738,6 +3790,7 @@ function renderGenerationLogs() {
     .map((log, index) => {
       const status = generationStatusLabel(log.status);
       const prompt = log.options?.prompt || "";
+      const apiName = visibleLogApiName(log, index);
       const requestCount = Array.isArray(log.requests) ? log.requests.length : 0;
       const summary = `${log.options?.model || ""} · ${log.options?.size || ""} · ${log.options?.count || 1} 张 · ${multiModeLabel(log.options?.multiImageMode)}`;
       const requests = (log.requests || []).map(renderRequestLog).join("");
@@ -3749,6 +3802,7 @@ function renderGenerationLogs() {
             <small>${escapeHtml(prompt || "无提示词")}</small>
           </summary>
           <div class="log-meta">
+            <span>${escapeHtml(apiName)}</span>
             <span>${escapeHtml(summary)}</span>
             <span>请求 ${requestCount} 次</span>
             <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
@@ -3756,7 +3810,7 @@ function renderGenerationLogs() {
           </div>
           ${log.message ? `<p class="log-message">${escapeHtml(log.message)}</p>` : ""}
           ${log.error ? `<p class="log-error">${escapeHtml(log.error)}</p>` : ""}
-          <div class="log-endpoint">${escapeHtml(log.endpoint || "")}</div>
+          <div class="log-endpoint">${escapeHtml(apiName)}</div>
           <div class="log-requests">${requests || '<div class="log-empty">还没有发出请求。</div>'}</div>
         </details>
       `;
@@ -3794,6 +3848,7 @@ function renderCurrentLogPreview() {
       <span>${escapeHtml(log.options?.prompt || "无提示词")}</span>
     </div>
     <div class="current-log-meta">
+      <span>${escapeHtml(visibleLogApiName(log))}</span>
       <span>请求 ${(log.requests || []).length} 次</span>
       <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
       <span>${escapeHtml(multiModeLabel(log.options?.multiImageMode))}</span>
@@ -3821,12 +3876,13 @@ function renderRequestLog(entry) {
 
 function requestLogText(entry) {
   return [
+    `站点配置:\n${visibleLogApiName(entry)}`,
     `提示词:\n${entry.prompt || ""}`,
     `请求变体:\n${entry.variant || "-"}`,
     `参数:\n${summarizeLogValue(entry.params)}`,
     `请求:\n${summarizeLogValue(entry.request)}`,
     `本张花费:\n${formatMoney(entry.costCents || 0)} 元`,
-    `API 返回:\nHTTP ${entry.httpStatus || "-"} · ${entry.contentType || "unknown"} · 图片 ${entry.imageCount || 0} 张\n${entry.responsePreview || entry.error || "暂无返回"}`,
+    `API 返回:\nHTTP ${entry.httpStatus || "-"} · ${entry.contentType || "unknown"} · 图片 ${entry.imageCount || 0} 张\n${redactSensitiveApiUrls(entry.responsePreview || entry.error || "暂无返回")}`,
   ].join("\n\n");
 }
 
@@ -3865,6 +3921,7 @@ function normalizeApiStat(entry) {
     id: entry.id || makeId(),
     endpoint: entry.endpoint || "",
     endpointHost: entry.endpointHost || endpointHostLabel(entry.endpoint || ""),
+    displayName: entry.displayName || entry.apiDisplayName || "",
     keyFingerprint: entry.keyFingerprint || "no-key",
     keyLabel: entry.keyLabel || "未填写 Key",
     mode: entry.mode || "text",
@@ -3897,6 +3954,7 @@ async function recordApiUsage(endpoint, options = {}, requestLog = null, details
       id: makeId(),
       endpoint,
       endpointHost: endpointHostLabel(endpoint),
+      displayName: currentApiDisplayName(endpoint, options),
       keyFingerprint,
       keyLabel: maskApiKey(apiKeyForStats) || "未填写 Key",
       mode: options.mode || "text",
@@ -3906,6 +3964,7 @@ async function recordApiUsage(endpoint, options = {}, requestLog = null, details
 
   stat.endpoint = endpoint || "";
   stat.endpointHost = endpointHostLabel(endpoint);
+  stat.displayName = currentApiDisplayName(endpoint, options);
   stat.keyFingerprint = keyFingerprint;
   stat.keyLabel = maskApiKey(apiKeyForStats) || "未填写 Key";
   stat.mode = options.mode || stat.mode || "text";
@@ -3917,7 +3976,7 @@ async function recordApiUsage(endpoint, options = {}, requestLog = null, details
   stat.lastUsedAt = now;
   stat.lastStatus = details.status || requestLog?.status || "";
   stat.lastHttpStatus = Number(requestLog?.httpStatus || 0);
-  stat.lastError = details.error ? truncateText(details.error, 220) : requestLog?.error || "";
+  stat.lastError = details.error ? truncateText(redactSensitiveApiUrls(details.error), 220) : redactSensitiveApiUrls(requestLog?.error || "");
   if (requestRecordKey) {
     apiUsageRecords.set(requestRecordKey, contribution);
     while (apiUsageRecords.size > 500) {
@@ -3983,6 +4042,7 @@ function mergeApiStats(items) {
       existing.lastHttpStatus = stat.lastHttpStatus;
       existing.lastError = stat.lastError;
       existing.keyLabel = stat.keyLabel || existing.keyLabel;
+      existing.displayName = stat.displayName || existing.displayName;
     }
   }
   return [...merged.values()].sort((a, b) => b.lastUsedAt - a.lastUsedAt).slice(0, API_STATS_LIMIT);
@@ -4021,12 +4081,13 @@ function renderApiStats() {
   }
 
   list.innerHTML = apiStats
-    .map((item) => {
+    .map((item, index) => {
       const okRate = item.total ? Math.round((item.success / item.total) * 100) : 0;
+      const displayName = normalizeApiDisplayName(item.displayName, index);
       return `
         <article class="api-stat-card" data-api-stat-id="${escapeHtml(item.id)}">
           <div class="api-stat-head">
-            <strong>${escapeHtml(item.endpointHost || "未知 API")}</strong>
+            <strong>${escapeHtml(displayName)}</strong>
             <div class="api-stat-actions">
               <span>${escapeHtml(item.lastStatus === "success" ? "成功" : item.lastStatus === "failed" ? "失败" : "记录")}</span>
               <button class="icon-button api-stat-delete" type="button" data-action="delete-api-stat" title="删除此记录">
@@ -4034,7 +4095,7 @@ function renderApiStats() {
               </button>
             </div>
           </div>
-          <div class="api-stat-endpoint">${escapeHtml(item.endpoint || "")}</div>
+          <div class="api-stat-endpoint">${escapeHtml("站点 API 配置")}</div>
           <div class="api-stat-grid">
             <span>Key ${escapeHtml(item.keyLabel || "未填写 Key")}</span>
             <span>指纹 ${escapeHtml(item.keyFingerprint || "no-key")}</span>
@@ -4192,7 +4253,7 @@ function sanitizeForLog(value, key = "", depth = 0) {
     if (/authorization|api[-_ ]?key|secret|token/i.test(key)) return "[已隐藏]";
     if (value.startsWith("data:image/")) return summarizeImageData(value);
     if (looksLikeLongBase64(value)) return `[base64 已隐藏，长度 ${value.length}]`;
-    return truncateText(redactSecrets(value), 2400);
+    return truncateText(redactSensitiveApiUrls(redactSecrets(value)), 2400);
   }
   if (typeof value !== "object") return value;
   if (Array.isArray(value)) {
@@ -4236,6 +4297,10 @@ function requestLogLabel(options) {
 
 function generationStatusLabel(status) {
   return { running: "生成中", completed: "完成", partial: "部分完成", failed: "失败", cancelled: "已取消" }[status] || status || "未知";
+}
+
+function redactSensitiveApiUrls(value) {
+  return String(value || "").replace(/https?:\/\/[^\s"'<>]+\/v1\/images\/(?:generations|edits)\b[^\s"'<>]*/gi, "[站点 API 地址已隐藏]");
 }
 
 function requestStatusLabel(entry) {
