@@ -41,14 +41,31 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const ratioPresets = [
-  { label: "自适应", value: "auto", sizes: ["auto"] },
-  { label: "1:1 方图", value: "1:1", sizes: ["1024x1024", "1536x1536"] },
-  { label: "4:3 横图", value: "4:3", sizes: ["1152x896", "1600x1200"] },
-  { label: "3:4 竖图", value: "3:4", sizes: ["896x1152", "1200x1600"] },
-  { label: "16:9 宽屏", value: "16:9", sizes: ["1344x768", "1920x1080"] },
-  { label: "9:16 竖屏", value: "9:16", sizes: ["768x1344", "1080x1920"] },
-  { label: "2:3 海报", value: "2:3", sizes: ["1024x1536", "832x1216"] },
-  { label: "3:2 摄影", value: "3:2", sizes: ["1536x1024", "1216x832"] },
+  {
+    label: "自适应",
+    value: "auto",
+    sizes: [
+      "auto",
+      "1024x1024",
+      "1536x1024",
+      "1024x1536",
+      "2048x2048",
+      "2048x1536",
+      "1536x2048",
+      "2560x1440",
+      "1440x2560",
+      "3840x2160",
+      "2160x3840",
+      "4096x4096",
+    ],
+  },
+  { label: "1:1 方图", value: "1:1", sizes: ["1024x1024", "1536x1536", "2048x2048", "3072x3072", "4096x4096"] },
+  { label: "4:3 横图", value: "4:3", sizes: ["1024x768", "1600x1200", "2048x1536", "3072x2304", "4096x3072"] },
+  { label: "3:4 竖图", value: "3:4", sizes: ["768x1024", "1200x1600", "1536x2048", "2304x3072", "3072x4096"] },
+  { label: "16:9 宽屏", value: "16:9", sizes: ["1280x720", "1920x1080", "2560x1440", "3840x2160"] },
+  { label: "9:16 竖屏", value: "9:16", sizes: ["720x1280", "1080x1920", "1440x2560", "2160x3840"] },
+  { label: "2:3 海报", value: "2:3", sizes: ["1024x1536", "1365x2048", "2048x3072", "2731x4096"] },
+  { label: "3:2 摄影", value: "3:2", sizes: ["1536x1024", "2048x1365", "3072x2048", "4096x2731"] },
 ];
 
 const qualityPresets = [
@@ -199,10 +216,18 @@ const detailView = {
   x: 0,
   y: 0,
   dragging: false,
+  pinching: false,
+  pointers: new Map(),
   startX: 0,
   startY: 0,
   startPanX: 0,
   startPanY: 0,
+  pinchStartDistance: 1,
+  pinchStartScale: 1,
+  pinchStartX: 0,
+  pinchStartY: 0,
+  pinchStartCenterX: 0,
+  pinchStartCenterY: 0,
 };
 
 async function init() {
@@ -336,6 +361,7 @@ function bindEvents() {
   $("#detailViewport").addEventListener("dblclick", resetDetailView);
   window.addEventListener("pointermove", onDetailPointerMove);
   window.addEventListener("pointerup", onDetailPointerUp);
+  window.addEventListener("pointercancel", onDetailPointerUp);
   window.addEventListener("keydown", onGlobalKeyDown);
   document.addEventListener("input", onHiddenPhraseInput, true);
   document.addEventListener("compositionend", onHiddenPhraseInput, true);
@@ -1931,8 +1957,6 @@ function openDetail(id) {
 
 function closeDetail() {
   $("#detailModal").hidden = true;
-  detailView.dragging = false;
-  $("#detailViewport").classList.remove("is-dragging");
   resetDetailView();
 }
 
@@ -1954,28 +1978,131 @@ function onDetailWheel(event) {
 }
 
 function onDetailPointerDown(event) {
-  if ($("#detailModal").hidden || event.button !== 0 || detailView.scale <= 1.01) return;
-  detailView.dragging = true;
-  detailView.startX = event.clientX;
-  detailView.startY = event.clientY;
-  detailView.startPanX = detailView.x;
-  detailView.startPanY = detailView.y;
-  event.currentTarget.setPointerCapture?.(event.pointerId);
-  event.currentTarget.classList.add("is-dragging");
+  if ($("#detailModal").hidden || (event.pointerType === "mouse" && event.button !== 0)) return;
+  const viewport = $("#detailViewport");
+  event.preventDefault();
+  viewport.setPointerCapture?.(event.pointerId);
+  detailView.pointers.set(event.pointerId, detailPointerFromEvent(event));
+
+  if (detailView.pointers.size >= 2) {
+    beginDetailPinch();
+    return;
+  }
+
+  if (detailView.scale > 1.01) {
+    beginDetailDrag(event);
+  }
 }
 
 function onDetailPointerMove(event) {
+  if (!detailView.pointers.has(event.pointerId)) return;
+  detailView.pointers.set(event.pointerId, detailPointerFromEvent(event));
+
+  if (detailView.pointers.size >= 2) {
+    event.preventDefault();
+    updateDetailPinch();
+    return;
+  }
+
   if (!detailView.dragging) return;
+  event.preventDefault();
   detailView.x = detailView.startPanX + event.clientX - detailView.startX;
   detailView.y = detailView.startPanY + event.clientY - detailView.startY;
   clampDetailPan();
   applyDetailTransform();
 }
 
-function onDetailPointerUp() {
-  if (!detailView.dragging) return;
+function onDetailPointerUp(event) {
+  if (!detailView.pointers.has(event.pointerId)) return;
+  const viewport = $("#detailViewport");
+  detailView.pointers.delete(event.pointerId);
+  try {
+    viewport.releasePointerCapture?.(event.pointerId);
+  } catch {
+    // The pointer may already be released by the browser.
+  }
+
+  if (detailView.pointers.size >= 2) {
+    beginDetailPinch();
+    return;
+  }
+
+  detailView.pinching = false;
+  viewport.classList.remove("is-pinching");
+
+  if (detailView.pointers.size === 1 && detailView.scale > 1.01) {
+    const pointer = [...detailView.pointers.values()][0];
+    beginDetailDrag(pointer);
+    return;
+  }
+
   detailView.dragging = false;
+  viewport.classList.remove("is-dragging");
+}
+
+function beginDetailDrag(pointer) {
+  detailView.dragging = true;
+  detailView.startX = pointer.clientX;
+  detailView.startY = pointer.clientY;
+  detailView.startPanX = detailView.x;
+  detailView.startPanY = detailView.y;
+  $("#detailViewport").classList.add("is-dragging");
+}
+
+function beginDetailPinch() {
+  const [first, second] = detailPointerPair();
+  if (!first || !second) return;
+  const center = detailPointerCenter(first, second);
+  detailView.dragging = false;
+  detailView.pinching = true;
+  detailView.pinchStartDistance = Math.max(1, detailPointerDistance(first, second));
+  detailView.pinchStartScale = detailView.scale;
+  detailView.pinchStartX = detailView.x;
+  detailView.pinchStartY = detailView.y;
+  detailView.pinchStartCenterX = center.x;
+  detailView.pinchStartCenterY = center.y;
   $("#detailViewport").classList.remove("is-dragging");
+  $("#detailViewport").classList.add("is-pinching");
+}
+
+function updateDetailPinch() {
+  const [first, second] = detailPointerPair();
+  if (!first || !second) return;
+  if (!detailView.pinching) beginDetailPinch();
+  const center = detailPointerCenter(first, second);
+  const distance = Math.max(1, detailPointerDistance(first, second));
+  const nextScale = clamp((detailView.pinchStartScale * distance) / detailView.pinchStartDistance, 1, 8);
+  const scaleRatio = nextScale / Math.max(detailView.pinchStartScale, 0.001);
+
+  detailView.scale = nextScale;
+  detailView.x = center.x - (detailView.pinchStartCenterX - detailView.pinchStartX) * scaleRatio;
+  detailView.y = center.y - (detailView.pinchStartCenterY - detailView.pinchStartY) * scaleRatio;
+  clampDetailPan();
+  applyDetailTransform();
+}
+
+function detailPointerFromEvent(event) {
+  return {
+    clientX: event.clientX,
+    clientY: event.clientY,
+  };
+}
+
+function detailPointerPair() {
+  return [...detailView.pointers.values()].slice(0, 2);
+}
+
+function detailPointerDistance(first, second) {
+  return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+}
+
+function detailPointerCenter(first, second) {
+  const viewport = $("#detailViewport");
+  const rect = viewport.getBoundingClientRect();
+  return {
+    x: (first.clientX + second.clientX) / 2 - rect.left - rect.width / 2,
+    y: (first.clientY + second.clientY) / 2 - rect.top - rect.height / 2,
+  };
 }
 
 function onGlobalKeyDown(event) {
@@ -2053,6 +2180,10 @@ function resetDetailView() {
   detailView.scale = 1;
   detailView.x = 0;
   detailView.y = 0;
+  detailView.dragging = false;
+  detailView.pinching = false;
+  detailView.pointers.clear();
+  $("#detailViewport")?.classList.remove("is-dragging", "is-pinching");
   applyDetailTransform();
 }
 
@@ -2167,7 +2298,10 @@ async function clearResults() {
 
 function syncSizeOptions() {
   const preset = ratioPresets.find((item) => item.value === $("#ratioSelect").value) || ratioPresets[0];
-  $("#sizeSelect").innerHTML = preset.sizes.map((size) => optionHtml(size, size)).join("");
+  const select = $("#sizeSelect");
+  const previousSize = select.value;
+  select.innerHTML = preset.sizes.map((size) => optionHtml(size, size)).join("");
+  select.value = preset.sizes.includes(previousSize) ? previousSize : preset.sizes[0];
 }
 
 function getModelName() {
