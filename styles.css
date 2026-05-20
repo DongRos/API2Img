@@ -739,6 +739,30 @@ svg {
   gap: 8px;
 }
 
+.debug-api-mode-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, #f59e0b, var(--glass-border) 42%);
+  border-radius: 8px;
+  background: color-mix(in srgb, #f59e0b 16%, var(--glass-strong));
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.2);
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.72)) saturate(1.2);
+  backdrop-filter: blur(calc(var(--glass-blur) * 0.72)) saturate(1.2);
+}
+
+.debug-api-mode-banner svg {
+  width: 16px;
+  height: 16px;
+  color: #fbbf24;
+}
+
 .composer select,
 .control-row select,
 .control-row input,

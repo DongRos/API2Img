@@ -46,8 +46,8 @@ const ratioPresets = [
   { label: "3:4 竖图", value: "3:4", sizes: ["896x1152", "1200x1600"] },
   { label: "16:9 宽屏", value: "16:9", sizes: ["1344x768", "1920x1080"] },
   { label: "9:16 竖屏", value: "9:16", sizes: ["768x1344", "1080x1920"] },
-  { label: "2:3 海报", value: "2:3", sizes: ["832x1216", "1024x1536"] },
-  { label: "3:2 摄影", value: "3:2", sizes: ["1216x832", "1536x1024"] },
+  { label: "2:3 海报", value: "2:3", sizes: ["1024x1536", "832x1216"] },
+  { label: "3:2 摄影", value: "3:2", sizes: ["1536x1024", "1216x832"] },
 ];
 
 const qualityPresets = [
@@ -313,7 +313,7 @@ function bindEvents() {
   $("#copyCodesButton").addEventListener("click", copyGeneratedCodes);
   $("#downloadCodesButton").addEventListener("click", downloadLastCodeCsv);
   $("#codeAdminAmount").addEventListener("input", syncCodeAdminLabel);
-  $("#loadCustomApiConfigButton")?.addEventListener("click", () => loadCustomApiAdminConfig({ silent: false }));
+  $("#loadCustomApiConfigButton")?.addEventListener("click", () => loadCustomApiAdminConfig({ silent: false, globalForm: true }));
   $("#saveCustomApiConfigButton")?.addEventListener("click", saveCustomApiAdminConfig);
   $("#applyGlobalApiConfigButton")?.addEventListener("click", applyCustomApiAsGlobal);
   $("#adminCustomRequestFormat")?.addEventListener("change", updateAdminCustomTemplateVisibility);
@@ -806,6 +806,7 @@ function buildImageJsonBody(options, variant) {
     model: options.model,
     prompt: buildPrompt(options),
   };
+  appendCoreImageFields(body, options);
   appendCompatibleImageFields(body, options, variant);
   return body;
 }
@@ -815,16 +816,20 @@ function buildImageFormFields(options, variant) {
     model: options.model,
     prompt: buildPrompt(options),
   };
+  appendCoreImageFields(fields, options);
   appendCompatibleImageFields(fields, options, variant);
   if (fields.n != null) fields.n = String(fields.n);
   if (fields.seed != null) fields.seed = String(fields.seed);
   return fields;
 }
 
-function appendCompatibleImageFields(target, options, variant) {
-  if (variant !== "compatible") return;
+function appendCoreImageFields(target, options) {
   if (options.size && options.size !== "auto") target.size = options.size;
   if (options.count > 1) target.n = options.count;
+}
+
+function appendCompatibleImageFields(target, options, variant) {
+  if (variant !== "compatible") return;
   const quality = compatibleQuality(options);
   if (quality) target.quality = quality;
   if (options.seed) target.seed = Number.isFinite(Number(options.seed)) ? Number(options.seed) : options.seed;
@@ -1167,11 +1172,38 @@ async function sendImageRequest(endpoint, request) {
     return fetchPlatformServerImageRequest(endpoint, request);
   }
 
-  if (config.transportMode === "direct") {
-    return fetchDirectImageRequest(endpoint, request);
+  return fetchCustomImageRequest(endpoint, request);
+}
+
+async function fetchCustomImageRequest(endpoint, request) {
+  const preferredMode = config.transportMode === "direct" ? "direct" : "proxy";
+  const modes = preferredMode === "direct" ? ["direct", "proxy"] : ["proxy", "direct"];
+  let lastError = null;
+  let lastMode = "";
+
+  for (const mode of modes) {
+    try {
+      const response =
+        mode === "direct"
+          ? await fetchDirectImageRequest(endpoint, request)
+          : await fetchCustomProxyImageRequest(endpoint, request);
+      if (response.ok || !shouldSwitchCustomTransport(response, mode, endpoint)) {
+        if (lastError && mode !== preferredMode) {
+          showToast(mode === "proxy" ? "浏览器直连失败，已切到服务器代理" : "服务器代理异常，已尝试浏览器直连");
+        }
+        return response;
+      }
+      lastMode = mode;
+      lastError = new Error(`${customTransportLabel(mode)}返回 HTTP ${response.status}`);
+    } catch (error) {
+      lastMode = mode;
+      lastError = error;
+      if (!shouldSwitchCustomTransportError(error)) break;
+    }
   }
 
-  return fetchCustomProxyImageRequest(endpoint, request);
+  const prefix = lastMode ? `${customTransportLabel(lastMode)}失败：` : "";
+  throw new Error(`${prefix}${cleanErrorMessage(lastError) || "请求失败"}`);
 }
 
 async function fetchCustomProxyImageRequest(endpoint, request) {
@@ -1200,11 +1232,24 @@ async function fetchCustomProxyImageRequest(endpoint, request) {
     body: JSON.stringify({ endpoint, request: proxyRequest }),
     signal,
   }, CUSTOM_API_PROXY_TIMEOUT_MS);
-  if (shouldFallbackToDirect(proxyResponse)) {
-    showToast("线上代理超时，正在尝试浏览器直连");
-    return fetchDirectImageRequest(endpoint, request);
-  }
   return proxyResponse;
+}
+
+function customTransportLabel(mode) {
+  return mode === "direct" ? "浏览器直连" : "服务器代理";
+}
+
+function shouldSwitchCustomTransport(response, mode, endpoint = "") {
+  if (!response) return false;
+  if (mode === "direct") {
+    return response.status === 405 || isRetryableHttpStatus(response.status);
+  }
+  if (requiresServerProxyEndpoint(endpoint)) return false;
+  return shouldFallbackToDirect(response);
+}
+
+function shouldSwitchCustomTransportError(error) {
+  return isRetryableFetchError(error) || /cors|cross-?origin|preflight/i.test(error?.message || String(error));
 }
 
 async function fetchPlatformServerImageRequest(endpoint, request) {
@@ -1238,18 +1283,22 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
 async function fetchPlatformGeneration(payload, signal) {
   const url = platformDirectUrl("/api/generate/platform");
   try {
-    const response = await fetchWithTimeout(url, {
+    const response = await apiFetchPreferDirect("/api/generate/platform", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      credentials: "omit",
       cache: "no-store",
       body: JSON.stringify(payload),
       signal,
+      timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
+      label: "站点 API 生图",
     });
-    return { response, url };
+    return { response, url: response.apiFetchUrl || url };
   } catch (error) {
     if (signal?.aborted) throw error;
-    throw new Error(`站点 API 直连失败：${cleanErrorMessage(error) || "请检查网络后重试"}`);
+    throw new Error(`站点 API 请求失败：${cleanErrorMessage(error) || "请检查网络后重试"}`);
   }
 }
 
@@ -1554,6 +1603,12 @@ function formatHttpError(status, message) {
     return addApiGuidance(
       `请求失败${code ? `（${code}）` : ""}，可能是 Failed to fetch 或网络连接异常。`,
       "请重点检查 API 地址、Key、跨域/代理配置和供应商状态。",
+    );
+  }
+  if (code === "405" || /MethodNotAllowed|method not allowed/i.test(text)) {
+    return addApiGuidance(
+      "API 返回 MethodNotAllowed（HTTP 405），请求没有进入正确的图像接口。",
+      "常见原因是接口地址不是 /v1/images/generations 或 /v1/images/edits，图生图字段名不匹配，或浏览器直连触发了供应商不支持的跨域预检；系统会优先尝试服务器代理。",
     );
   }
   if (/\b(401|403)\b|unauthorized|invalid api key|forbidden|permission denied/i.test(text)) {
@@ -3057,7 +3112,7 @@ async function loadCustomApiAdminConfig(options = {}) {
     return;
   }
 
-  if (!options.silent) setCustomApiAdminStatus("正在读取服务器配置...");
+  if (!options.silent) setCustomApiAdminStatus("正在读取当前全局配置...");
   try {
     const response = await apiFetchPreferDirect("/api/admin/custom-api", {
       headers: { "X-Admin-Password": password },
@@ -3071,7 +3126,11 @@ async function loadCustomApiAdminConfig(options = {}) {
     if (!response.ok) throw new Error(payload?.error?.message || `读取失败：HTTP ${response.status}`);
     const serverConfig = payload.config || {};
     const globalConfig = payload.global || {};
-    const formConfig = hasApiConfig(serverConfig) ? serverConfig : { ...globalConfig, enabled: false };
+    const formConfig = options.globalForm
+      ? { ...(hasApiConfig(globalConfig) ? globalConfig : serverConfig), enabled: false }
+      : hasApiConfig(serverConfig)
+        ? serverConfig
+        : { ...globalConfig, enabled: false };
     customDebugState.loaded = true;
     customDebugState.current = serverConfig;
     customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
@@ -3081,10 +3140,10 @@ async function loadCustomApiAdminConfig(options = {}) {
     hydrateAdminCustomApiForm(formConfig);
     renderAdminCustomHistory();
     setCustomApiAdminStatus(apiPricingStatus(serverConfig, globalConfig));
-    if (!options.silent) showToast("已读取自定义 API 调试配置");
+    if (!options.silent) showToast(options.globalForm ? "已读取当前全局 API 配置" : "已读取自定义 API 调试配置");
   } catch (error) {
     setCustomApiAdminStatus("读取失败");
-    if (!options.silent) showToast(error.message || "读取自定义 API 调试配置失败");
+    if (!options.silent) showToast(error.message || (options.globalForm ? "读取当前全局配置失败" : "读取自定义 API 调试配置失败"));
   }
 }
 
@@ -3432,6 +3491,7 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
     const direct = isDirectPhpApiUrl(url);
     try {
       const response = await fetchApiUrl(url, { ...options, timeoutMs: preference.timeoutMs || FAST_API_TIMEOUT_MS }, direct ? "omit" : "include");
+      response.apiFetchUrl = url;
       if (response.ok || !shouldFallbackApiResponse(response, direct)) return response;
       lastRetryableResponse = response;
       lastError = new Error(`${preference.label || "请求"}失败：HTTP ${response.status}`);
@@ -3517,6 +3577,7 @@ function updateApiProviderUi() {
   const usingPlatform = isPlatformApiSelected();
   $("#settingsPanel")?.classList.toggle("platform-selected", usingPlatform);
   $("#walletToggle").classList.toggle("active", usingPlatform);
+  syncDebugApiModeIndicator();
   updateRecommendedApiLabels();
 }
 
@@ -3526,6 +3587,18 @@ function isPlatformApiSelected() {
 
 function isCustomApiDebugEnabled() {
   return Boolean(customDebugState.enabled);
+}
+
+function syncDebugApiModeIndicator() {
+  const banner = $("#debugApiModeBanner");
+  if (!banner) return;
+  const active = isCustomApiDebugEnabled();
+  banner.hidden = !active;
+  const label = banner.querySelector("span");
+  if (label) {
+    const name = normalizeApiDisplayName(customDebugState.current?.title || config.title || "");
+    label.textContent = active ? `调试API模式 · ${name} · 仅本机生效` : "调试API模式";
+  }
 }
 
 function updateBillingFromGenerationResponse(response) {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>API2image</title>
     <link rel="icon" type="image/png" href="./icon.png?v=2" />
-    <link rel="stylesheet" href="./styles.css?v=31" />
+    <link rel="stylesheet" href="./styles.css?v=32" />
   </head>
   <body data-theme="dark">
     <script>
@@ -81,6 +81,11 @@
           <span id="progressPercent">0%</span>
           <button class="progress-cancel" id="cancelGenerateButton" type="button" hidden>取消</button>
           <div id="currentLogPreview" class="current-log-preview" hidden></div>
+        </div>
+
+        <div id="debugApiModeBanner" class="debug-api-mode-banner" hidden>
+          <i data-icon="settings"></i>
+          <span>调试API模式</span>
         </div>
 
         <div class="prompt-card">
@@ -389,7 +394,7 @@
 
           <div class="code-admin-actions">
             <button class="pill-button" id="loadCustomApiConfigButton" type="button">
-              <i data-icon="rotate"></i><span>读取调试配置</span>
+              <i data-icon="rotate"></i><span>读取当前全局配置</span>
             </button>
             <button class="pill-button primary" id="saveCustomApiConfigButton" type="button">
               <i data-icon="check"></i><span>保存并应用</span>
@@ -531,6 +536,6 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=49"></script>
+    <script src="./app.js?v=50"></script>
   </body>
 </html>
