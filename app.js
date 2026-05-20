@@ -190,6 +190,9 @@ let siteHeartbeatInFlight = false;
 let siteVisitTracked = false;
 let announcementRefreshTimer = null;
 let announcementAutoOpenTimer = null;
+let resultMasonryFrame = 0;
+let resultMasonryObserver = null;
+let resultMasonryObservedWidth = 0;
 let loginCodeCooldownTimer = null;
 let loginCodeCooldownUntil = 0;
 let lastCodeAdminCsv = "";
@@ -358,7 +361,7 @@ function bindEvents() {
       generateImages();
     }
   });
-  window.addEventListener("resize", debounce(layoutResultMasonry, 120));
+  window.addEventListener("resize", debounce(scheduleResultMasonryLayout, 120));
   if (new URLSearchParams(location.search).has("admin")) openCodeAdminPanel();
   if (new URLSearchParams(location.search).has("announce")) openAnnouncementAdminPanel();
 }
@@ -1952,6 +1955,7 @@ function renderResults() {
   if (!state.results.length) {
     grid.className = "result-grid empty";
     grid.innerHTML = `<div class="empty-state"><h3>还没有图片</h3><p>在底部输入提示词，上传参考图，选择模型和质量，然后生成。</p></div>`;
+    disconnectResultMasonryObserver();
     return;
   }
 
@@ -1978,7 +1982,13 @@ function renderResults() {
       </div>
     `;
     const image = card.querySelector("img");
-    image.addEventListener("load", layoutResultMasonry, { once: true });
+    const refreshCardLayout = () => {
+      syncResultCardImageSize(card, image);
+      scheduleResultMasonryLayout();
+    };
+    image.addEventListener("load", refreshCardLayout, { once: true });
+    image.addEventListener("error", scheduleResultMasonryLayout, { once: true });
+    if (image.complete) requestAnimationFrame(refreshCardLayout);
     image.addEventListener("click", () => openDetail(item.id));
     card.querySelector('[data-action="edit"]').addEventListener("click", () => openDetail(item.id));
     card.querySelector('[data-action="reuse"]').addEventListener("click", () => reusePrompt(item.prompt));
@@ -1987,32 +1997,87 @@ function renderResults() {
     grid.appendChild(card);
   });
   renderIcons();
+  watchResultMasonry(grid);
   layoutResultMasonry();
+  scheduleResultMasonryLayout();
+}
+
+function syncResultCardImageSize(card, image) {
+  const width = Number(image?.naturalWidth || 0);
+  const height = Number(image?.naturalHeight || 0);
+  if (!card || !width || !height) return;
+
+  card.dataset.width = String(width);
+  card.dataset.height = String(height);
+  card.style.setProperty("--ratio", `${width} / ${height}`);
+}
+
+function disconnectResultMasonryObserver() {
+  if (!resultMasonryObserver) return;
+  resultMasonryObserver.disconnect();
+  resultMasonryObservedWidth = 0;
+}
+
+function watchResultMasonry(grid) {
+  if (!grid || !("ResizeObserver" in window)) return;
+
+  if (!resultMasonryObserver) {
+    resultMasonryObserver = new ResizeObserver((entries) => {
+      let shouldLayout = false;
+      entries.forEach((entry) => {
+        if (entry.target?.id === "resultGrid") {
+          const width = Number(entry.contentRect?.width || 0);
+          if (Math.abs(width - resultMasonryObservedWidth) > 1) {
+            resultMasonryObservedWidth = width;
+            shouldLayout = true;
+          }
+          return;
+        }
+        shouldLayout = true;
+      });
+      if (shouldLayout) scheduleResultMasonryLayout();
+    });
+  }
+
+  resultMasonryObserver.disconnect();
+  resultMasonryObservedWidth = grid.getBoundingClientRect().width || 0;
+  resultMasonryObserver.observe(grid);
+  grid.querySelectorAll(".image-card img").forEach((image) => resultMasonryObserver.observe(image));
+}
+
+function scheduleResultMasonryLayout() {
+  if (resultMasonryFrame) cancelAnimationFrame(resultMasonryFrame);
+  resultMasonryFrame = requestAnimationFrame(() => {
+    resultMasonryFrame = requestAnimationFrame(() => {
+      resultMasonryFrame = 0;
+      layoutResultMasonry();
+    });
+  });
 }
 
 function layoutResultMasonry() {
   const grid = $("#resultGrid");
   if (!grid || grid.classList.contains("empty")) return;
+  const cards = [...grid.querySelectorAll(".image-card")];
 
   if (window.matchMedia("(max-width: 900px)").matches) {
-    $$(".image-card").forEach((card) => {
-      card.style.gridRowEnd = "";
-    });
+    cards.forEach((card) => card.style.removeProperty("grid-row-end"));
     return;
   }
+
+  cards.forEach((card) => card.style.removeProperty("grid-row-end"));
 
   const styles = getComputedStyle(grid);
   const rowHeight = parseFloat(styles.getPropertyValue("grid-auto-rows")) || 8;
   const rowGap = parseFloat(styles.getPropertyValue("row-gap")) || 0;
-  $$(".image-card").forEach((card) => {
+  const rowSize = rowHeight + rowGap;
+  cards.forEach((card) => {
     const image = card.querySelector("img");
-    if (!image) return;
+    syncResultCardImageSize(card, image);
 
-    const imageWidth = image.naturalWidth || Number(card.dataset.width) || 1;
-    const imageHeight = image.naturalHeight || Number(card.dataset.height) || 1;
-    const renderedWidth = card.getBoundingClientRect().width || 1;
-    const targetHeight = (renderedWidth * imageHeight) / imageWidth;
-    const rowSpan = Math.max(1, Math.ceil((targetHeight + rowGap) / (rowHeight + rowGap)));
+    const cardHeight = card.getBoundingClientRect().height;
+    if (!cardHeight || !rowSize) return;
+    const rowSpan = Math.max(1, Math.ceil((cardHeight + rowGap) / rowSize));
     card.style.gridRowEnd = `span ${rowSpan}`;
   });
 }
@@ -5065,8 +5130,9 @@ function renderAnnouncements() {
         .map((item) => {
           const stamp = Number(item.updatedAt || item.createdAt || 0);
           const unreadClass = stamp > Number(announcementState.seenAt || 0) ? " unread" : "";
+          const pinnedClass = item.pinned ? " pinned" : "";
           return `
-            <article class="announcement-item${unreadClass}">
+            <article class="announcement-item${unreadClass}${pinnedClass}">
               <div class="announcement-head">
                 <strong>${escapeHtml(item.title)}</strong>
                 <small>${escapeHtml(announcementMetaLabel(item, stamp))}</small>
@@ -5085,8 +5151,9 @@ function renderAnnouncements() {
       ? announcementState.items
           .map((item) => {
             const stamp = Number(item.updatedAt || item.createdAt || 0);
+            const pinnedClass = item.pinned ? " pinned" : "";
             return `
-              <article class="announcement-item">
+              <article class="announcement-item${pinnedClass}">
                 <div class="announcement-head">
                   <strong>${escapeHtml(item.title)}</strong>
                   <small>${escapeHtml(announcementMetaLabel(item, stamp))}</small>
@@ -5105,8 +5172,9 @@ function renderAnnouncements() {
       ? announcementState.items
           .map((item) => {
             const stamp = Number(item.updatedAt || item.createdAt || 0);
+            const pinnedClass = item.pinned ? " pinned" : "";
             return `
-              <article class="announcement-admin-item" data-announcement-id="${escapeHtml(item.id)}">
+              <article class="announcement-admin-item${pinnedClass}" data-announcement-id="${escapeHtml(item.id)}">
                 <div class="announcement-admin-main">
                   <div class="announcement-head">
                     <strong>${escapeHtml(item.title)}</strong>

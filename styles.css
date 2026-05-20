@@ -396,6 +396,7 @@ svg {
 .image-card {
   position: relative;
   display: block;
+  align-self: start;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -415,9 +416,11 @@ svg {
 .image-card img {
   display: block;
   width: 100%;
+  max-width: 100%;
   height: auto;
-  aspect-ratio: var(--ratio, 1 / 1);
+  aspect-ratio: auto var(--ratio, 1 / 1);
   object-fit: cover;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .new-badge {
@@ -961,6 +964,52 @@ svg {
 
 .announcement-item.unread {
   border-color: color-mix(in srgb, var(--accent), transparent 28%);
+}
+
+.announcement-item.pinned,
+.announcement-admin-item.pinned {
+  border-color: rgba(251, 146, 60, 0.42);
+  background: rgba(249, 115, 22, 0.2);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.28);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.28);
+  box-shadow:
+    0 14px 36px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.announcement-item.pinned .announcement-head strong,
+.announcement-item.pinned p,
+.announcement-admin-item.pinned .announcement-head strong,
+.announcement-admin-item.pinned p {
+  color: #fff7ed;
+}
+
+.announcement-item.pinned .announcement-head small,
+.announcement-admin-item.pinned .announcement-head small {
+  color: #fed7aa;
+}
+
+body[data-theme="light"] .announcement-item.pinned,
+body[data-theme="light"] .announcement-admin-item.pinned {
+  border-color: rgba(234, 88, 12, 0.3);
+  background: rgba(251, 146, 60, 0.28);
+  box-shadow:
+    0 14px 32px rgba(15, 23, 42, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.56),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+body[data-theme="light"] .announcement-item.pinned .announcement-head strong,
+body[data-theme="light"] .announcement-item.pinned p,
+body[data-theme="light"] .announcement-admin-item.pinned .announcement-head strong,
+body[data-theme="light"] .announcement-admin-item.pinned p {
+  color: #7c2d12;
+}
+
+body[data-theme="light"] .announcement-item.pinned .announcement-head small,
+body[data-theme="light"] .announcement-admin-item.pinned .announcement-head small {
+  color: #c2410c;
 }
 
 .announcement-head {
