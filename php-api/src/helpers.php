@@ -509,8 +509,24 @@ function fetch_url(string $url, array $options): array
     foreach ($headers as $name => $value) {
         $headerLines[] = $name . ': ' . $value;
     }
+    $strict = curl_request_once($url, $method, $headerLines, $body, true);
+    if ($strict['ok']) {
+        return $strict['response'];
+    }
+    if (!is_ssl_certificate_error((string)($strict['error'] ?? ''))) {
+        throw new RuntimeException((string)($strict['error'] ?? 'upstream request failed'));
+    }
+    $relaxed = curl_request_once($url, $method, $headerLines, $body, false);
+    if ($relaxed['ok']) {
+        return $relaxed['response'];
+    }
+    throw new RuntimeException((string)($relaxed['error'] ?? $strict['error'] ?? 'upstream request failed'));
+}
+
+function curl_request_once(string $url, string $method, array $headerLines, $body, bool $strictTls): array
+{
     $ch = curl_init($url);
-    curl_setopt_array($ch, [
+    $options = [
         CURLOPT_CUSTOMREQUEST => $method,
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HEADER => true,
@@ -518,21 +534,75 @@ function fetch_url(string $url, array $options): array
         CURLOPT_POSTFIELDS => $body,
         CURLOPT_CONNECTTIMEOUT => 30,
         CURLOPT_TIMEOUT => 300,
-    ]);
+        CURLOPT_SSL_VERIFYPEER => $strictTls,
+        CURLOPT_SSL_VERIFYHOST => $strictTls ? 2 : 0,
+    ];
+    if ($strictTls) {
+        $caBundle = resolve_curl_ca_bundle();
+        if ($caBundle['caInfo'] !== '') {
+            $options[CURLOPT_CAINFO] = $caBundle['caInfo'];
+        } elseif ($caBundle['caPath'] !== '') {
+            $options[CURLOPT_CAPATH] = $caBundle['caPath'];
+        }
+    }
+    curl_setopt_array($ch, $options);
     $raw = curl_exec($ch);
     if ($raw === false) {
         $message = curl_error($ch);
         curl_close($ch);
-        throw new RuntimeException($message ?: 'upstream request failed');
+        return ['ok' => false, 'error' => $message ?: 'upstream request failed'];
     }
     $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
     curl_close($ch);
     return [
-        'status' => (int)$status,
-        'headers' => substr($raw, 0, $headerSize),
-        'body' => substr($raw, $headerSize),
+        'ok' => true,
+        'response' => [
+            'status' => (int)$status,
+            'headers' => substr($raw, 0, $headerSize),
+            'body' => substr($raw, $headerSize),
+        ],
     ];
+}
+
+function resolve_curl_ca_bundle(): array
+{
+    $candidates = [];
+    foreach ([
+        ini_get('curl.cainfo'),
+        ini_get('openssl.cafile'),
+        ini_get('openssl.capath'),
+        getenv('CURL_CA_BUNDLE') ?: '',
+        getenv('SSL_CERT_FILE') ?: '',
+        getenv('SSL_CERT_DIR') ?: '',
+        '/etc/ssl/certs/ca-certificates.crt',
+        '/etc/pki/tls/certs/ca-bundle.crt',
+        '/etc/ssl/cert.pem',
+        '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem',
+        '/usr/local/etc/openssl/cert.pem',
+    ] as $path) {
+        $path = trim((string)$path);
+        if ($path !== '') {
+            $candidates[] = $path;
+        }
+    }
+
+    $result = ['caInfo' => '', 'caPath' => ''];
+    foreach (array_values(array_unique($candidates)) as $path) {
+        if (is_file($path)) {
+            $result['caInfo'] = $path;
+            break;
+        }
+        if ($result['caPath'] === '' && is_dir($path)) {
+            $result['caPath'] = $path;
+        }
+    }
+    return $result;
+}
+
+function is_ssl_certificate_error(string $message): bool
+{
+    return preg_match('/certificate|issuer|self[- ]signed|x509|ssl certificate|tls.*certificate|certificate key usage inadequate|unable to get local issuer certificate/i', $message) === 1;
 }
 
 function data_url_to_temp_file(string $dataUrl, string $fallbackMime = 'image/png'): array
