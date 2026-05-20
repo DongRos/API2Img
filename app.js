@@ -784,7 +784,7 @@ async function requestTextImages(endpoint, headers, options, variant) {
 }
 
 async function requestEditImages(endpoint, headers, options, variant) {
-  const fields = buildImageFormFields(options, variant);
+  const fields = buildImageFormFields(options, variant, endpoint);
   const files = options.referenceImages.map((image, index) => ({
     field: imageUploadFieldName(endpoint, index),
     filename: image.name || `reference-${index + 1}.png`,
@@ -826,16 +826,23 @@ function buildImageJsonBody(options, variant) {
   return body;
 }
 
-function buildImageFormFields(options, variant) {
+function buildImageFormFields(options, variant, endpoint = "") {
   const fields = {
     model: options.model,
     prompt: buildPrompt(options),
   };
   appendCoreImageFields(fields, options, variant);
   appendCompatibleImageFields(fields, options, variant);
+  appendEndpointSpecificImageFields(fields, options, endpoint);
   if (fields.n != null) fields.n = String(fields.n);
   if (fields.seed != null) fields.seed = String(fields.seed);
   return fields;
+}
+
+function appendEndpointSpecificImageFields(fields, options, endpoint) {
+  if (!isManxiaobaiEndpoint(endpoint)) return;
+  if (!fields.size) fields.size = String(options.size || "").trim() || "auto";
+  fields.response_format = "b64_json";
 }
 
 function appendCoreImageFields(target, options, variant) {
@@ -2632,10 +2639,14 @@ function endpointHostMatches(endpoint, pattern) {
 }
 
 function requiresServerProxyEndpoint(endpoint) {
-  return endpointHostMatches(endpoint, /(^|\.)manxiaobai\.online$/i);
+  return isManxiaobaiEndpoint(endpoint);
 }
 
 function requiresArrayImageField(endpoint) {
+  return isManxiaobaiEndpoint(endpoint);
+}
+
+function isManxiaobaiEndpoint(endpoint) {
   return endpointHostMatches(endpoint, /(^|\.)manxiaobai\.online$/i);
 }
 

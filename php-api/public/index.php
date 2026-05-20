@@ -802,6 +802,7 @@ function call_proxy_upstream(string $endpoint, array $request): array
 
 function call_upstream_request(string $endpoint, array $request, array $forcedHeaders): array
 {
+    $request = normalize_manxiaobai_multipart_request($endpoint, $request);
     $headers = [];
     foreach (($request['headers'] ?? []) as $key => $value) {
         $lower = strtolower((string)$key);
@@ -854,6 +855,22 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
             }
         }
     }
+}
+
+function normalize_manxiaobai_multipart_request(string $endpoint, array $request): array
+{
+    if (($request['bodyType'] ?? '') !== 'multipart' || !endpoint_host_matches($endpoint, '/(^|\.)manxiaobai\.online$/i')) {
+        return $request;
+    }
+    $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
+    if (!isset($fields['size']) || trim((string)$fields['size']) === '') {
+        $fields['size'] = 'auto';
+    }
+    if (!isset($fields['response_format']) || trim((string)$fields['response_format']) === '') {
+        $fields['response_format'] = 'b64_json';
+    }
+    $request['fields'] = $fields;
+    return $request;
 }
 
 function upstream_multipart_file_field(string $endpoint, string $field, int $index): string
