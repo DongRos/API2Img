@@ -684,7 +684,7 @@ async function requestImages(endpoint, options) {
       const payload =
         options.mode === "text" || !options.referenceImages.length
           ? await requestTextImages(endpoint, headers, options, variantInfo.payloadVariant)
-          : shouldUseReferenceImageUrlJson(endpoint)
+          : shouldUseReferenceImageUrlJson(endpoint, options.model)
             ? await requestReferenceJsonImages(endpoint, headers, options, variantInfo.payloadVariant)
           : await requestEditImages(endpoint, headers, options, variantInfo.payloadVariant, variantInfo.fileFieldMode, variantInfo.label);
       if (normalizeImages(payload, endpoint).length) return payload;
@@ -701,7 +701,7 @@ async function requestImages(endpoint, options) {
 
 function normalizeEndpointBeforeRequest(endpoint, options) {
   if (options.mode !== "image" || !(options.referenceImages || []).length) return endpoint;
-  const referenceJsonEndpoint = referenceImageJsonEndpoint(endpoint);
+  const referenceJsonEndpoint = referenceImageJsonEndpoint(endpoint, options.model);
   if (referenceJsonEndpoint) return referenceJsonEndpoint;
   const corrected = inferEditEndpoint(endpoint);
   return corrected || endpoint;
@@ -717,8 +717,13 @@ function resolveEndpointForMode(mode) {
   }
 
   if (mode === "image") {
+    const modelName = getModelName();
     const editEndpoint = (config.editEndpoint || "").trim();
     if (editEndpoint) {
+      const referenceEndpoint = referenceImageJsonEndpoint(editEndpoint, modelName);
+      if (referenceEndpoint) {
+        return { endpoint: referenceEndpoint, inferred: referenceEndpoint !== editEndpoint, message: "" };
+      }
       const corrected = inferEditEndpoint(editEndpoint);
       if (corrected && corrected !== editEndpoint) {
         config.editEndpoint = corrected;
@@ -732,6 +737,11 @@ function resolveEndpointForMode(mode) {
         };
       }
       return { endpoint: editEndpoint, inferred: false, message: "" };
+    }
+
+    const referenceEndpoint = referenceImageJsonEndpoint(config.textEndpoint, modelName);
+    if (referenceEndpoint) {
+      return { endpoint: referenceEndpoint, inferred: false, message: "" };
     }
 
     const inferred = inferEditEndpoint(config.textEndpoint);
@@ -785,9 +795,9 @@ function inferEditEndpoint(textEndpoint) {
   return "";
 }
 
-function referenceImageJsonEndpoint(endpoint) {
+function referenceImageJsonEndpoint(endpoint, model = "") {
   const value = String(endpoint || "").trim();
-  if (!shouldUseReferenceImageUrlJson(value)) return "";
+  if (!shouldUseReferenceImageUrlJson(value, model)) return "";
   try {
     const url = new URL(value);
     url.pathname = url.pathname.replace(/\/images\/edits\/?$/i, "/images/generations");
@@ -797,15 +807,23 @@ function referenceImageJsonEndpoint(endpoint) {
   }
 }
 
-function shouldUseReferenceImageUrlJson(endpoint = "") {
+function shouldUseReferenceImageUrlJson(endpoint = "", model = "") {
   const value = String(endpoint || "").trim();
   if (!value) return false;
   try {
     const url = new URL(value);
-    return /(^|\.)hfsyapi\.cn$/i.test(url.hostname) && /\/v\d+\/images\/(?:generations|edits)\/?$/i.test(url.pathname);
+    const isImageEndpoint = /\/v\d+\/images\/(?:generations|edits)\/?$/i.test(url.pathname);
+    if (!isImageEndpoint) return false;
+    return /(^|\.)hfsyapi\.cn$/i.test(url.hostname) || isGptImage2Model(model);
   } catch {
-    return /hfsyapi\.cn\/v\d+\/images\/(?:generations|edits)\/?([?#].*)?$/i.test(value);
+    const isImageEndpoint = /\/v\d+\/images\/(?:generations|edits)\/?([?#].*)?$/i.test(value);
+    if (!isImageEndpoint) return false;
+    return /hfsyapi\.cn/i.test(value) || isGptImage2Model(model);
   }
+}
+
+function isGptImage2Model(model = "") {
+  return /^gpt-image-2(?:pro)?(?:$|[^a-z0-9])/i.test(String(model || "").trim());
 }
 
 async function requestTextImages(endpoint, headers, options, variant) {
@@ -832,9 +850,7 @@ async function requestTextImages(endpoint, headers, options, variant) {
 
 async function requestReferenceJsonImages(endpoint, headers, options, variant) {
   headers["Content-Type"] = "application/json";
-  const body = buildImageJsonBody(options, variant);
-  body.reference_images = await referenceImageUrlsForApi(options.referenceImages || []);
-  body.response_format = "b64_json";
+  const body = await buildReferenceImageJsonBody(options, variant);
   return sendAndParseImageRequest(
     endpoint,
     {
@@ -1061,6 +1077,49 @@ function buildImageJsonBody(options, variant) {
   appendCoreImageFields(body, options, variant);
   appendCompatibleImageFields(body, options, variant);
   return body;
+}
+
+async function buildReferenceImageJsonBody(options, variant) {
+  const body = buildImageJsonBody(options, variant);
+  body.reference_images = await referenceImageUrlsForApi(options.referenceImages || []);
+  if (!body.reference_images.length) throw new Error("图生图参考图为空");
+  return body;
+}
+
+async function referenceJsonRequestFromMultipart(endpoint, request, modelName = "") {
+  const fields = request.fields && typeof request.fields === "object" && !Array.isArray(request.fields) ? request.fields : {};
+  const files = Array.isArray(request.files) ? request.files : [];
+  const body = {
+    model: normalizeModelName(fields.model || modelName || FIXED_MODEL_NAME),
+    prompt: String(fields.prompt || ""),
+    reference_images: await referenceImageUrlsForApi(files.map((file, index) => ({
+      name: file?.filename || `reference-${index + 1}.png`,
+      dataUrl: file?.dataUrl || "",
+      url: file?.url || "",
+    }))),
+  };
+  if (!body.reference_images.length) throw new Error("图生图参考图为空");
+  const size = String(fields.size || "").trim();
+  if (size && size !== "auto") body.size = size;
+  const count = Number(fields.n || fields.count || 0);
+  if (Number.isFinite(count) && count > 0) body.n = Math.max(1, Math.round(count));
+  const seed = String(fields.seed || "").trim();
+  if (seed) body.seed = Number.isFinite(Number(seed)) ? Number(seed) : seed;
+
+  return {
+    ...request,
+    method: request.method || "POST",
+    headers: {
+      ...(request.headers || {}),
+      "Content-Type": "application/json",
+    },
+    bodyType: "json",
+    body: JSON.stringify(body),
+    payloadVariant: "reference-json",
+    fields: undefined,
+    files: undefined,
+    fileFieldMode: undefined,
+  };
 }
 
 function buildImageFormFields(options, variant, endpoint = "") {
@@ -1641,9 +1700,19 @@ async function fetchPlatformBrowserImageRequest(request, platformConfigs) {
       ...(serverRequest.headers || {}),
       Authorization: `Bearer ${platformConfig.apiKey}`,
     };
-    const response = await fetchCustomImageRequest(endpoint, {
+    let outgoingRequest = {
       ...serverRequest,
       headers,
+    };
+    const modelName = platformConfig.modelName || billingModel || getModelName();
+    if (
+      serverRequest.bodyType === "multipart" &&
+      shouldUseReferenceImageUrlJson(endpoint, modelName)
+    ) {
+      outgoingRequest = await referenceJsonRequestFromMultipart(endpoint, outgoingRequest, modelName);
+    }
+    const response = await fetchCustomImageRequest(endpoint, {
+      ...outgoingRequest,
       signal,
     }, platformConfig.transportMode || "proxy");
     response.platformTicket = ticket.ticket;
@@ -1736,14 +1805,16 @@ function normalizePlatformBrowserConfig(item = {}, mode = $("#modeSelect").value
   if (!item.apiKey || !item.textEndpoint) return null;
   const textEndpoint = String(item.textEndpoint || "").trim();
   const editEndpoint = String(item.editEndpoint || "").trim();
+  const modelName = normalizeModelName(item.modelName || billingState.platformModelName || config.modelName || FIXED_MODEL_NAME);
   const endpoint = mode === "image"
-    ? (referenceImageJsonEndpoint(editEndpoint) || referenceImageJsonEndpoint(textEndpoint) || editEndpoint || inferEditEndpoint(textEndpoint))
+    ? (referenceImageJsonEndpoint(editEndpoint, modelName) || referenceImageJsonEndpoint(textEndpoint, modelName) || editEndpoint || inferEditEndpoint(textEndpoint))
     : textEndpoint;
   if (!endpoint) return null;
   return {
     ...item,
     textEndpoint,
     editEndpoint,
+    modelName,
     resolvedEndpoint: endpoint,
     transportMode: normalizeCustomTransportMode(
       textEndpoint,

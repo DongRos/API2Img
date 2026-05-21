@@ -1078,25 +1078,29 @@ function platform_image_endpoint(array $platform): string
 {
     $textEndpoint = (string)$platform['text_endpoint'];
     $editEndpoint = (string)$platform['edit_endpoint'];
-    return reference_image_json_endpoint($editEndpoint)
-        ?: reference_image_json_endpoint($textEndpoint)
+    $model = custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
+    return reference_image_json_endpoint($editEndpoint, $model)
+        ?: reference_image_json_endpoint($textEndpoint, $model)
         ?: ($editEndpoint ?: infer_edit_endpoint($textEndpoint));
 }
 
-function reference_image_json_endpoint(string $endpoint): string
+function reference_image_json_endpoint(string $endpoint, string $model = ''): string
 {
-    if (!endpoint_uses_reference_image_json($endpoint)) {
+    if (!endpoint_uses_reference_image_json($endpoint, $model)) {
         return '';
     }
     return preg_replace('#/images/edits/?(\?.*)?$#i', '/images/generations$1', $endpoint) ?: $endpoint;
 }
 
-function endpoint_uses_reference_image_json(string $endpoint): bool
+function endpoint_uses_reference_image_json(string $endpoint, string $model = ''): bool
 {
     $host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
     $path = (string)parse_url($endpoint, PHP_URL_PATH);
+    if (!preg_match('#/v\d+/images/(?:generations|edits)/?$#i', $path)) {
+        return false;
+    }
     return (bool)preg_match('/(^|\.)hfsyapi\.cn$/i', $host)
-        && (bool)preg_match('#/v\d+/images/(?:generations|edits)/?$#i', $path);
+        || is_gpt_image_2_model($model);
 }
 
 function sign_generation_ticket(array $config, array $claims, string $token): string
@@ -1145,7 +1149,8 @@ function base64url_decode(string $value): string
 
 function call_platform_upstream(array $config, array $platform, string $endpoint, array $request): array
 {
-    if (endpoint_uses_reference_image_json($endpoint) && ($request['bodyType'] ?? '') === 'multipart') {
+    $model = platform_request_model($request, $platform);
+    if (endpoint_uses_reference_image_json($endpoint, $model) && ($request['bodyType'] ?? '') === 'multipart') {
         [$endpoint, $request] = platform_reference_json_request($config, $endpoint, $request);
     }
     return call_upstream_request($endpoint, $request, [
@@ -1158,6 +1163,19 @@ function call_proxy_upstream(string $endpoint, array $request): array
     return call_upstream_request($endpoint, $request, []);
 }
 
+function platform_request_model(array $request, array $platform): string
+{
+    if (($request['bodyType'] ?? '') === 'multipart') {
+        $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
+        return custom_api_model_name((string)($fields['model'] ?? $platform['model_name'] ?? 'gpt-image-2'));
+    }
+    $body = json_decode((string)($request['body'] ?? ''), true);
+    if (is_array($body)) {
+        return custom_api_model_name((string)($body['model'] ?? $platform['model_name'] ?? 'gpt-image-2'));
+    }
+    return custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
+}
+
 function platform_reference_json_request(array $config, string $endpoint, array $request): array
 {
     $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
@@ -1165,7 +1183,6 @@ function platform_reference_json_request(array $config, string $endpoint, array 
         'model' => (string)($fields['model'] ?? 'gpt-image-2'),
         'prompt' => (string)($fields['prompt'] ?? ''),
         'reference_images' => [],
-        'response_format' => 'b64_json',
     ];
     foreach (['n', 'count'] as $key) {
         if (isset($fields[$key]) && (int)$fields[$key] > 0) {
@@ -1192,7 +1209,7 @@ function platform_reference_json_request(array $config, string $endpoint, array 
     }
 
     return [
-        reference_image_json_endpoint($endpoint) ?: $endpoint,
+        reference_image_json_endpoint($endpoint, (string)($body['model'] ?? 'gpt-image-2')) ?: $endpoint,
         [
             'method' => 'POST',
             'headers' => ['Content-Type' => 'application/json'],
@@ -1819,6 +1836,11 @@ function custom_api_model_name(string $modelName): string
         return 'gpt-image-2';
     }
     return strlen($modelName) > 120 ? substr($modelName, 0, 120) : $modelName;
+}
+
+function is_gpt_image_2_model(string $modelName): bool
+{
+    return preg_match('/^gpt-image-2(?:pro)?(?:$|[^a-z0-9])/i', trim($modelName)) === 1;
 }
 
 function custom_api_config_title(array $item): string
