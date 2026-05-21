@@ -36,6 +36,7 @@ const REFERENCE_API_JPEG_QUALITY_MIN = 0.72;
 const REFERENCE_API_JPEG_QUALITY_STEP = 0.06;
 const RESULT_CACHE_TIMEOUT_MS = 4500;
 const IMAGE_DIMENSION_TIMEOUT_MS = 2200;
+const REFERENCE_IMAGE_UPLOAD_TIMEOUT_MS = 30000;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
 const FLOW_META_STORE = "meta";
@@ -683,6 +684,8 @@ async function requestImages(endpoint, options) {
       const payload =
         options.mode === "text" || !options.referenceImages.length
           ? await requestTextImages(endpoint, headers, options, variantInfo.payloadVariant)
+          : shouldUseReferenceImageUrlJson(endpoint)
+            ? await requestReferenceJsonImages(endpoint, headers, options, variantInfo.payloadVariant)
           : await requestEditImages(endpoint, headers, options, variantInfo.payloadVariant, variantInfo.fileFieldMode, variantInfo.label);
       if (normalizeImages(payload, endpoint).length) return payload;
       lastError = new Error(`接口返回成功，但没有找到图片字段：${previewPayload(payload)}`);
@@ -698,6 +701,8 @@ async function requestImages(endpoint, options) {
 
 function normalizeEndpointBeforeRequest(endpoint, options) {
   if (options.mode !== "image" || !(options.referenceImages || []).length) return endpoint;
+  const referenceJsonEndpoint = referenceImageJsonEndpoint(endpoint);
+  if (referenceJsonEndpoint) return referenceJsonEndpoint;
   const corrected = inferEditEndpoint(endpoint);
   return corrected || endpoint;
 }
@@ -780,6 +785,29 @@ function inferEditEndpoint(textEndpoint) {
   return "";
 }
 
+function referenceImageJsonEndpoint(endpoint) {
+  const value = String(endpoint || "").trim();
+  if (!shouldUseReferenceImageUrlJson(value)) return "";
+  try {
+    const url = new URL(value);
+    url.pathname = url.pathname.replace(/\/images\/edits\/?$/i, "/images/generations");
+    return url.toString();
+  } catch {
+    return value.replace(/\/images\/edits\/?(?=([?#]|$))/i, "/images/generations");
+  }
+}
+
+function shouldUseReferenceImageUrlJson(endpoint = "") {
+  const value = String(endpoint || "").trim();
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return /(^|\.)hfsyapi\.cn$/i.test(url.hostname) && /\/v\d+\/images\/(?:generations|edits)\/?$/i.test(url.pathname);
+  } catch {
+    return /hfsyapi\.cn\/v\d+\/images\/(?:generations|edits)\/?([?#].*)?$/i.test(value);
+  }
+}
+
 async function requestTextImages(endpoint, headers, options, variant) {
   headers["Content-Type"] = "application/json";
   const body = buildImageJsonBody(options, variant);
@@ -799,6 +827,30 @@ async function requestTextImages(endpoint, headers, options, variant) {
     },
     options,
     { variant, label: requestLogLabel(options) },
+  );
+}
+
+async function requestReferenceJsonImages(endpoint, headers, options, variant) {
+  headers["Content-Type"] = "application/json";
+  const body = buildImageJsonBody(options, variant);
+  body.reference_images = await referenceImageUrlsForApi(options.referenceImages || []);
+  body.response_format = "b64_json";
+  return sendAndParseImageRequest(
+    endpoint,
+    {
+      method: "POST",
+      headers,
+      bodyType: "json",
+      body: JSON.stringify(body),
+      signal: options.abortSignal,
+      billingCount: options.count,
+      billingMode: options.mode,
+      billingModel: options.model,
+      billingGenerationId: options.generationId,
+      billingRequestId: platformBillingRequestId(options),
+    },
+    options,
+    { variant: `${variant}-reference-json`, label: requestLogLabel(options) },
   );
 }
 
@@ -888,6 +940,35 @@ async function normalizeReferenceImageForApi(image, index = 0) {
     console.warn("参考图压缩失败，继续使用原图", error);
     return image;
   }
+}
+
+async function referenceImageUrlsForApi(images = []) {
+  const requestImages = await normalizeReferenceImagesForRequest(images);
+  return Promise.all(requestImages.slice(0, 4).map((image, index) => referenceImageUrlForApi(image, index)));
+}
+
+async function referenceImageUrlForApi(image, index = 0) {
+  const source = String(image?.dataUrl || image?.url || "").trim();
+  if (/^https?:\/\//i.test(source)) return source;
+  if (!source.startsWith("data:image/")) throw new Error("参考图需要是图片 URL 或本地图片数据");
+  const response = await apiFetchPreferDirect("/api/reference-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: image?.name || `reference-${index + 1}.png`,
+      dataUrl: source,
+    }),
+    timeoutMs: REFERENCE_IMAGE_UPLOAD_TIMEOUT_MS,
+  }, {
+    directFirst: true,
+    timeoutMs: REFERENCE_IMAGE_UPLOAD_TIMEOUT_MS,
+    label: "参考图上传",
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok || !payload?.url) {
+    throw new Error(payload?.error?.message || `参考图上传失败：HTTP ${response.status}`);
+  }
+  return payload.url;
 }
 
 async function imageBlobDimensions(blob) {
@@ -1655,7 +1736,9 @@ function normalizePlatformBrowserConfig(item = {}, mode = $("#modeSelect").value
   if (!item.apiKey || !item.textEndpoint) return null;
   const textEndpoint = String(item.textEndpoint || "").trim();
   const editEndpoint = String(item.editEndpoint || "").trim();
-  const endpoint = mode === "image" ? (editEndpoint || inferEditEndpoint(textEndpoint)) : textEndpoint;
+  const endpoint = mode === "image"
+    ? (referenceImageJsonEndpoint(editEndpoint) || referenceImageJsonEndpoint(textEndpoint) || editEndpoint || inferEditEndpoint(textEndpoint))
+    : textEndpoint;
   if (!endpoint) return null;
   return {
     ...item,
@@ -5460,9 +5543,9 @@ function blobToDataUrl(blob) {
 }
 
 function dataUrlToBlob(dataUrl) {
-  const [meta, content] = dataUrl.split(",");
+  const [meta, content = ""] = String(dataUrl || "").split(",");
   const mime = meta.match(/data:(.*?);/)?.[1] || "image/png";
-  const binary = atob(content);
+  const binary = /;base64/i.test(meta) ? atob(content.replace(/\s/g, "")) : decodeURIComponent(content);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return new Blob([bytes], { type: mime });

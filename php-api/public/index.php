@@ -104,6 +104,14 @@ function route_request(PDO $pdo, array $config): void
         settle_generation($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/reference-image') {
+        reference_image_upload($config);
+        return;
+    }
+    if ($method === 'GET' && preg_match('#^/api/reference-image/([^/]+)$#', $path, $matches)) {
+        reference_image_read((string)$matches[1]);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/admin/redeem-codes') {
         admin_create_redeem_codes($pdo, $config);
         return;
@@ -344,6 +352,107 @@ function public_mobile_safe_url(string $url): string
     return preg_replace('/^https?:\/\/api2img\.shop(?=\/|$)/i', 'https://www.api2img.shop', $url) ?? $url;
 }
 
+function reference_image_upload(array $config): void
+{
+    $payload = read_json();
+    [$bytes, $mime, $extension] = reference_image_decode((string)($payload['dataUrl'] ?? ''));
+    if (strlen($bytes) > 4 * 1024 * 1024) {
+        throw new HttpError('参考图不能超过 4MB', 413, 'reference_image_too_large');
+    }
+
+    json_response([
+        'ok' => true,
+        'url' => reference_image_store($config, $bytes, $extension),
+        'mime' => $mime,
+        'expiresIn' => 21600,
+    ]);
+}
+
+function reference_image_read(string $filename): void
+{
+    $filename = basename(rawurldecode($filename));
+    if (!preg_match('/^[A-Za-z0-9_-]+\.(?:png|jpe?g|webp)$/', $filename)) {
+        throw new HttpError('参考图不存在', 404, 'reference_image_not_found');
+    }
+    $path = reference_image_dir() . DIRECTORY_SEPARATOR . $filename;
+    if (!is_file($path) || time() - (int)filemtime($path) > 21600) {
+        throw new HttpError('参考图不存在或已过期', 404, 'reference_image_not_found');
+    }
+
+    discard_accidental_output();
+    $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    $mime = $extension === 'png' ? 'image/png' : ($extension === 'webp' ? 'image/webp' : 'image/jpeg');
+    header('Content-Type: ' . $mime);
+    header('Cache-Control: public, max-age=21600');
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
+    exit;
+}
+
+function reference_image_decode(string $dataUrl): array
+{
+    if (!preg_match('/^data:(image\/(?:png|jpe?g|webp))(;base64)?,(.*)$/is', $dataUrl, $matches)) {
+        throw new HttpError('参考图格式无效', 400, 'invalid_reference_image');
+    }
+    $mime = strtolower($matches[1]);
+    $raw = $matches[2] !== ''
+        ? base64_decode(preg_replace('/\s+/', '', $matches[3]), true)
+        : rawurldecode($matches[3]);
+    if ($raw === false || $raw === '') {
+        throw new HttpError('参考图数据无效', 400, 'invalid_reference_image');
+    }
+    $extension = $mime === 'image/png' ? 'png' : ($mime === 'image/webp' ? 'webp' : 'jpg');
+    return [$raw, $mime, $extension];
+}
+
+function reference_image_store(array $config, string $bytes, string $extension): string
+{
+    $dir = reference_image_dir();
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new HttpError('参考图临时目录不可写', 500, 'reference_image_storage_failed');
+    }
+    reference_image_cleanup($dir);
+
+    $extension = in_array($extension, ['png', 'jpg', 'jpeg', 'webp'], true) ? $extension : 'png';
+    $filename = random_token(18) . '.' . $extension;
+    $path = $dir . DIRECTORY_SEPARATOR . $filename;
+    if (file_put_contents($path, $bytes, LOCK_EX) === false) {
+        throw new HttpError('参考图保存失败', 500, 'reference_image_storage_failed');
+    }
+
+    $base = rtrim(public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')), '/');
+    if ($base === '') {
+        $base = request_public_api_base_url();
+    }
+    return $base . '/api/reference-image/' . rawurlencode($filename);
+}
+
+function reference_image_dir(): string
+{
+    return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'api2img_reference_images';
+}
+
+function reference_image_cleanup(string $dir): void
+{
+    foreach (glob($dir . DIRECTORY_SEPARATOR . '*.{png,jpg,jpeg,webp}', GLOB_BRACE) ?: [] as $path) {
+        if (is_file($path) && time() - (int)filemtime($path) > 21600) {
+            @unlink($path);
+        }
+    }
+}
+
+function request_public_api_base_url(): string
+{
+    $host = (string)($_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? '');
+    $proto = (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '');
+    if ($proto === '') {
+        $proto = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    }
+    $script = (string)($_SERVER['SCRIPT_NAME'] ?? '/index.php');
+    $basePath = rtrim(str_replace('\\', '/', dirname($script)), '/');
+    return rtrim($proto . '://' . $host . ($basePath === '' ? '' : $basePath) . '/index.php', '/');
+}
+
 function billing_config(PDO $pdo, array $config): void
 {
     $platform = platform_config($pdo, $config);
@@ -484,9 +593,7 @@ function generate_direct_config(PDO $pdo, array $config): void
         throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
     }
     ensure_user_can_afford($pdo, (int)$user['id'], $total);
-    $endpoint = $mode === 'image'
-        ? ((string)$platform['edit_endpoint'] ?: infer_edit_endpoint((string)$platform['text_endpoint']))
-        : (string)$platform['text_endpoint'];
+    $endpoint = $mode === 'image' ? platform_image_endpoint($platform) : (string)$platform['text_endpoint'];
     if ($endpoint === '') {
         throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
     }
@@ -530,13 +637,13 @@ function generate_platform(PDO $pdo, array $config): void
     $price = max(1, (int)$ticket['price']);
     ensure_user_can_afford($pdo, (int)$ticket['uid'], $count * $price);
     $request = enforce_platform_request_count($request, $count);
-    $endpoint = $mode === 'image' ? ((string)$platform['edit_endpoint'] ?: infer_edit_endpoint((string)$platform['text_endpoint'])) : (string)$platform['text_endpoint'];
+    $endpoint = $mode === 'image' ? platform_image_endpoint($platform) : (string)$platform['text_endpoint'];
     if ($endpoint === '' || trim((string)$platform['api_key']) === '') {
         throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
     }
 
     try {
-        $upstream = call_platform_upstream($platform, $endpoint, $request);
+        $upstream = call_platform_upstream($config, $platform, $endpoint, $request);
         $bodyPayload = json_decode($upstream['body'], true);
         $images = upstream_response_images($upstream, is_array($bodyPayload) ? $bodyPayload : null);
         if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
@@ -964,6 +1071,31 @@ function platform_is_configured(array $platform): bool
     return trim((string)$platform['text_endpoint']) !== '' && trim((string)$platform['api_key']) !== '';
 }
 
+function platform_image_endpoint(array $platform): string
+{
+    $textEndpoint = (string)$platform['text_endpoint'];
+    $editEndpoint = (string)$platform['edit_endpoint'];
+    return reference_image_json_endpoint($editEndpoint)
+        ?: reference_image_json_endpoint($textEndpoint)
+        ?: ($editEndpoint ?: infer_edit_endpoint($textEndpoint));
+}
+
+function reference_image_json_endpoint(string $endpoint): string
+{
+    if (!endpoint_uses_reference_image_json($endpoint)) {
+        return '';
+    }
+    return preg_replace('#/images/edits/?(\?.*)?$#i', '/images/generations$1', $endpoint) ?: $endpoint;
+}
+
+function endpoint_uses_reference_image_json(string $endpoint): bool
+{
+    $host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
+    $path = (string)parse_url($endpoint, PHP_URL_PATH);
+    return (bool)preg_match('/(^|\.)hfsyapi\.cn$/i', $host)
+        && (bool)preg_match('#/v\d+/images/(?:generations|edits)/?$#i', $path);
+}
+
 function sign_generation_ticket(array $config, array $claims, string $token): string
 {
     $claims['tok'] = secret_hash($config, 'generation-ticket-token', $token);
@@ -1008,8 +1140,11 @@ function base64url_decode(string $value): string
     return $decoded === false ? '' : $decoded;
 }
 
-function call_platform_upstream(array $platform, string $endpoint, array $request): array
+function call_platform_upstream(array $config, array $platform, string $endpoint, array $request): array
 {
+    if (endpoint_uses_reference_image_json($endpoint) && ($request['bodyType'] ?? '') === 'multipart') {
+        [$endpoint, $request] = platform_reference_json_request($config, $endpoint, $request);
+    }
     return call_upstream_request($endpoint, $request, [
         'Authorization' => 'Bearer ' . (string)$platform['api_key'],
     ]);
@@ -1018,6 +1153,50 @@ function call_platform_upstream(array $platform, string $endpoint, array $reques
 function call_proxy_upstream(string $endpoint, array $request): array
 {
     return call_upstream_request($endpoint, $request, []);
+}
+
+function platform_reference_json_request(array $config, string $endpoint, array $request): array
+{
+    $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
+    $body = [
+        'model' => (string)($fields['model'] ?? 'gpt-image-2'),
+        'prompt' => (string)($fields['prompt'] ?? ''),
+        'reference_images' => [],
+        'response_format' => 'b64_json',
+    ];
+    foreach (['n', 'count'] as $key) {
+        if (isset($fields[$key]) && (int)$fields[$key] > 0) {
+            $body['n'] = (int)$fields[$key];
+            break;
+        }
+    }
+    if (isset($fields['size']) && trim((string)$fields['size']) !== '' && trim((string)$fields['size']) !== 'auto') {
+        $body['size'] = (string)$fields['size'];
+    }
+    if (isset($fields['seed']) && trim((string)$fields['seed']) !== '') {
+        $body['seed'] = is_numeric($fields['seed']) ? (int)$fields['seed'] : (string)$fields['seed'];
+    }
+
+    foreach (array_slice(is_array($request['files'] ?? null) ? $request['files'] : [], 0, 4) as $file) {
+        if (!is_array($file)) {
+            continue;
+        }
+        [$bytes, , $extension] = reference_image_decode((string)($file['dataUrl'] ?? ''));
+        $body['reference_images'][] = reference_image_store($config, $bytes, $extension);
+    }
+    if (!count($body['reference_images'])) {
+        throw new RuntimeException('图生图参考图为空');
+    }
+
+    return [
+        reference_image_json_endpoint($endpoint) ?: $endpoint,
+        [
+            'method' => 'POST',
+            'headers' => ['Content-Type' => 'application/json'],
+            'bodyType' => 'json',
+            'body' => json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ],
+    ];
 }
 
 function call_upstream_request(string $endpoint, array $request, array $forcedHeaders): array
