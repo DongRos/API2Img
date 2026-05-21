@@ -1506,9 +1506,9 @@ function shouldSwitchCustomTransportError(error, elapsedMs = 0) {
 
 async function fetchPlatformServerImageRequest(endpoint, request) {
   await ensurePlatformBrowserGlobalConfigLoaded();
-  const browserConfig = platformBrowserGlobalConfig(request);
-  if (browserConfig) {
-    return fetchPlatformBrowserImageRequest(request, browserConfig);
+  const browserConfigs = platformBrowserConfigCandidates(request);
+  if (browserConfigs.length) {
+    return fetchPlatformBrowserImageRequest(request, browserConfigs);
   }
 
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
@@ -1538,41 +1538,53 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
   return response;
 }
 
-async function fetchPlatformBrowserImageRequest(request, platformConfig) {
+async function fetchPlatformBrowserImageRequest(request, platformConfigs) {
+  const configs = Array.isArray(platformConfigs) ? platformConfigs : [platformConfigs];
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
   const mode = billingMode || $("#modeSelect").value;
-  const endpoint = mode === "image"
-    ? ((platformConfig.editEndpoint || "").trim() || inferEditEndpoint(platformConfig.textEndpoint || ""))
-    : (platformConfig.textEndpoint || "").trim();
-  if (!endpoint) throw new Error("站点 API 地址不完整");
+  const validConfigs = configs
+    .map((item) => normalizePlatformBrowserConfig(item, mode))
+    .filter(Boolean);
+  if (!validConfigs.length) throw new Error("站点 API 地址不完整");
   const ticket = await getPlatformGenerationTicket({
     mode,
     count: billingCount || 1,
     model: billingModel || getModelName(),
     signal,
   });
-  const headers = {
-    ...(serverRequest.headers || {}),
-    Authorization: `Bearer ${platformConfig.apiKey}`,
-  };
-  const response = await fetchCustomImageRequest(endpoint, {
-    ...serverRequest,
-    headers,
-    signal,
-  }, platformConfig.transportMode || "proxy");
-  response.platformTicket = ticket.ticket;
-  response.platformPriceCents = ticket.priceCents;
-  response.platformStatsEndpoint = endpoint;
-  response.platformStatsApiKey = platformConfig.apiKey;
-  response.platformStatsDisplayName = ticket.displayName || billingState.platformDisplayName;
-  response.platformStatsModel = billingModel || getModelName();
-  return response;
+  let lastResponse = null;
+  for (let index = 0; index < validConfigs.length; index += 1) {
+    const platformConfig = validConfigs[index];
+    const endpoint = platformConfig.resolvedEndpoint;
+    const headers = {
+      ...(serverRequest.headers || {}),
+      Authorization: `Bearer ${platformConfig.apiKey}`,
+    };
+    const response = await fetchCustomImageRequest(endpoint, {
+      ...serverRequest,
+      headers,
+      signal,
+    }, platformConfig.transportMode || "proxy");
+    response.platformTicket = ticket.ticket;
+    response.platformPriceCents = ticket.priceCents;
+    response.platformStatsEndpoint = endpoint;
+    response.platformStatsApiKey = platformConfig.apiKey;
+    response.platformStatsDisplayName = ticket.displayName || billingState.platformDisplayName;
+    response.platformStatsModel = billingModel || getModelName();
+    if (response.ok || !shouldTryNextPlatformBrowserConfig(response, mode, index, validConfigs)) return response;
+    lastResponse = response;
+    console.warn("站点 API 图生图接口返回 405，尝试备用后台配置", endpoint);
+  }
+  return lastResponse || new Response(JSON.stringify({ error: { message: "站点 API 地址不完整" } }), {
+    status: 503,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
 }
 
 async function ensurePlatformBrowserGlobalConfigLoaded() {
   if (!adminPassword()) return;
   const globalConfig = customDebugState.global || {};
-  if (globalConfig.apiKey && globalConfig.textEndpoint) return;
+  if (customDebugState.loaded && globalConfig.apiKey && globalConfig.textEndpoint) return;
   if (!platformBrowserGlobalLoadPromise) {
     platformBrowserGlobalLoadPromise = loadPlatformBrowserGlobalConfig().finally(() => {
       platformBrowserGlobalLoadPromise = null;
@@ -1609,23 +1621,59 @@ async function loadPlatformBrowserGlobalConfig() {
 }
 
 function platformBrowserGlobalConfig(request = {}) {
-  const globalConfig = customDebugState.global || {};
-  if (!adminPassword() || !globalConfig.apiKey || !globalConfig.textEndpoint) return null;
+  return platformBrowserConfigCandidates(request)[0] || null;
+}
+
+function platformBrowserConfigCandidates(request = {}) {
+  if (!adminPassword()) return [];
   const mode = request.billingMode || $("#modeSelect").value;
-  const textEndpoint = String(globalConfig.textEndpoint || "").trim();
-  const editEndpoint = String(globalConfig.editEndpoint || "").trim();
+  const candidates = [
+    customDebugState.global || {},
+    customDebugState.current || {},
+    config || {},
+  ];
+  const seen = new Set();
+  return candidates
+    .map((item) => normalizePlatformBrowserConfig(item, mode))
+    .filter((item) => {
+      if (!item) return false;
+      const key = [
+        item.apiKey,
+        item.textEndpoint,
+        item.editEndpoint,
+        item.resolvedEndpoint,
+        item.transportMode,
+        item.requestFormat || "openai",
+      ].join("\n");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function normalizePlatformBrowserConfig(item = {}, mode = $("#modeSelect").value) {
+  if (!item.apiKey || !item.textEndpoint) return null;
+  const textEndpoint = String(item.textEndpoint || "").trim();
+  const editEndpoint = String(item.editEndpoint || "").trim();
   const endpoint = mode === "image" ? (editEndpoint || inferEditEndpoint(textEndpoint)) : textEndpoint;
   if (!endpoint) return null;
   return {
-    ...globalConfig,
+    ...item,
     textEndpoint,
     editEndpoint,
+    resolvedEndpoint: endpoint,
     transportMode: normalizeCustomTransportMode(
       textEndpoint,
       editEndpoint,
-      matchingAdminCustomTransportMode(globalConfig) || globalConfig.transportMode || billingState.platformTransportMode || "proxy",
+      matchingAdminCustomTransportMode(item) || item.transportMode || billingState.platformTransportMode || "proxy",
     ),
   };
+}
+
+function shouldTryNextPlatformBrowserConfig(response, mode, index, configs) {
+  if (mode !== "image") return false;
+  if (index >= configs.length - 1) return false;
+  return response?.status === 405;
 }
 
 function matchingAdminCustomTransportMode(globalConfig = {}) {
