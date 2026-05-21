@@ -17,6 +17,7 @@ const CODE_ADMIN_OPEN_PHRASE = "codeadmin";
 const SITE_API_DISPLAY_PREFIX = "站点配置";
 const ANNOUNCEMENTS_SEEN_KEY = "image2.announcements.seenAt.v1";
 const SITE_VISIT_TRACK_KEY = "image2.site.visit.tracked.v1";
+const SITE_VISITOR_ID_KEY = "image2.site.visitor.id.v1";
 const SITE_HEARTBEAT_INTERVAL_MS = 30000;
 const ANNOUNCEMENTS_REFRESH_INTERVAL_MS = 45000;
 const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
@@ -163,6 +164,10 @@ const siteStatsState = {
   totalVisits: 0,
   todayVisits: 0,
   totalVisitors: 0,
+  todayPeak: 0,
+  yesterdayPeak: 0,
+  registeredUsers: 0,
+  totalRevenueCents: 0,
   lastVisitAt: 0,
   updatedAt: 0,
   onlineWindowMs: 3 * 60 * 1000,
@@ -3696,10 +3701,15 @@ async function trackSiteVisit() {
       }
     } catch {}
 
-    const response = await fetch("/api/site/track", {
+    const response = await apiFetchPreferDirect("/api/site/track", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "visit" }),
+      body: JSON.stringify({ kind: "visit", visitorId: getSiteVisitorId() }),
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "站点统计",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "杩囩▼涓婃姤澶辫触");
@@ -3717,7 +3727,17 @@ async function trackSiteVisit() {
 
 async function loadSiteStats(options = {}) {
   try {
-    const response = await fetch("/api/site/stats");
+    const headers = {};
+    const password = currentCodeAdminPassword();
+    if (password) headers["X-Admin-Password"] = password;
+    const response = await apiFetchPreferDirect("/api/site/stats", {
+      headers,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "站点统计",
+    });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "缁熻璇诲彇澶辫触");
     applySiteStats(payload.siteStats || payload);
@@ -3731,13 +3751,22 @@ async function loadSiteStats(options = {}) {
 }
 
 function applySiteStats(payload = {}) {
-  siteStatsState.onlineCount = Math.max(0, Number(payload.onlineCount || 0));
-  siteStatsState.totalVisits = Math.max(0, Number(payload.totalVisits || 0));
-  siteStatsState.todayVisits = Math.max(0, Number(payload.todayVisits || 0));
-  siteStatsState.totalVisitors = Math.max(0, Number(payload.totalVisitors || 0));
-  siteStatsState.lastVisitAt = Math.max(0, Number(payload.lastVisitAt || 0));
-  siteStatsState.updatedAt = Math.max(0, Number(payload.updatedAt || 0));
-  siteStatsState.onlineWindowMs = Math.max(0, Number(payload.onlineWindowMs || siteStatsState.onlineWindowMs || 0));
+  assignSiteStat("onlineCount", payload.onlineCount);
+  assignSiteStat("totalVisits", payload.totalVisits);
+  assignSiteStat("todayVisits", payload.todayVisits);
+  assignSiteStat("totalVisitors", payload.totalVisitors);
+  assignSiteStat("todayPeak", payload.todayPeak ?? payload.todayPeakOnline);
+  assignSiteStat("yesterdayPeak", payload.yesterdayPeak ?? payload.yesterdayPeakOnline);
+  assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
+  assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
+  assignSiteStat("lastVisitAt", payload.lastVisitAt);
+  assignSiteStat("updatedAt", payload.updatedAt);
+  assignSiteStat("onlineWindowMs", payload.onlineWindowMs);
+}
+
+function assignSiteStat(key, value) {
+  if (value === undefined || value === null || value === "") return;
+  siteStatsState[key] = Math.max(0, Number(value || 0));
 }
 
 function renderSiteStats() {
@@ -3745,20 +3774,20 @@ function renderSiteStats() {
   const summary = $("#siteStatsSummary");
   if (!summary) return;
   summary.innerHTML = `
-    <div><strong>${formatCount(siteStatsState.onlineCount)}</strong><span>当前在线</span></div>
-    <div><strong>${formatCount(siteStatsState.totalVisits)}</strong><span>累计访问</span></div>
-    <div><strong>${formatCount(siteStatsState.todayVisits)}</strong><span>今日访问</span></div>
-    <div><strong>${formatCount(siteStatsState.totalVisitors)}</strong><span>累计访客</span></div>
+    <div><strong>${formatCount(siteStatsState.todayPeak)}</strong><span>今日峰值</span></div>
+    <div><strong>${formatCount(siteStatsState.yesterdayPeak)}</strong><span>昨日峰值</span></div>
+    <div><strong>${formatCount(siteStatsState.registeredUsers)}</strong><span>总注册用户</span></div>
+    <div><strong>${formatMoney(siteStatsState.totalRevenueCents)}</strong><span>总收益</span></div>
   `;
 }
 
 function updateStatsPanelCopy() {
   const title = $("#statsAdminSection .config-history-head h3");
   const desc = $("#statsAdminSection .config-history-head span");
-  const clearLabel = $("#clearStatsButton span");
+  const clearButton = $("#clearStatsButton");
   if (title) title.textContent = "实时统计";
-  if (desc) desc.textContent = "在线人数按最近 3 分钟心跳统计";
-  if (clearLabel) clearLabel.textContent = "清空 API 统计";
+  if (desc) desc.textContent = "统一读取服务器统计，所有设备显示一致";
+  if (clearButton) clearButton.hidden = true;
 }
 
 function startSiteStatsPolling() {
@@ -3791,10 +3820,15 @@ async function sendSiteHeartbeat() {
   if (siteHeartbeatInFlight) return;
   siteHeartbeatInFlight = true;
   try {
-    const response = await fetch("/api/site/track", {
+    const response = await apiFetchPreferDirect("/api/site/track", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "heartbeat" }),
+      body: JSON.stringify({ kind: "heartbeat", visitorId: getSiteVisitorId() }),
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "站点心跳",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) return;
@@ -4707,6 +4741,18 @@ async function deleteAdminCustomHistory(id) {
   }
 }
 
+function getSiteVisitorId() {
+  try {
+    const existing = localStorage.getItem(SITE_VISITOR_ID_KEY);
+    if (existing) return existing;
+    const next = makeId();
+    localStorage.setItem(SITE_VISITOR_ID_KEY, next);
+    return next;
+  } catch {
+    return "";
+  }
+}
+
 function setCustomApiAdminStatus(text) {
   const status = $("#customApiAdminStatus");
   if (status) status.textContent = text;
@@ -5561,62 +5607,10 @@ function renderApiStats() {
   const summary = $("#apiStatsSummary");
   const list = $("#apiStatsList");
   if (!summary || !list) return;
-
-  const totals = apiStats.reduce(
-    (acc, item) => {
-      acc.total += item.total;
-      acc.success += item.success;
-      acc.failed += item.failed;
-      acc.images += item.images;
-      return acc;
-    },
-    { total: 0, success: 0, failed: 0, images: 0 },
-  );
-
-  summary.innerHTML = `
-    <div><strong>${totals.total}</strong><span>请求</span></div>
-    <div><strong>${totals.success}</strong><span>成功</span></div>
-    <div><strong>${totals.failed}</strong><span>失败</span></div>
-    <div><strong>${totals.images}</strong><span>图片</span></div>
-  `;
-
-  if (!apiStats.length) {
-    list.innerHTML = `<div class="log-empty">还没有 API 统计。发起一次生成后，这里会显示本机测试数据。</div>`;
-    return;
-  }
-
-  list.innerHTML = apiStats
-    .map((item, index) => {
-      const okRate = item.total ? Math.round((item.success / item.total) * 100) : 0;
-      const displayName = normalizeApiDisplayName(item.displayName, index);
-      return `
-        <article class="api-stat-card" data-api-stat-id="${escapeHtml(item.id)}">
-          <div class="api-stat-head">
-            <strong>${escapeHtml(displayName)}</strong>
-            <div class="api-stat-actions">
-              <span>${escapeHtml(item.lastStatus === "success" ? "成功" : item.lastStatus === "failed" ? "失败" : "记录")}</span>
-              <button class="icon-button api-stat-delete" type="button" data-action="delete-api-stat" title="删除此记录">
-                <i data-icon="x"></i>
-              </button>
-            </div>
-          </div>
-          <div class="api-stat-endpoint">${escapeHtml("站点 API 配置")}</div>
-          <div class="api-stat-grid">
-            <span>Key ${escapeHtml(item.keyLabel || "未填写 Key")}</span>
-            <span>指纹 ${escapeHtml(item.keyFingerprint || "no-key")}</span>
-            <span>${escapeHtml(modeLabel(item.mode))}</span>
-            <span>${escapeHtml(item.model || "-")}</span>
-            <span>请求 ${item.total}</span>
-            <span>成功率 ${okRate}%</span>
-            <span>图片 ${item.images}</span>
-            <span>最近 ${escapeHtml(formatLogTime(item.lastUsedAt))}</span>
-          </div>
-          ${item.lastError ? `<p class="log-error">${escapeHtml(item.lastError)}</p>` : ""}
-        </article>
-      `;
-    })
-    .join("");
-  renderIcons();
+  summary.hidden = true;
+  list.hidden = true;
+  summary.innerHTML = "";
+  list.innerHTML = "";
 }
 
 function clearApiStats() {

@@ -24,6 +24,7 @@ const DEFAULT_DB = {
     totalVisits: 0,
     totalVisitors: 0,
     dailyVisits: {},
+    dailyPeaks: {},
     lastVisitAt: 0,
     updatedAt: 0,
   },
@@ -84,6 +85,11 @@ export async function siteTrack(context) {
       siteStats.dailyVisits[todayKey] = Number(siteStats.dailyVisits[todayKey] || 0) + 1;
       siteStats.lastVisitAt = now;
     }
+    const onlineCount = Object.values(db.sessions).reduce((count, item) => {
+      return count + (now - Number(item.lastSeenAt || 0) <= 3 * 60 * 1000 ? 1 : 0);
+    }, 0);
+    const todayKey = getDateKey(now);
+    siteStats.dailyPeaks[todayKey] = Math.max(Number(siteStats.dailyPeaks[todayKey] || 0), onlineCount);
     siteStats.updatedAt = now;
     db.siteStats = siteStats;
   });
@@ -685,8 +691,14 @@ async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000) {
   }
   const totalVisitors = Math.max(Number(siteStats.totalVisitors || 0), Object.keys(db.sessions).length);
   const todayKey = getDateKey(now);
+  const yesterdayKey = getDateKey(now - 24 * 60 * 60 * 1000);
+  const totalRevenueCents = Object.values(db.usage).reduce((sum, item) => sum + Math.max(0, Number(item.amountCents || 0)), 0);
   return {
     onlineCount,
+    todayPeak: Math.max(onlineCount, Number(siteStats.dailyPeaks?.[todayKey] || 0)),
+    yesterdayPeak: Number(siteStats.dailyPeaks?.[yesterdayKey] || 0),
+    registeredUsers: Object.keys(db.customers).length,
+    totalRevenueCents,
     totalVisits: Number(siteStats.totalVisits || 0),
     todayVisits: Number(siteStats.dailyVisits?.[todayKey] || 0),
     totalVisitors,
@@ -813,11 +825,15 @@ function valuesByCustomer(record, customerId) {
 
 function normalizeSiteStats(value) {
   const dailyVisits = isRecord(value?.dailyVisits) ? value.dailyVisits : {};
+  const dailyPeaks = isRecord(value?.dailyPeaks) ? value.dailyPeaks : {};
   return {
     totalVisits: Math.max(0, Number(value?.totalVisits || 0)),
     totalVisitors: Math.max(0, Number(value?.totalVisitors || 0)),
     dailyVisits: Object.fromEntries(
       Object.entries(dailyVisits).map(([key, count]) => [key, Math.max(0, Number(count || 0))]),
+    ),
+    dailyPeaks: Object.fromEntries(
+      Object.entries(dailyPeaks).map(([key, count]) => [key, Math.max(0, Number(count || 0))]),
     ),
     lastVisitAt: Math.max(0, Number(value?.lastVisitAt || 0)),
     updatedAt: Math.max(0, Number(value?.updatedAt || 0)),

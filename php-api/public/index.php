@@ -88,6 +88,14 @@ function route_request(PDO $pdo, array $config): void
         billing_ledger($pdo, $config);
         return;
     }
+    if ($method === 'GET' && $path === '/api/site/stats') {
+        site_stats($pdo, $config);
+        return;
+    }
+    if ($method === 'POST' && $path === '/api/site/track') {
+        site_track($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/generate/ticket') {
         generate_ticket($pdo, $config);
         return;
@@ -551,6 +559,172 @@ function billing_ledger(PDO $pdo, array $config): void
         ];
     }
     json_response(['ok' => true, 'ledger' => $items]);
+}
+
+function site_track(PDO $pdo, array $config): void
+{
+    $payload = read_json();
+    $kind = strtolower(trim((string)($payload['kind'] ?? 'visit')));
+    $visitorId = trim((string)($payload['visitorId'] ?? ''));
+    record_site_activity($pdo, $config, $visitorId, $kind === 'heartbeat' ? 'heartbeat' : 'visit');
+    json_response(['ok' => true, 'siteStats' => site_public_stats_payload($pdo)]);
+}
+
+function site_stats(PDO $pdo, array $config): void
+{
+    require_admin($pdo, $config);
+    json_response(['ok' => true, 'siteStats' => site_stats_payload($pdo)]);
+}
+
+function record_site_activity(PDO $pdo, array $config, string $visitorId, string $kind): void
+{
+    ensure_site_stats_tables($pdo);
+    $visitorKey = $visitorId !== '' ? $visitorId : current_session_token();
+    if ($visitorKey === '') {
+        $visitorKey = client_ip() . '|' . ($_SERVER['HTTP_USER_AGENT'] ?? '');
+    }
+    $visitorHash = secret_hash($config, 'site-visitor', substr($visitorKey, 0, 300));
+    $pdo->prepare(
+        "INSERT INTO site_visitors (visitor_hash, first_seen_at, last_seen_at)
+         VALUES (?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE last_seen_at = UTC_TIMESTAMP()"
+    )->execute([$visitorHash]);
+
+    $today = beijing_date_expr();
+    $pdo->prepare(
+        "INSERT INTO site_daily_stats (stat_date, total_visits, peak_online, updated_at)
+         VALUES ($today, ?, 0, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE
+           total_visits = total_visits + VALUES(total_visits),
+           updated_at = UTC_TIMESTAMP()"
+    )->execute([$kind === 'visit' ? 1 : 0]);
+
+    refresh_today_peak_online($pdo);
+}
+
+function site_stats_payload(PDO $pdo): array
+{
+    ensure_site_stats_tables($pdo);
+    refresh_today_peak_online($pdo);
+    $today = beijing_date_expr();
+    $yesterday = "DATE_SUB($today, INTERVAL 1 DAY)";
+    $onlineWindowSeconds = 180;
+
+    $onlineStmt = $pdo->query(
+        "SELECT COUNT(*) FROM site_visitors
+         WHERE last_seen_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL $onlineWindowSeconds SECOND)"
+    );
+    $onlineCount = (int)$onlineStmt->fetchColumn();
+
+    $peakStmt = $pdo->query(
+        "SELECT
+           COALESCE(MAX(CASE WHEN stat_date = $today THEN peak_online END), 0) AS today_peak,
+           COALESCE(MAX(CASE WHEN stat_date = $yesterday THEN peak_online END), 0) AS yesterday_peak,
+           COALESCE(MAX(CASE WHEN stat_date = $today THEN total_visits END), 0) AS today_visits,
+           COALESCE(SUM(total_visits), 0) AS total_visits
+         FROM site_daily_stats"
+    );
+    $peaks = $peakStmt->fetch() ?: [];
+
+    $registeredUsers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE email <> ''")->fetchColumn();
+    $totalRevenueCents = (int)$pdo->query("SELECT COALESCE(SUM(total_cents), 0) FROM generation_requests WHERE status = 'succeeded'")->fetchColumn();
+    $totalVisitors = (int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn();
+    $updatedAt = (int)round(microtime(true) * 1000);
+
+    return [
+        'onlineCount' => $onlineCount,
+        'todayPeak' => max($onlineCount, (int)($peaks['today_peak'] ?? 0)),
+        'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
+        'registeredUsers' => $registeredUsers,
+        'totalRevenueCents' => $totalRevenueCents,
+        'totalVisits' => (int)($peaks['total_visits'] ?? 0),
+        'todayVisits' => (int)($peaks['today_visits'] ?? 0),
+        'totalVisitors' => $totalVisitors,
+        'lastVisitAt' => $updatedAt,
+        'updatedAt' => $updatedAt,
+        'onlineWindowMs' => $onlineWindowSeconds * 1000,
+    ];
+}
+
+function site_public_stats_payload(PDO $pdo): array
+{
+    ensure_site_stats_tables($pdo);
+    refresh_today_peak_online($pdo);
+    $today = beijing_date_expr();
+    $yesterday = "DATE_SUB($today, INTERVAL 1 DAY)";
+    $onlineWindowSeconds = 180;
+    $onlineCount = (int)$pdo
+        ->query("SELECT COUNT(*) FROM site_visitors WHERE last_seen_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL $onlineWindowSeconds SECOND)")
+        ->fetchColumn();
+    $peakStmt = $pdo->query(
+        "SELECT
+           COALESCE(MAX(CASE WHEN stat_date = $today THEN peak_online END), 0) AS today_peak,
+           COALESCE(MAX(CASE WHEN stat_date = $yesterday THEN peak_online END), 0) AS yesterday_peak,
+           COALESCE(MAX(CASE WHEN stat_date = $today THEN total_visits END), 0) AS today_visits,
+           COALESCE(SUM(total_visits), 0) AS total_visits
+         FROM site_daily_stats"
+    );
+    $peaks = $peakStmt->fetch() ?: [];
+    $updatedAt = (int)round(microtime(true) * 1000);
+    return [
+        'onlineCount' => $onlineCount,
+        'todayPeak' => max($onlineCount, (int)($peaks['today_peak'] ?? 0)),
+        'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
+        'totalVisits' => (int)($peaks['total_visits'] ?? 0),
+        'todayVisits' => (int)($peaks['today_visits'] ?? 0),
+        'totalVisitors' => (int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn(),
+        'lastVisitAt' => $updatedAt,
+        'updatedAt' => $updatedAt,
+        'onlineWindowMs' => $onlineWindowSeconds * 1000,
+    ];
+}
+
+function refresh_today_peak_online(PDO $pdo): void
+{
+    ensure_site_stats_tables($pdo);
+    $today = beijing_date_expr();
+    $onlineCount = (int)$pdo
+        ->query("SELECT COUNT(*) FROM site_visitors WHERE last_seen_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)")
+        ->fetchColumn();
+    $pdo->prepare(
+        "INSERT INTO site_daily_stats (stat_date, total_visits, peak_online, updated_at)
+         VALUES ($today, 0, ?, UTC_TIMESTAMP())
+         ON DUPLICATE KEY UPDATE
+           peak_online = GREATEST(peak_online, VALUES(peak_online)),
+           updated_at = UTC_TIMESTAMP()"
+    )->execute([$onlineCount]);
+}
+
+function ensure_site_stats_tables(PDO $pdo): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS site_visitors (
+          visitor_hash CHAR(64) NOT NULL,
+          first_seen_at DATETIME NOT NULL,
+          last_seen_at DATETIME NOT NULL,
+          PRIMARY KEY (visitor_hash),
+          KEY idx_site_visitors_last_seen (last_seen_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS site_daily_stats (
+          stat_date DATE NOT NULL,
+          total_visits INT NOT NULL DEFAULT 0,
+          peak_online INT NOT NULL DEFAULT 0,
+          updated_at DATETIME NOT NULL,
+          PRIMARY KEY (stat_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+    $done = true;
+}
+
+function beijing_date_expr(): string
+{
+    return "DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR))";
 }
 
 function generate_ticket(PDO $pdo, array $config): void

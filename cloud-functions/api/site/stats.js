@@ -1,11 +1,11 @@
-import { guarded, optionsResponse, siteStats } from "../../lib/billing-edgeone.js";
+import { optionsResponse, proxyPhpApi } from "../../lib/php-api-proxy.js";
 
 export async function onRequestOptions() {
   return optionsResponse();
 }
 
 export async function onRequestGet(context) {
-  return guarded(siteStats, context);
+  return proxyPhpApi(context);
 }
 
 export async function onRequest() {
