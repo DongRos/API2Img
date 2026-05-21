@@ -1013,7 +1013,28 @@ function appendCoreImageFields(target, options, variant) {
 function effectiveRequestSize(options = {}) {
   const selected = String(options.size || "").trim();
   if (selected && selected !== "auto") return selected;
+  const ratioSize = requestSizeFromRatio(options.ratio);
+  if (ratioSize) return ratioSize;
+  const inferredSize = inferAutoRequestSize(options);
+  if (inferredSize) return inferredSize;
   return "";
+}
+
+function requestSizeFromRatio(ratio = "") {
+  switch (String(ratio || "").trim()) {
+    case "1:1":
+      return "1024x1024";
+    case "3:4":
+    case "9:16":
+    case "2:3":
+      return "1024x1536";
+    case "4:3":
+    case "16:9":
+    case "3:2":
+      return "1536x1024";
+    default:
+      return "";
+  }
 }
 
 function inferAutoRequestSize(options = {}) {
