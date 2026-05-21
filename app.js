@@ -373,10 +373,10 @@ function bindEvents() {
   document.addEventListener("paste", () => setTimeout(() => onHiddenPhraseInput(), 0), true);
   $("#promptInput").addEventListener("input", (event) => autoGrow(event.target));
   $("#promptInput").addEventListener("keydown", (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-      event.preventDefault();
-      generateImages();
-    }
+    if (event.key !== "Enter" || event.isComposing) return;
+    if (event.shiftKey) return;
+    event.preventDefault();
+    generateImages();
   });
   window.addEventListener("resize", debounce(scheduleResultMasonryLayout, 120));
   if (new URLSearchParams(location.search).has("admin")) openCodeAdminPanel();
@@ -1338,6 +1338,7 @@ function isFatalImageError(message) {
 }
 
 function shouldRetrySingleImageError(message, options = {}) {
+  if (options.mode === "image" && isUncertainChargedError(message)) return false;
   return (
     !isFatalImageError(message) &&
     !(options.apiProvider === "platform" && isUncertainChargedError(message)) &&
@@ -1822,7 +1823,8 @@ async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") 
     return payload;
   }
   const text = await response.text();
-  const responseText = stripJsonBom(text);
+  const rawResponseText = stripJsonBom(text);
+  const responseText = stripPhpWarningNoise(rawResponseText);
   let payload = responseText;
   let parsedJson = false;
   try {
@@ -1838,6 +1840,19 @@ async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") 
         contentType,
         imageCount: 0,
         responsePreview: message,
+        error: message,
+      });
+      throw new Error(message);
+    }
+    if (looksLikeHtml(rawResponseText)) {
+      const message = formatHttpError(response.status, "接口返回了 HTML/PHP 警告，不是有效的图片结果");
+      completeRequestLog(requestLog, {
+        status: "failed",
+        httpStatus: response.status,
+        ok: response.ok,
+        contentType,
+        imageCount: 0,
+        responsePreview: summarizeLogValue(rawResponseText),
         error: message,
       });
       throw new Error(message);
@@ -1880,7 +1895,7 @@ async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") 
     ok: response.ok,
     contentType,
     imageCount,
-    responsePreview: summarizeLogValue(parsedJson ? payload : text),
+    responsePreview: summarizeLogValue(parsedJson ? payload : rawResponseText),
   });
   if (response.platformTicket && payload && typeof payload === "object") {
     payload.platformTicket = response.platformTicket;
@@ -2177,7 +2192,7 @@ function isHtmlPayload(payload) {
 }
 
 function looksLikeHtml(value) {
-  return /<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]/i.test(value);
+  return /<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]|<br\s*\/?>\s*<b>\s*(?:Warning|Notice|Deprecated|Strict Standards|Fatal error)\s*<\/b>|open_basedir restriction/i.test(value);
 }
 
 function buildPrompt(options) {
@@ -4005,8 +4020,9 @@ function renderAdminCustomHistory() {
       const transportLabel = item.transportMode === "proxy" ? "代理" : "直连";
       const formatLabel = item.requestFormat === "json" ? "JSON 模板" : "OpenAI";
       const priceLabel = formatPlatformPriceLabel(item.priceCents || billingState.priceCents);
+      const currentClass = isCurrentAdminCustomApi(item) ? " current" : "";
       return `
-        <div class="config-history-item" data-admin-custom-id="${escapeHtml(item.id || "")}">
+        <div class="config-history-item${currentClass}" data-admin-custom-id="${escapeHtml(item.id || "")}">
           <button class="config-history-main" type="button" data-action="apply-admin-custom">
             <strong>${escapeHtml(displayName)}</strong>
             <span class="config-history-url" title="${escapeHtml(endpointLabel)}">${escapeHtml(endpointLabel)}</span>
@@ -4020,6 +4036,23 @@ function renderAdminCustomHistory() {
     })
     .join("");
   renderIcons();
+}
+
+function isCurrentAdminCustomApi(item = {}) {
+  const active = isCustomApiDebugEnabled() ? customDebugState.current : customDebugState.global;
+  return sameApiConfig(item, active || {});
+}
+
+function sameApiConfig(left = {}, right = {}) {
+  if (!left || !right) return false;
+  return (
+    String(left.apiKey || "").trim() !== "" &&
+    String(left.apiKey || "").trim() === String(right.apiKey || "").trim() &&
+    String(left.textEndpoint || "").trim() === String(right.textEndpoint || "").trim() &&
+    String(left.editEndpoint || "").trim() === String(right.editEndpoint || "").trim() &&
+    String(left.requestFormat || "openai") === String(right.requestFormat || "openai") &&
+    String(left.transportMode || "proxy") === String(right.transportMode || "proxy")
+  );
 }
 
 function onAdminCustomHistoryClick(event) {
@@ -4132,7 +4165,7 @@ function downloadTextFile(text, filename, type = "text/plain;charset=utf-8") {
 }
 
 async function readJsonResponse(response) {
-  const text = stripJsonBom(await response.text());
+  const text = stripPhpWarningNoise(stripJsonBom(await response.text()));
   if (!text) return {};
   try {
     return JSON.parse(text);
@@ -4143,6 +4176,19 @@ async function readJsonResponse(response) {
 
 function stripJsonBom(text) {
   return String(text || "").replace(/^\uFEFF/, "");
+}
+
+function stripPhpWarningNoise(text) {
+  let clean = String(text || "").replace(/^\uFEFF/, "");
+  let previous = "";
+  while (clean !== previous) {
+    previous = clean;
+    clean = clean.replace(
+      /^\s*(?:<br\s*\/?>\s*)*<b>\s*(?:Warning|Notice|Deprecated|Strict Standards|Fatal error)\s*<\/b>:\s*[\s\S]*?<br\s*\/?>\s*/i,
+      "",
+    );
+  }
+  return clean.trimStart();
 }
 
 function apiUrl(path) {

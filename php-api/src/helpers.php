@@ -609,15 +609,44 @@ function resolve_curl_ca_bundle(): array
 
     $result = ['caInfo' => '', 'caPath' => ''];
     foreach (array_values(array_unique($candidates)) as $path) {
-        if (is_file($path)) {
+        if (!path_allowed_by_open_basedir($path)) {
+            continue;
+        }
+        if (@is_file($path)) {
             $result['caInfo'] = $path;
             break;
         }
-        if ($result['caPath'] === '' && is_dir($path)) {
+        if ($result['caPath'] === '' && @is_dir($path)) {
             $result['caPath'] = $path;
         }
     }
     return $result;
+}
+
+function path_allowed_by_open_basedir(string $path): bool
+{
+    $restriction = (string)ini_get('open_basedir');
+    if (trim($restriction) === '') {
+        return true;
+    }
+    $normalizedPath = str_replace('\\', '/', $path);
+    foreach (explode(PATH_SEPARATOR, $restriction) as $base) {
+        $base = trim((string)$base);
+        if ($base === '') {
+            continue;
+        }
+        if ($base === '.') {
+            $base = getcwd() ?: '.';
+        }
+        $normalizedBase = rtrim(str_replace('\\', '/', $base), '/');
+        if ($normalizedBase === '') {
+            continue;
+        }
+        if ($normalizedPath === $normalizedBase || str_starts_with($normalizedPath, $normalizedBase . '/')) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function is_ssl_certificate_error(string $message): bool
@@ -724,7 +753,7 @@ function json_image_sources(string $text, string $keyPath): array
 
 function json_value_looks_like_html(string $text): bool
 {
-    return preg_match('/<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]/i', $text) === 1;
+    return preg_match('/<!doctype html|<html[\s>]|<head[\s>]|<body[\s>]|<br\s*\/?>\s*<b>\s*(Warning|Notice|Deprecated|Strict Standards|Fatal error)\s*<\/b>|open_basedir restriction/i', $text) === 1;
 }
 
 function json_is_likely_image_url(string $url): bool

@@ -1679,6 +1679,13 @@ button:disabled {
   background: var(--glass-strong);
 }
 
+.config-history-item.current .config-history-main {
+  border-color: color-mix(in srgb, #f59e0b, var(--glass-border) 42%);
+  background: color-mix(in srgb, #f59e0b 16%, var(--glass-strong));
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.72)) saturate(1.2);
+  backdrop-filter: blur(calc(var(--glass-blur) * 0.72)) saturate(1.2);
+}
+
 .config-history-main strong,
 .config-history-main span,
 .config-history-main small {
