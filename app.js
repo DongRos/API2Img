@@ -1265,7 +1265,7 @@ async function commitGeneratedImage(src, options, index, context) {
   state.results.unshift(result);
   if (context) context.created.push(result);
   updateRunningGenerationImageCount(context?.created?.length || state.results.filter((item) => item.generationId === options.generationId).length);
-  renderResults();
+  prependResultCard(result);
   void finalizeResultAsset(result.id, src, options);
   void persistState();
   const total = Math.max(1, Number(options.batchTotal || options.count || 1));
@@ -2506,7 +2506,7 @@ async function finalizeResultAsset(resultId, source, options = {}) {
       changed = true;
     }
     if (!changed) return;
-    renderResults();
+    updateResultCardAsset(result);
     await persistState();
   } catch (error) {
     console.warn("图片后台缓存失败", error);
@@ -2542,45 +2542,143 @@ function renderResults() {
 
   grid.className = "result-grid";
   grid.innerHTML = "";
-  state.results.forEach((item) => {
-    const isNew = Boolean(item.generationId && item.generationId === state.latestGenerationId);
-    const card = document.createElement("article");
-    card.className = `image-card${isNew ? " is-new" : ""}`;
-    card.dataset.width = String(item.width || 1);
-    card.dataset.height = String(item.height || 1);
-    card.style.setProperty("--ratio", `${item.width || 1} / ${item.height || 1}`);
-    card.innerHTML = `
-      <img src="${item.src}" alt="${escapeHtml(item.prompt)}" />
-      ${isNew ? '<span class="new-badge" title="本次新生成">新</span>' : ""}
-      <div class="card-overlay">
-        <span class="card-prompt">${escapeHtml(item.prompt)}</span>
-        <div class="card-actions">
-          <button type="button" data-action="edit" title="编辑"><i data-icon="sparkles"></i></button>
-          <button type="button" data-action="reuse" title="回填提示词"><i data-icon="rotate"></i></button>
-          <button type="button" data-action="download" title="下载"><i data-icon="download"></i></button>
-          <button type="button" data-action="delete" title="删除"><i data-icon="trash"></i></button>
-        </div>
-      </div>
-    `;
-    const image = card.querySelector("img");
-    const refreshCardLayout = () => {
-      syncResultCardImageSize(card, image);
-      scheduleResultMasonryLayout();
-    };
-    image.addEventListener("load", refreshCardLayout, { once: true });
-    image.addEventListener("error", scheduleResultMasonryLayout, { once: true });
-    if (image.complete) requestAnimationFrame(refreshCardLayout);
-    image.addEventListener("click", () => openDetail(item.id));
-    card.querySelector('[data-action="edit"]').addEventListener("click", () => openDetail(item.id));
-    card.querySelector('[data-action="reuse"]').addEventListener("click", () => reusePrompt(item.prompt));
-    card.querySelector('[data-action="download"]').addEventListener("click", () => downloadImage(item.src, fileNameFor(item)));
-    card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteResult(item.id));
-    grid.appendChild(card);
-  });
+  const fragment = document.createDocumentFragment();
+  state.results.forEach((item) => fragment.appendChild(createResultCard(item)));
+  grid.appendChild(fragment);
   renderIcons();
   watchResultMasonry(grid);
   layoutResultMasonry();
   scheduleResultMasonryLayout();
+}
+
+function prependResultCard(item) {
+  const grid = $("#resultGrid");
+  if (!grid) return renderResults();
+  $("#resultMeta").textContent = state.results.length ? `${state.results.length} 张图片` : "生成后的图片会排列在这里";
+  if (grid.classList.contains("empty")) {
+    grid.className = "result-grid";
+    grid.innerHTML = "";
+  }
+  refreshResultNewBadges(grid);
+  const card = createResultCard(item);
+  grid.prepend(card);
+  renderIcons(card);
+  watchResultMasonry(grid);
+  layoutResultMasonry();
+  scheduleResultMasonryLayout();
+}
+
+function createResultCard(item) {
+  const isNew = Boolean(item.generationId && item.generationId === state.latestGenerationId);
+  const card = document.createElement("article");
+  card.className = `image-card${isNew ? " is-new" : ""}`;
+  card.dataset.id = item.id;
+  card.dataset.generationId = item.generationId || "";
+  card.dataset.width = String(item.width || 1);
+  card.dataset.height = String(item.height || 1);
+  card.style.setProperty("--ratio", `${item.width || 1} / ${item.height || 1}`);
+
+  const image = document.createElement("img");
+  image.src = item.src || "";
+  image.alt = item.prompt || "";
+  image.loading = "eager";
+  image.decoding = "async";
+  image.setAttribute("fetchpriority", isNew ? "high" : "auto");
+  card.appendChild(image);
+
+  if (isNew) {
+    const badge = document.createElement("span");
+    badge.className = "new-badge";
+    badge.title = "本次新生成";
+    badge.textContent = "新";
+    card.appendChild(badge);
+  }
+
+  const overlay = document.createElement("div");
+  overlay.className = "card-overlay";
+  const prompt = document.createElement("span");
+  prompt.className = "card-prompt";
+  prompt.textContent = item.prompt || "";
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  actions.append(
+    createResultActionButton("edit", "编辑", "sparkles"),
+    createResultActionButton("reuse", "回填提示词", "rotate"),
+    createResultActionButton("download", "下载", "download"),
+    createResultActionButton("delete", "删除", "trash"),
+  );
+  overlay.append(prompt, actions);
+  card.appendChild(overlay);
+
+  bindResultCard(card, item);
+  return card;
+}
+
+function createResultActionButton(action, title, icon) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.action = action;
+  button.title = title;
+  const iconNode = document.createElement("i");
+  iconNode.dataset.icon = icon;
+  button.appendChild(iconNode);
+  return button;
+}
+
+function refreshResultNewBadges(grid = $("#resultGrid")) {
+  if (!grid) return;
+  grid.querySelectorAll(".image-card.is-new").forEach((card) => {
+    if (card.dataset.generationId === state.latestGenerationId) return;
+    card.classList.remove("is-new");
+    card.querySelector(".new-badge")?.remove();
+    const image = card.querySelector("img");
+    if (image) image.setAttribute("fetchpriority", "auto");
+  });
+}
+
+function bindResultCard(card, item) {
+  const image = card.querySelector("img");
+  const refreshCardLayout = () => {
+    syncResultCardImageSize(card, image);
+    scheduleResultMasonryLayout();
+  };
+  image.addEventListener("load", refreshCardLayout, { once: true });
+  image.addEventListener("error", scheduleResultMasonryLayout, { once: true });
+  if (image.complete) requestAnimationFrame(refreshCardLayout);
+  image.decode?.().then(refreshCardLayout).catch(() => {});
+  image.addEventListener("click", () => openDetail(item.id));
+  card.querySelector('[data-action="edit"]').addEventListener("click", () => openDetail(item.id));
+  card.querySelector('[data-action="reuse"]').addEventListener("click", () => reusePrompt(item.prompt));
+  card.querySelector('[data-action="download"]').addEventListener("click", () => {
+    const latest = state.results.find((result) => result.id === item.id) || item;
+    downloadImage(latest.src, fileNameFor(latest));
+  });
+  card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteResult(item.id));
+}
+
+function updateResultCardAsset(item) {
+  const card = $(`.image-card[data-id="${cssEscape(item.id)}"]`);
+  if (!card) {
+    scheduleResultMasonryLayout();
+    return;
+  }
+  card.dataset.width = String(item.width || 1);
+  card.dataset.height = String(item.height || 1);
+  card.style.setProperty("--ratio", `${item.width || 1} / ${item.height || 1}`);
+  const image = card.querySelector("img");
+  if (image && image.getAttribute("src") !== item.src) {
+    const next = new Image();
+    next.onload = () => {
+      image.src = item.src;
+      syncResultCardImageSize(card, image);
+      scheduleResultMasonryLayout();
+    };
+    next.onerror = () => scheduleResultMasonryLayout();
+    next.src = item.src;
+  } else {
+    syncResultCardImageSize(card, image);
+    scheduleResultMasonryLayout();
+  }
 }
 
 function syncResultCardImageSize(card, image) {
@@ -2591,6 +2689,11 @@ function syncResultCardImageSize(card, image) {
   card.dataset.width = String(width);
   card.dataset.height = String(height);
   card.style.setProperty("--ratio", `${width} / ${height}`);
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, "\\$&");
 }
 
 function disconnectResultMasonryObserver() {
@@ -6000,8 +6103,8 @@ function showToast(message) {
   }, 5200);
 }
 
-function renderIcons() {
-  document.querySelectorAll("i[data-icon]").forEach((icon) => {
+function renderIcons(root = document) {
+  root.querySelectorAll("i[data-icon]").forEach((icon) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
