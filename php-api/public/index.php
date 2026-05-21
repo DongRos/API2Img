@@ -468,6 +468,7 @@ function billing_config(PDO $pdo, array $config): void
         'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
         'modelName' => (string)$platform['model_name'],
+        'modelOptions' => $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name']),
         'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
     ]);
 }
@@ -551,7 +552,7 @@ function generate_ticket(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $model = custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
+    $model = select_platform_model($platform, (string)($payload['model'] ?? ''));
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
@@ -585,7 +586,7 @@ function generate_direct_config(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $model = custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
+    $model = select_platform_model($platform, (string)($payload['model'] ?? ''));
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
@@ -619,7 +620,7 @@ function generate_platform(PDO $pdo, array $config): void
 {
     $payload = read_json();
     $platform = platform_config($pdo, $config);
-    $model = custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
+    $model = select_platform_model($platform, (string)($payload['model'] ?? ''));
     $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
     if (!$ticket) {
         $user = require_user($pdo, $config);
@@ -635,7 +636,7 @@ function generate_platform(PDO $pdo, array $config): void
     $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
     $count = max(1, min((int)$ticket['count'], (int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = max(1, (int)$ticket['price']);
-    $model = custom_api_model_name((string)($ticket['model'] ?? $platform['model_name'] ?? 'gpt-image-2'));
+    $model = select_platform_model($platform, (string)($ticket['model'] ?? $payload['model'] ?? ''));
     ensure_user_can_afford($pdo, (int)$ticket['uid'], $count * $price);
     $request = enforce_platform_request_count($request, $count);
     $request = platform_request_with_model($request, $model);
@@ -989,6 +990,7 @@ function refund_generation_charge(PDO $pdo, int $userId, int $generationId, stri
 function fallback_platform_config(array $config): array
 {
     $platform = is_array($config['platform'] ?? null) ? $config['platform'] : [];
+    $modelName = custom_api_model_name((string)($platform['model_name'] ?? $platform['modelName'] ?? 'gpt-image-2'));
     return [
         'text_endpoint' => trim((string)($platform['text_endpoint'] ?? '')),
         'edit_endpoint' => trim((string)($platform['edit_endpoint'] ?? '')),
@@ -996,7 +998,8 @@ function fallback_platform_config(array $config): array
         'price_cents' => max(1, (int)($platform['price_cents'] ?? 10)),
         'upstream_cost_cents' => max(0, (int)($platform['upstream_cost_cents'] ?? 0)),
         'max_count' => max(1, (int)($platform['max_count'] ?? 4)),
-        'model_name' => custom_api_model_name((string)($platform['model_name'] ?? $platform['modelName'] ?? 'gpt-image-2')),
+        'model_name' => $modelName,
+        'model_options' => custom_api_model_options($platform['model_options'] ?? $platform['modelOptions'] ?? [], $modelName),
         'request_format' => 'openai',
         'transport_mode' => 'proxy',
         'custom_template' => '',
@@ -1033,6 +1036,7 @@ function normalize_global_platform_config(array $value, array $fallback): array
     }
     $customTemplate = custom_api_template((string)($value['customTemplate'] ?? $value['custom_template'] ?? $fallback['custom_template']));
     $displayName = custom_api_safe_display_name((string)($value['displayName'] ?? $value['display_name'] ?? $value['title'] ?? $fallback['display_name'] ?? ''), 1);
+    $modelName = custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? $fallback['model_name'] ?? 'gpt-image-2'));
     return [
         'text_endpoint' => $textEndpoint,
         'edit_endpoint' => $editEndpoint,
@@ -1040,7 +1044,8 @@ function normalize_global_platform_config(array $value, array $fallback): array
         'price_cents' => $price,
         'upstream_cost_cents' => $upstreamCost,
         'max_count' => $maxCount,
-        'model_name' => custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? $fallback['model_name'] ?? 'gpt-image-2')),
+        'model_name' => $modelName,
+        'model_options' => custom_api_model_options($value['modelOptions'] ?? $value['model_options'] ?? $fallback['model_options'] ?? [], $modelName),
         'request_format' => $requestFormat,
         'transport_mode' => $transportMode,
         'custom_template' => $customTemplate,
@@ -1060,6 +1065,7 @@ function public_global_platform_config(array $platform): array
         'upstreamCostCents' => (int)$platform['upstream_cost_cents'],
         'maxCount' => (int)$platform['max_count'],
         'modelName' => (string)$platform['model_name'],
+        'modelOptions' => $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name']),
         'requestFormat' => (string)$platform['request_format'],
         'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
@@ -1572,6 +1578,7 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
         'upstreamCostCents' => (int)$existingPlatform['upstream_cost_cents'],
         'maxCount' => (int)$existingPlatform['max_count'],
         'modelName' => $current['modelName'],
+        'modelOptions' => $current['modelOptions'],
         'requestFormat' => $current['requestFormat'],
         'transportMode' => $current['transportMode'],
         'customTemplate' => $current['customTemplate'],
@@ -1742,6 +1749,9 @@ function normalize_custom_api_config(array $value): array
     if (!in_array($transportMode, ['direct', 'proxy'], true)) {
         $transportMode = 'proxy';
     }
+    $modelName = custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? 'gpt-image-2'));
+    $modelOptions = custom_api_model_options($value['modelOptions'] ?? $value['model_options'] ?? [], $modelName);
+    $modelName = (string)($modelOptions[0]['name'] ?? $modelName);
     return [
         'id' => preg_replace('/[^\w-]/', '', (string)($value['id'] ?? '')),
         'enabled' => (bool)($value['enabled'] ?? false),
@@ -1752,7 +1762,8 @@ function normalize_custom_api_config(array $value): array
         'requestFormat' => $requestFormat,
         'transportMode' => $transportMode,
         'customTemplate' => custom_api_template((string)($value['customTemplate'] ?? '')),
-        'modelName' => custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? 'gpt-image-2')),
+        'modelName' => $modelName,
+        'modelOptions' => $modelOptions,
         'priceCents' => custom_api_price_cents($value['priceCents'] ?? $value['price_cents'] ?? 10),
         'updatedAt' => (int)($value['updatedAt'] ?? 0),
     ];
@@ -1838,6 +1849,67 @@ function custom_api_model_name(string $modelName): string
     return strlen($modelName) > 120 ? substr($modelName, 0, 120) : $modelName;
 }
 
+function custom_api_model_options($value, string $fallbackModel = 'gpt-image-2'): array
+{
+    $source = is_array($value) ? $value : [];
+    $items = [];
+    $seen = [];
+    foreach ($source as $item) {
+        $name = is_array($item)
+            ? custom_api_model_name((string)($item['name'] ?? $item['modelName'] ?? $item['value'] ?? ''))
+            : custom_api_model_name((string)$item);
+        if ($name === '' || isset($seen[$name])) {
+            continue;
+        }
+        $seen[$name] = true;
+        $tiers = is_array($item) ? ($item['tiers'] ?? $item['resolutions'] ?? $item['resolutionTiers'] ?? []) : [];
+        $items[] = [
+            'name' => $name,
+            'tiers' => custom_api_resolution_tiers($tiers, $name),
+        ];
+        if (count($items) >= 12) {
+            break;
+        }
+    }
+    if ($items) {
+        return $items;
+    }
+    $fallback = custom_api_model_name($fallbackModel);
+    return [[
+        'name' => $fallback,
+        'tiers' => custom_api_resolution_tiers([], $fallback),
+    ]];
+}
+
+function custom_api_resolution_tiers($value, string $modelName = ''): array
+{
+    $source = is_array($value) ? $value : preg_split('/[,\s|\/]+/', (string)$value);
+    $allowed = ['1K', '2K', '4K'];
+    $tiers = [];
+    foreach ($source ?: [] as $item) {
+        $tier = strtoupper(trim((string)$item));
+        if (in_array($tier, $allowed, true) && !in_array($tier, $tiers, true)) {
+            $tiers[] = $tier;
+        }
+    }
+    if ($tiers) {
+        return $tiers;
+    }
+    return stripos($modelName, 'pro') !== false ? ['1K', '2K', '4K'] : ['1K'];
+}
+
+function select_platform_model(array $platform, string $requestedModel): string
+{
+    $requested = custom_api_model_name($requestedModel);
+    $options = custom_api_model_options($platform['model_options'] ?? [], (string)($platform['model_name'] ?? 'gpt-image-2'));
+    foreach ($options as $item) {
+        if ((string)($item['name'] ?? '') === $requested) {
+            return $requested;
+        }
+    }
+    return (string)($options[0]['name'] ?? custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2')));
+}
+
 function is_gpt_image_2_model(string $modelName): bool
 {
     return preg_match('/^gpt-image-2(?:pro)?(?:$|[^a-z0-9])/i', trim($modelName)) === 1;
@@ -1903,6 +1975,7 @@ function custom_api_history_key(array $item): string
         (string)($item['requestFormat'] ?? 'openai'),
         (string)($item['transportMode'] ?? 'direct'),
         (string)($item['modelName'] ?? 'gpt-image-2'),
+        json_encode($item['modelOptions'] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '',
         (string)($item['priceCents'] ?? 10),
     ]);
 }

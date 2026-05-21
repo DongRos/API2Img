@@ -48,15 +48,27 @@ const API_BASE = (window.API2IMAGE_API_BASE || "").replace(/\/+$/, "");
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
+const RESOLUTION_TIERS = [
+  { value: "1K", label: "1K 标准" },
+  { value: "2K", label: "2K 高清" },
+  { value: "4K", label: "4K 超清" },
+];
+
 const ratioPresets = [
-  { label: "自适应", value: "auto", sizes: ["auto"] },
-  { label: "1:1 方图", value: "1:1", sizes: ["auto"] },
-  { label: "4:3 横图", value: "4:3", sizes: ["auto"] },
-  { label: "3:4 竖图", value: "3:4", sizes: ["auto"] },
-  { label: "16:9 宽屏", value: "16:9", sizes: ["auto"] },
-  { label: "9:16 竖屏", value: "9:16", sizes: ["auto"] },
-  { label: "2:3 海报", value: "2:3", sizes: ["auto"] },
-  { label: "3:2 摄影", value: "3:2", sizes: ["auto"] },
+  { label: "1:1 方图", value: "1:1", note: "方图", sizes: { "1K": "1024x1024", "2K": "2048x2048", "4K": "2880x2880" } },
+  { label: "5:4 横图", value: "5:4", note: "横图", sizes: { "1K": "1040x832", "2K": "2080x1664", "4K": "3200x2560" } },
+  { label: "9:16 竖屏", value: "9:16", note: "竖屏", sizes: { "1K": "720x1280", "2K": "1152x2048", "4K": "2160x3840" } },
+  { label: "16:9 横屏", value: "16:9", note: "横屏", sizes: { "1K": "1280x720", "2K": "2048x1152", "4K": "3840x2160" } },
+  { label: "4:3 横图", value: "4:3", note: "横图", sizes: { "1K": "1024x768", "2K": "2048x1536", "4K": "3264x2448" } },
+  { label: "3:2 摄影横图", value: "3:2", note: "摄影横图", sizes: { "1K": "1008x672", "2K": "2016x1344", "4K": "3504x2336" } },
+  { label: "4:5 社媒竖图", value: "4:5", note: "社媒竖图", sizes: { "1K": "832x1040", "2K": "1664x2080", "4K": "2560x3200" } },
+  { label: "3:4 竖图", value: "3:4", note: "竖图", sizes: { "1K": "768x1024", "2K": "1536x2048", "4K": "2448x3264" } },
+  { label: "2:3 海报", value: "2:3", note: "海报", sizes: { "1K": "672x1008", "2K": "1344x2016", "4K": "2336x3504" } },
+  { label: "21:9 超宽屏", value: "21:9", note: "超宽屏", sizes: { "1K": "1344x576", "2K": "2016x864", "4K": "3696x1584" } },
+];
+
+const DEFAULT_MODEL_OPTIONS = [
+  { name: "gpt-image-2", tiers: ["1K"] },
 ];
 
 const qualityPresets = [
@@ -108,6 +120,7 @@ const config = {
   customTemplate: defaultTemplate,
   multiImageMode: "single",
   modelName: "gpt-image-2",
+  modelOptions: DEFAULT_MODEL_OPTIONS,
   apiProvider: "platform",
 };
 
@@ -137,6 +150,7 @@ const billingState = {
   platformTransportMode: "proxy",
   platformCustomTemplate: "",
   platformModelName: "",
+  platformModelOptions: DEFAULT_MODEL_OPTIONS,
   platformDisplayName: "站点配置1",
   ledger: [],
   ledgerLoading: false,
@@ -281,6 +295,7 @@ function fillControls() {
   $("#ratioSelect").innerHTML = ratioPresets.map((item) => optionHtml(item.value, item.label)).join("");
   $("#countSelect").innerHTML = [1, 2, 3, 4, 6, 8].map((count) => optionHtml(String(count), `${count} 张`)).join("");
   $("#qualitySelect").innerHTML = qualityPresets.map((item) => optionHtml(item.value, item.label)).join("");
+  renderModelSelector();
   syncSizeOptions();
 }
 
@@ -351,9 +366,14 @@ function bindEvents() {
   $("#applyGlobalApiConfigButton")?.addEventListener("click", applyCustomApiAsGlobal);
   $("#adminCustomRequestFormat")?.addEventListener("change", updateAdminCustomTemplateVisibility);
   $("#adminCustomHistoryList")?.addEventListener("click", onAdminCustomHistoryClick);
+  $("#addAdminModelButton")?.addEventListener("click", addAdminModelRow);
+  $("#adminModelList")?.addEventListener("input", onAdminModelListChange);
+  $("#adminModelList")?.addEventListener("change", onAdminModelListChange);
+  $("#adminModelList")?.addEventListener("click", onAdminModelListClick);
   $("#cancelGenerateButton").addEventListener("click", cancelGeneration);
   $("#generationProgress").addEventListener("click", onProgressClick);
   $("#ratioSelect").addEventListener("change", syncSizeOptions);
+  $("#resolutionTierSelect")?.addEventListener("change", syncSizeOptions);
   $("#multiImageMode")?.addEventListener("change", saveMultiImageMode);
   $("#requestFormat")?.addEventListener("change", updateTemplateVisibility);
   $("#configHistoryList")?.addEventListener("click", onConfigHistoryClick);
@@ -486,7 +506,12 @@ function updateSendLoginCodeButton() {
 
 function onModelSelect() {
   const input = $("#modelName");
-  if (input) input.value = normalizeModelName(input.value);
+  if (input) {
+    input.value = normalizeModelName(input.value);
+    config.modelName = input.value;
+  }
+  syncSizeOptions();
+  saveActiveConfig();
 }
 
 async function generateImages(extra = {}) {
@@ -1183,20 +1208,9 @@ function effectiveRequestSize(options = {}) {
 }
 
 function requestSizeFromRatio(ratio = "") {
-  switch (String(ratio || "").trim()) {
-    case "1:1":
-      return "1024x1024";
-    case "3:4":
-    case "9:16":
-    case "2:3":
-      return "1024x1536";
-    case "4:3":
-    case "16:9":
-    case "3:2":
-      return "1536x1024";
-    default:
-      return "";
-  }
+  const preset = ratioPresets.find((item) => item.value === String(ratio || "").trim());
+  const tier = $("#resolutionTierSelect")?.value || "1K";
+  return preset?.sizes?.[tier] || preset?.sizes?.["1K"] || "";
 }
 
 function inferAutoRequestSize(options = {}) {
@@ -3016,23 +3030,88 @@ async function clearResults() {
 function syncSizeOptions() {
   const preset = ratioPresets.find((item) => item.value === $("#ratioSelect").value) || ratioPresets[0];
   const select = $("#sizeSelect");
-  const previousSize = select.value;
-  select.innerHTML = preset.sizes.map((size) => optionHtml(size, size)).join("");
-  select.value = preset.sizes.includes(previousSize) ? previousSize : preset.sizes[0];
+  const tierSelect = $("#resolutionTierSelect");
+  const model = selectedModelOption();
+  const allowedTiers = normalizeResolutionTiers(model?.tiers, model?.name);
+  const previousTier = tierSelect?.value || allowedTiers[0];
+  if (tierSelect) {
+    tierSelect.innerHTML = RESOLUTION_TIERS
+      .filter((tier) => allowedTiers.includes(tier.value))
+      .map((tier) => optionHtml(tier.value, tier.label))
+      .join("");
+    tierSelect.value = allowedTiers.includes(previousTier) ? previousTier : allowedTiers[0];
+  }
+  const tier = tierSelect?.value || allowedTiers[0] || "1K";
+  const size = preset.sizes?.[tier] || preset.sizes?.["1K"] || DEFAULT_IMAGE_SIZE;
+  select.innerHTML = optionHtml(size, `${size} · ${preset.note || preset.value}`);
+  select.value = size;
 }
 
 function getModelName() {
   const input = $("#modelName");
-  const modelName = isPlatformApiSelected()
-    ? normalizeModelName(billingState.platformModelName || config.modelName || FIXED_MODEL_NAME)
-    : normalizeModelName(config.modelName || input?.value || FIXED_MODEL_NAME);
+  const options = currentModelOptions();
+  const fallback = options[0]?.name || billingState.platformModelName || config.modelName || FIXED_MODEL_NAME;
+  const modelName = normalizeModelName(input?.value || config.modelName || fallback);
   if (input) input.value = modelName;
+  config.modelName = modelName;
   return modelName;
 }
 
 function normalizeModelName(value = "") {
   const text = String(value || "").trim().replace(/\s+/g, "");
   return text ? text.slice(0, 120) : FIXED_MODEL_NAME;
+}
+
+function defaultModelTiers(modelName = "") {
+  return isGptImage2Model(modelName) && /pro/i.test(modelName) ? ["1K", "2K", "4K"] : ["1K"];
+}
+
+function normalizeResolutionTiers(value, modelName = "") {
+  const source = Array.isArray(value) ? value : String(value || "").split(/[,\s|/]+/);
+  const tiers = source
+    .map((tier) => String(tier || "").trim().toUpperCase())
+    .filter((tier) => RESOLUTION_TIERS.some((item) => item.value === tier));
+  const clean = [...new Set(tiers)];
+  return clean.length ? clean : defaultModelTiers(modelName);
+}
+
+function normalizeModelOptions(value, fallbackModel = FIXED_MODEL_NAME) {
+  const source = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const items = source
+    .map((item) => {
+      const name = normalizeModelName(typeof item === "string" ? item : item?.name || item?.modelName || item?.value || "");
+      if (!name || seen.has(name)) return null;
+      seen.add(name);
+      return { name, tiers: normalizeResolutionTiers(item?.tiers || item?.resolutions || item?.resolutionTiers, name) };
+    })
+    .filter(Boolean);
+  if (items.length) return items.slice(0, 12);
+  const fallback = normalizeModelName(fallbackModel || FIXED_MODEL_NAME);
+  return [{ name: fallback, tiers: defaultModelTiers(fallback) }];
+}
+
+function currentModelOptions() {
+  if (isPlatformApiSelected()) {
+    return normalizeModelOptions(billingState.platformModelOptions, billingState.platformModelName || FIXED_MODEL_NAME);
+  }
+  return normalizeModelOptions(config.modelOptions, config.modelName || FIXED_MODEL_NAME);
+}
+
+function selectedModelOption() {
+  const name = normalizeModelName($("#modelName")?.value || config.modelName || FIXED_MODEL_NAME);
+  return currentModelOptions().find((item) => item.name === name) || currentModelOptions()[0];
+}
+
+function renderModelSelector() {
+  const input = $("#modelName");
+  if (!input) return;
+  const options = currentModelOptions();
+  const previous = normalizeModelName(input.value || config.modelName || billingState.platformModelName || FIXED_MODEL_NAME);
+  input.innerHTML = options.map((item) => optionHtml(item.name, item.name)).join("");
+  const value = options.some((item) => item.name === previous) ? previous : options[0]?.name || FIXED_MODEL_NAME;
+  input.value = value;
+  config.modelName = value;
 }
 
 function loadConfig() {
@@ -3046,6 +3125,7 @@ function loadConfig() {
     config.multiImageMode = "single";
     config.transportMode = normalizeCustomTransportMode(config.textEndpoint || "", config.editEndpoint || "", config.transportMode || "proxy");
     config.modelName = normalizeModelName(config.modelName || FIXED_MODEL_NAME);
+    config.modelOptions = normalizeModelOptions(config.modelOptions, config.modelName);
   } catch {
     showToast("配置读取失败");
   }
@@ -3062,7 +3142,9 @@ function hydrateConfig() {
   if ($("#apiProviderSelect")) $("#apiProviderSelect").value = config.apiProvider || "platform";
   if ($("#customTemplate")) $("#customTemplate").value = config.customTemplate || defaultTemplate;
   config.modelName = normalizeModelName(config.modelName || FIXED_MODEL_NAME);
-  if ($("#modelName")) $("#modelName").value = config.modelName;
+  config.modelOptions = normalizeModelOptions(config.modelOptions, config.modelName);
+  renderModelSelector();
+  syncSizeOptions();
   updateTemplateVisibility();
   updateApiProviderUi();
 }
@@ -3129,6 +3211,7 @@ function saveActiveConfig() {
     apiProvider: "platform",
     customTemplate: config.customTemplate || defaultTemplate,
     modelName: normalizeModelName(config.modelName || FIXED_MODEL_NAME),
+    modelOptions: normalizeModelOptions(config.modelOptions, config.modelName),
     configVersion: CONFIG_VERSION,
   };
   localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted));
@@ -3157,6 +3240,7 @@ function sanitizeConfigSnapshot(snapshot) {
     apiProvider: snapshot.apiProvider || "platform",
     customTemplate: snapshot.customTemplate || defaultTemplate,
     modelName: normalizeModelName(snapshot.modelName || FIXED_MODEL_NAME),
+    modelOptions: normalizeModelOptions(snapshot.modelOptions, snapshot.modelName || FIXED_MODEL_NAME),
     updatedAt: Number(snapshot.updatedAt) || Date.now(),
   };
 }
@@ -3179,6 +3263,7 @@ function configHistoryKey(item) {
     item.multiImageMode,
     item.apiProvider,
     item.modelName,
+    JSON.stringify(item.modelOptions || []),
   ].join("|");
 }
 
@@ -3242,6 +3327,19 @@ function uniqueHistoryDisplayName(item = {}, index = 0, usedNames = new Set()) {
   return name;
 }
 
+function apiHistoryDisplayNumber(item = {}, index = 0) {
+  const name = String(item.title || item.displayName || "").trim();
+  const match = name.match(/(\d+)$/);
+  return match ? Number(match[1]) : index + 1;
+}
+
+function sortedApiHistory(items = []) {
+  return [...items].sort((left, right) => (
+    apiHistoryDisplayNumber(right) - apiHistoryDisplayNumber(left) ||
+    Number(right.updatedAt || 0) - Number(left.updatedAt || 0)
+  ));
+}
+
 function renderConfigHistory() {
   const list = $("#configHistoryList");
   if (!list) return;
@@ -3252,7 +3350,7 @@ function renderConfigHistory() {
   }
 
   const usedNames = new Set();
-  list.innerHTML = configHistory
+  list.innerHTML = sortedApiHistory(configHistory)
     .map((item, index) => {
       const displayName = uniqueHistoryDisplayName(item, index, usedNames);
       const keyLabel = item.apiKey ? maskApiKey(item.apiKey) : "未保存 Key";
@@ -3263,7 +3361,7 @@ function renderConfigHistory() {
           <button class="config-history-main" type="button" data-action="switch-config">
             <strong>${escapeHtml(displayName)}</strong>
             <span>${escapeHtml("站点 API 配置")}</span>
-            <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${escapeHtml(item.requestFormat || "openai")} · ${transportLabel} · ${multiLabel} · ${keyLabel}</small>
+            <small>${escapeHtml(modelOptionsLabel(item))} · ${escapeHtml(item.requestFormat || "openai")} · ${transportLabel} · ${multiLabel} · ${keyLabel}</small>
           </button>
           <button class="icon-button config-history-delete" type="button" data-action="delete-config" title="删除配置">
             <i data-icon="trash"></i>
@@ -3358,7 +3456,10 @@ async function loadBillingConfig() {
   billingState.platformTransportMode = info.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = info.customTemplate || "";
   billingState.platformModelName = normalizeModelName(info.modelName || FIXED_MODEL_NAME);
+  billingState.platformModelOptions = normalizeModelOptions(info.modelOptions, billingState.platformModelName);
   billingState.platformDisplayName = normalizeApiDisplayName(info.displayName || billingState.platformDisplayName);
+  renderModelSelector();
+  syncSizeOptions();
   warmDirectApiBase();
   return billingState.platformEnabled;
 }
@@ -4129,6 +4230,7 @@ async function applyCustomApiAsGlobal() {
     billingState.platformTransportMode = serverConfig.transportMode === "direct" ? "direct" : "proxy";
     billingState.platformCustomTemplate = serverConfig.customTemplate || "";
     billingState.platformModelName = normalizeModelName(serverConfig.modelName || FIXED_MODEL_NAME);
+    billingState.platformModelOptions = normalizeModelOptions(serverConfig.modelOptions, billingState.platformModelName);
     billingState.platformDisplayName = normalizeApiDisplayName(serverConfig.displayName || serverConfig.title || billingState.platformDisplayName);
     applyCustomApiRuntimeConfig(serverConfig);
     hydrateAdminCustomApiForm(serverConfig);
@@ -4159,6 +4261,7 @@ function readAdminCustomApiForm() {
   const textEndpoint = $("#adminCustomTextEndpoint")?.value.trim() || "";
   const editEndpoint = $("#adminCustomEditEndpoint")?.value.trim() || "";
   const transportMode = normalizeCustomTransportMode(textEndpoint, editEndpoint, $("#adminCustomTransportMode")?.value || "proxy");
+  const modelOptions = readAdminModelOptions();
   return {
     enabled: Boolean($("#adminCustomApiEnabled")?.checked),
     textEndpoint,
@@ -4167,7 +4270,8 @@ function readAdminCustomApiForm() {
     requestFormat: $("#adminCustomRequestFormat")?.value || "openai",
     transportMode,
     customTemplate: $("#adminCustomTemplate")?.value.trim() || defaultTemplate,
-    modelName: normalizeModelName($("#adminCustomModelName")?.value || FIXED_MODEL_NAME),
+    modelName: modelOptions[0]?.name || normalizeModelName($("#adminCustomModelName")?.value || FIXED_MODEL_NAME),
+    modelOptions,
     priceCents: Math.max(1, Math.round(Number($("#adminCustomPriceYuan")?.value || 0) * 100)),
   };
 }
@@ -4184,7 +4288,10 @@ function applyGlobalApiInfo(item = {}) {
   billingState.platformTransportMode = item.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = item.customTemplate || "";
   billingState.platformModelName = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
+  billingState.platformModelOptions = normalizeModelOptions(item.modelOptions, billingState.platformModelName);
   billingState.platformDisplayName = normalizeApiDisplayName(item.displayName || item.title || billingState.platformDisplayName);
+  renderModelSelector();
+  syncSizeOptions();
 }
 
 function apiPricingStatus(debugConfig = {}, globalConfig = {}) {
@@ -4203,7 +4310,7 @@ function hydrateAdminCustomApiForm(item = {}) {
     $("#adminCustomTransportMode").value = normalizeCustomTransportMode(item.textEndpoint || "", item.editEndpoint || "", item.transportMode || "proxy");
   }
   if ($("#adminCustomTemplate")) $("#adminCustomTemplate").value = item.customTemplate || defaultTemplate;
-  if ($("#adminCustomModelName")) $("#adminCustomModelName").value = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
+  renderAdminModelList(item.modelOptions || [{ name: item.modelName || FIXED_MODEL_NAME, tiers: defaultModelTiers(item.modelName || FIXED_MODEL_NAME) }]);
   if ($("#adminCustomPriceYuan")) {
     const price = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
     $("#adminCustomPriceYuan").value = formatCodeAdminAmount(price / 100);
@@ -4236,7 +4343,7 @@ function applyCustomApiRuntimeConfig(item = {}) {
   config.multiImageMode = "single";
   config.apiProvider = customDebugState.enabled ? "custom" : "platform";
   config.modelName = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
-  if ($("#modelName")) $("#modelName").value = config.modelName;
+  config.modelOptions = normalizeModelOptions(item.modelOptions, config.modelName);
   hydrateConfig();
   saveActiveConfig();
   updateApiProviderUi();
@@ -4247,6 +4354,71 @@ function updateAdminCustomTemplateVisibility() {
   if (field) field.hidden = ($("#adminCustomRequestFormat")?.value || "openai") !== "json";
 }
 
+function readAdminModelOptions() {
+  const rows = [...document.querySelectorAll("#adminModelList .admin-model-row")];
+  const options = rows.map((row) => {
+    const name = normalizeModelName(row.querySelector(".admin-model-name")?.value || "");
+    const tiers = [...row.querySelectorAll("[data-tier]:checked")].map((input) => input.dataset.tier);
+    return name ? { name, tiers: normalizeResolutionTiers(tiers, name) } : null;
+  }).filter(Boolean);
+  const clean = normalizeModelOptions(options, $("#adminCustomModelName")?.value || FIXED_MODEL_NAME);
+  syncAdminPrimaryModelField(clean);
+  return clean;
+}
+
+function syncAdminPrimaryModelField(options = readAdminModelOptions()) {
+  const hidden = $("#adminCustomModelName");
+  if (hidden) hidden.value = options[0]?.name || FIXED_MODEL_NAME;
+}
+
+function renderAdminModelList(modelOptions = []) {
+  const list = $("#adminModelList");
+  if (!list) return;
+  const options = normalizeModelOptions(modelOptions, $("#adminCustomModelName")?.value || FIXED_MODEL_NAME);
+  list.innerHTML = options.map((item, index) => adminModelRowHtml(item, index)).join("");
+  syncAdminPrimaryModelField(options);
+  renderIcons();
+}
+
+function adminModelRowHtml(item = {}, index = 0) {
+  const tiers = normalizeResolutionTiers(item.tiers, item.name);
+  const tierControls = RESOLUTION_TIERS.map((tier) => `
+    <label>
+      <input type="checkbox" data-tier="${escapeHtml(tier.value)}" ${tiers.includes(tier.value) ? "checked" : ""} />
+      <span>${escapeHtml(tier.value)}</span>
+    </label>
+  `).join("");
+  return `
+    <div class="admin-model-row" data-model-row>
+      <input class="admin-model-name" type="text" value="${escapeHtml(item.name || "")}" placeholder="${index === 0 ? "gpt-image-2" : "gpt-image-2pro"}" />
+      <div class="admin-model-tiers">${tierControls}</div>
+      <button class="icon-button" type="button" data-action="remove-admin-model" title="删除模型" ${index === 0 ? "disabled" : ""}>
+        <i data-icon="trash"></i>
+      </button>
+    </div>
+  `;
+}
+
+function addAdminModelRow() {
+  const current = readAdminModelOptions();
+  const nextName = current.some((item) => item.name === "gpt-image-2pro") ? "" : "gpt-image-2pro";
+  renderAdminModelList([...current, { name: nextName, tiers: nextName ? ["1K", "2K", "4K"] : ["1K"] }]);
+  $("#adminModelList .admin-model-row:last-child .admin-model-name")?.focus();
+}
+
+function onAdminModelListChange() {
+  syncAdminPrimaryModelField(readAdminModelOptions());
+}
+
+function onAdminModelListClick(event) {
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  if (action !== "remove-admin-model") return;
+  const row = event.target.closest("[data-model-row]");
+  if (!row || document.querySelectorAll("#adminModelList .admin-model-row").length <= 1) return;
+  row.remove();
+  syncAdminPrimaryModelField(readAdminModelOptions());
+}
+
 function renderAdminCustomHistory() {
   const list = $("#adminCustomHistoryList");
   if (!list) return;
@@ -4255,7 +4427,7 @@ function renderAdminCustomHistory() {
     return;
   }
   const usedNames = new Set();
-  list.innerHTML = customDebugState.history
+  list.innerHTML = sortedApiHistory(customDebugState.history)
     .map((item, index) => {
       const displayName = uniqueHistoryDisplayName(item, index, usedNames);
       const endpointLabel = adminEndpointHistoryLabel(item);
@@ -4269,7 +4441,7 @@ function renderAdminCustomHistory() {
           <button class="config-history-main" type="button" data-action="apply-admin-custom">
             <strong>${escapeHtml(displayName)}</strong>
             <span class="config-history-url" title="${escapeHtml(endpointLabel)}">${escapeHtml(endpointLabel)}</span>
-            <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${formatLabel} · ${transportLabel} · ${priceLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
+            <small>${escapeHtml(modelOptionsLabel(item))} · ${formatLabel} · ${transportLabel} · ${priceLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
           </button>
           <button class="icon-button config-history-delete" type="button" data-action="delete-admin-custom" title="删除配置记录">
             <i data-icon="trash"></i>
@@ -4295,8 +4467,22 @@ function sameApiConfig(left = {}, right = {}) {
     String(left.editEndpoint || "").trim() === String(right.editEndpoint || "").trim() &&
     String(left.requestFormat || "openai") === String(right.requestFormat || "openai") &&
     String(left.transportMode || "proxy") === String(right.transportMode || "proxy") &&
-    normalizeModelName(left.modelName || FIXED_MODEL_NAME) === normalizeModelName(right.modelName || FIXED_MODEL_NAME)
+    normalizeModelName(left.modelName || FIXED_MODEL_NAME) === normalizeModelName(right.modelName || FIXED_MODEL_NAME) &&
+    modelOptionsKey(left.modelOptions, left.modelName) === modelOptionsKey(right.modelOptions, right.modelName)
   );
+}
+
+function modelOptionsKey(options, fallbackModel = FIXED_MODEL_NAME) {
+  return JSON.stringify(normalizeModelOptions(options, fallbackModel).map((item) => ({
+    name: item.name,
+    tiers: normalizeResolutionTiers(item.tiers, item.name).sort(),
+  })));
+}
+
+function modelOptionsLabel(item = {}) {
+  return normalizeModelOptions(item.modelOptions, item.modelName || FIXED_MODEL_NAME)
+    .map((model) => `${model.name}:${normalizeResolutionTiers(model.tiers, model.name).join("/")}`)
+    .join("，");
 }
 
 function onAdminCustomHistoryClick(event) {
@@ -5557,7 +5743,16 @@ function formatDurationLabel(milliseconds) {
 
 function ensureModelOption(model) {
   const input = $("#modelName");
-  if (input) input.value = normalizeModelName(model || FIXED_MODEL_NAME);
+  if (!input) return;
+  const modelName = normalizeModelName(model || FIXED_MODEL_NAME);
+  const options = currentModelOptions();
+  if (!options.some((item) => item.name === modelName)) {
+    config.modelOptions = normalizeModelOptions([...options, { name: modelName, tiers: defaultModelTiers(modelName) }], modelName);
+    renderModelSelector();
+  }
+  input.value = modelName;
+  config.modelName = modelName;
+  syncSizeOptions();
 }
 
 function optionHtml(value, label) {
