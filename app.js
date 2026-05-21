@@ -3873,20 +3873,69 @@ function renderAdminCustomHistory() {
             <span class="config-history-url" title="${escapeHtml(endpointLabel)}">${escapeHtml(endpointLabel)}</span>
             <small>${escapeHtml(item.modelName || "gpt-image-2")} · ${formatLabel} · ${transportLabel} · ${priceLabel} · 逐张稳定 · ${escapeHtml(keyLabel)}</small>
           </button>
+          <button class="icon-button config-history-delete" type="button" data-action="delete-admin-custom" title="删除配置记录">
+            <i data-icon="trash"></i>
+          </button>
         </div>
       `;
     })
     .join("");
+  renderIcons();
 }
 
 function onAdminCustomHistoryClick(event) {
   const action = event.target.closest("[data-action]")?.dataset.action;
   const row = event.target.closest("[data-admin-custom-id]");
-  if (action !== "apply-admin-custom" || !row) return;
+  if (!action || !row) return;
+  if (action === "delete-admin-custom") {
+    deleteAdminCustomHistory(row.dataset.adminCustomId);
+    return;
+  }
+  if (action !== "apply-admin-custom") return;
   const item = customDebugState.history.find((entry) => entry.id === row.dataset.adminCustomId);
   if (!item) return;
   hydrateAdminCustomApiForm({ ...item, enabled: true });
   showToast("已填入历史配置，确认后点击保存并应用");
+}
+
+async function deleteAdminCustomHistory(id) {
+  const password = adminPassword();
+  if (!password) {
+    showToast("请先输入管理员密码");
+    return;
+  }
+  if (!id) return;
+  const previous = customDebugState.history;
+  customDebugState.history = customDebugState.history.filter((entry) => entry.id !== id);
+  renderAdminCustomHistory();
+  setCustomApiAdminStatus("正在删除配置记录...");
+  try {
+    const response = await apiFetchPreferDirect("/api/admin/custom-api/history/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify({ id }),
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "配置记录删除",
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `删除失败：HTTP ${response.status}`);
+    customDebugState.history = Array.isArray(payload.history) ? payload.history : customDebugState.history;
+    customDebugState.global = payload.global || customDebugState.global;
+    renderAdminCustomHistory();
+    setCustomApiAdminStatus(apiPricingStatus(customDebugState.current || {}, customDebugState.global || {}));
+    showToast("已删除配置记录");
+  } catch (error) {
+    customDebugState.history = previous;
+    renderAdminCustomHistory();
+    setCustomApiAdminStatus("删除失败");
+    showToast(error.message || "删除配置记录失败");
+  }
 }
 
 function setCustomApiAdminStatus(text) {

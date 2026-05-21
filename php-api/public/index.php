@@ -126,6 +126,10 @@ function route_request(PDO $pdo, array $config): void
         admin_apply_custom_api_global($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/admin/custom-api/history/delete') {
+        admin_delete_custom_api_history($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/admin/proxy-image') {
         admin_proxy_image($pdo, $config);
         return;
@@ -1345,6 +1349,30 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
         'global' => $global,
         'priceCents' => (int)$global['priceCents'],
         'platformEnabled' => platform_is_configured(platform_config($pdo, $config)),
+    ]);
+}
+
+function admin_delete_custom_api_history(PDO $pdo, array $config): void
+{
+    require_admin($pdo, $config);
+    $payload = read_json();
+    $id = preg_replace('/[^\w-]/', '', (string)($payload['id'] ?? ''));
+    if ($id === '') {
+        throw new HttpError('缺少要删除的配置记录', 400, 'custom_api_history_id_required');
+    }
+
+    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $history = normalize_custom_api_history($settings['history'] ?? []);
+    $history = array_values(array_filter($history, static fn($item) => (string)($item['id'] ?? '') !== $id));
+    write_admin_setting_json($pdo, 'custom_api_debug', [
+        'current' => normalize_custom_api_config($settings['current'] ?? []),
+        'history' => $history,
+    ]);
+    $global = public_global_platform_config(platform_config($pdo, $config));
+    json_response([
+        'ok' => true,
+        'history' => $history,
+        'global' => $global,
     ]);
 }
 
