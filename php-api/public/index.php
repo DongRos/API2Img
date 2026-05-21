@@ -1201,8 +1201,8 @@ function platform_reference_json_request(array $config, string $endpoint, array 
         if (!is_array($file)) {
             continue;
         }
-        [$bytes, , $extension] = reference_image_decode((string)($file['dataUrl'] ?? ''));
-        $body['reference_images'][] = reference_image_store($config, $bytes, $extension);
+        [$bytes] = reference_image_decode((string)($file['dataUrl'] ?? ''));
+        $body['reference_images'][] = base64_encode($bytes);
     }
     if (!count($body['reference_images'])) {
         throw new RuntimeException('图生图参考图为空');

@@ -963,6 +963,13 @@ async function referenceImageUrlsForApi(images = []) {
   return Promise.all(requestImages.slice(0, 4).map((image, index) => referenceImageUrlForApi(image, index)));
 }
 
+async function referenceImageValuesForApi(images = [], options = {}) {
+  const requestImages = await normalizeReferenceImagesForRequest(images);
+  return Promise.all(requestImages.slice(0, 4).map((image, index) => (
+    options.preferBase64 ? referenceImageBase64ForApi(image, index) : referenceImageUrlForApi(image, index)
+  )));
+}
+
 async function referenceImageUrlForApi(image, index = 0) {
   const source = String(image?.dataUrl || image?.url || "").trim();
   if (/^https?:\/\//i.test(source)) return source;
@@ -985,6 +992,16 @@ async function referenceImageUrlForApi(image, index = 0) {
     throw new Error(payload?.error?.message || `参考图上传失败：HTTP ${response.status}`);
   }
   return payload.url;
+}
+
+async function referenceImageBase64ForApi(image, index = 0) {
+  const source = String(image?.dataUrl || image?.url || "").trim();
+  if (/^https?:\/\//i.test(source)) return source;
+  const match = source.match(/^data:image\/(?:png|jpe?g|webp);base64,(.*)$/is);
+  if (!match) throw new Error("参考图需要是图片 URL 或本地图片数据");
+  const value = match[1].replace(/\s+/g, "");
+  if (!value) throw new Error(`第 ${index + 1} 张参考图为空`);
+  return value;
 }
 
 async function imageBlobDimensions(blob) {
@@ -1081,7 +1098,9 @@ function buildImageJsonBody(options, variant) {
 
 async function buildReferenceImageJsonBody(options, variant) {
   const body = buildImageJsonBody(options, variant);
-  body.reference_images = await referenceImageUrlsForApi(options.referenceImages || []);
+  body.reference_images = await referenceImageValuesForApi(options.referenceImages || [], {
+    preferBase64: isGptImage2Model(options.model),
+  });
   if (!body.reference_images.length) throw new Error("图生图参考图为空");
   return body;
 }
@@ -1092,11 +1111,13 @@ async function referenceJsonRequestFromMultipart(endpoint, request, modelName = 
   const body = {
     model: normalizeModelName(fields.model || modelName || FIXED_MODEL_NAME),
     prompt: String(fields.prompt || ""),
-    reference_images: await referenceImageUrlsForApi(files.map((file, index) => ({
+    reference_images: await referenceImageValuesForApi(files.map((file, index) => ({
       name: file?.filename || `reference-${index + 1}.png`,
       dataUrl: file?.dataUrl || "",
       url: file?.url || "",
-    }))),
+    })), {
+      preferBase64: isGptImage2Model(fields.model || modelName),
+    }),
   };
   if (!body.reference_images.length) throw new Error("图生图参考图为空");
   const size = String(fields.size || "").trim();
@@ -1525,7 +1546,7 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
   const requestLog = startRequestLog(endpoint, request, options, meta);
   const billingRequestId = request.billingRequestId || options.billingRequestId || (options.generationId ? platformBillingRequestId(options) : "");
   try {
-    const response = await sendImageRequest(endpoint, request);
+    const response = await sendImageRequest(endpoint, request, requestLog);
     const statsEndpoint = response.platformStatsEndpoint || endpoint;
     const statsOptions = {
       ...options,
@@ -1556,9 +1577,9 @@ async function sendAndParseImageRequest(endpoint, request, options, meta = {}) {
   }
 }
 
-async function sendImageRequest(endpoint, request) {
+async function sendImageRequest(endpoint, request, requestLog = null) {
   if (isPlatformApiSelected()) {
-    return fetchPlatformServerImageRequest(endpoint, request);
+    return fetchPlatformServerImageRequest(endpoint, request, requestLog);
   }
 
   return fetchCustomImageRequest(endpoint, request);
@@ -1644,11 +1665,11 @@ function shouldSwitchCustomTransportError(error, elapsedMs = 0) {
   return isRetryableFetchError(error) || /cors|cross-?origin|preflight/i.test(error?.message || String(error));
 }
 
-async function fetchPlatformServerImageRequest(endpoint, request) {
+async function fetchPlatformServerImageRequest(endpoint, request, requestLog = null) {
   await ensurePlatformBrowserGlobalConfigLoaded();
   const browserConfigs = platformBrowserConfigCandidates(request);
   if (browserConfigs.length) {
-    return fetchPlatformBrowserImageRequest(request, browserConfigs);
+    return fetchPlatformBrowserImageRequest(request, browserConfigs, requestLog);
   }
 
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
@@ -1678,7 +1699,7 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
   return response;
 }
 
-async function fetchPlatformBrowserImageRequest(request, platformConfigs) {
+async function fetchPlatformBrowserImageRequest(request, platformConfigs, requestLog = null) {
   const configs = Array.isArray(platformConfigs) ? platformConfigs : [platformConfigs];
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
   const mode = billingMode || $("#modeSelect").value;
@@ -1710,6 +1731,7 @@ async function fetchPlatformBrowserImageRequest(request, platformConfigs) {
       shouldUseReferenceImageUrlJson(endpoint, modelName)
     ) {
       outgoingRequest = await referenceJsonRequestFromMultipart(endpoint, outgoingRequest, modelName);
+      updatePendingRequestLog(requestLog, endpoint, outgoingRequest, "reference-json");
     }
     const response = await fetchCustomImageRequest(endpoint, {
       ...outgoingRequest,
@@ -4865,6 +4887,15 @@ function completeRequestLog(entry, details = {}) {
   Object.assign(entry, details);
   if (!Number.isFinite(Number(entry.costCents))) entry.costCents = 0;
   if (activeGenerationLog) activeGenerationLog.costCents = totalGenerationLogCost(activeGenerationLog);
+  saveGenerationLogs();
+  renderGenerationLogs();
+}
+
+function updatePendingRequestLog(entry, endpoint, request, variant = "") {
+  if (!entry || entry.completed) return;
+  entry.endpoint = endpoint || entry.endpoint;
+  entry.request = summarizeRequestForLog(request);
+  if (variant) entry.variant = variant;
   saveGenerationLogs();
   renderGenerationLogs();
 }
