@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>API2image</title>
+    <title>api2image.top</title>
     <link rel="icon" type="image/png" href="./icon.png?v=2" />
-    <link rel="stylesheet" href="./styles.css?v=40" />
+    <link rel="stylesheet" href="./styles.css?v=41" />
   </head>
   <body data-theme="dark">
     <script>
@@ -23,8 +23,8 @@
         <div class="titlebar">
           <img class="brand-icon" src="./icon.png?v=2" alt="" aria-hidden="true" />
           <div>
-            <h1>API 2 Image</h1>
-            <p id="platformPriceIntro">本站使用GPT官方满血Image2模型。</p>
+            <h1>api2image.top</h1>
+            <p id="platformPriceIntro">本站使用GPT官方满血Image2模型，支持4K生图。</p>
           </div>
         </div>
 
@@ -388,17 +388,13 @@
           </label>
 
           <div class="field admin-model-field">
-            <span>模型与分辨率</span>
+            <span>模型、显示名、价格与分辨率</span>
             <div id="adminModelList" class="admin-model-list"></div>
             <button class="pill-button admin-model-add" id="addAdminModelButton" type="button">
               <i data-icon="plus"></i><span>添加模型</span>
             </button>
             <input id="adminCustomModelName" type="hidden" value="gpt-image-2" />
           </div>
-          <label class="field">
-            <span>售价（元/张）</span>
-            <input id="adminCustomPriceYuan" type="number" min="0.01" step="0.01" value="0.10" />
-          </label>
 
           <div class="code-admin-actions">
             <button class="pill-button" id="loadCustomApiConfigButton" type="button">
@@ -544,6 +540,6 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=78"></script>
+    <script src="./app.js?v=79"></script>
   </body>
 </html>

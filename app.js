@@ -68,7 +68,7 @@ const ratioPresets = [
 ];
 
 const DEFAULT_MODEL_OPTIONS = [
-  { name: "gpt-image-2", tiers: ["1K"] },
+  { name: "gpt-image-2", displayName: "gpt-image-2", tiers: ["1K"], priceCents: 10 },
 ];
 
 const qualityPresets = [
@@ -576,11 +576,11 @@ async function generateImages(extra = {}) {
     generationId,
     abortSignal: generationAbortController.signal,
     apiProvider: usePlatformApi ? "platform" : "custom",
-    platformPriceCents: usePlatformApi ? billingState.priceCents : 0,
+    platformPriceCents: usePlatformApi ? selectedModelPriceCents() : 0,
   };
   options.apiDisplayName = currentApiDisplayName(endpoint, options);
   if (usePlatformApi && billingState.configLoaded) {
-    const requiredCents = options.count * billingState.priceCents;
+    const requiredCents = options.count * options.platformPriceCents;
     if (billingState.balanceCents < requiredCents) {
       $("#walletPanel").classList.add("open");
       showToast(`余额不足，本次预计需要 ${formatMoney(requiredCents)} 元`);
@@ -3066,6 +3066,21 @@ function normalizeModelName(value = "") {
   return cleanModelName(value) || FIXED_MODEL_NAME;
 }
 
+function cleanModelDisplayName(value = "") {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  return text ? text.slice(0, 36) : "";
+}
+
+function defaultModelPriceCents(modelName = "") {
+  return /pro/i.test(modelName || "") ? 30 : PLATFORM_PRICE_FALLBACK_CENTS;
+}
+
+function normalizeModelPriceCents(value, modelName = "") {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return Math.min(100000, Math.round(numeric));
+  return defaultModelPriceCents(modelName);
+}
+
 function defaultModelTiers(modelName = "") {
   return isGptImage2Model(modelName) && /pro/i.test(modelName) ? ["1K", "2K", "4K"] : ["1K"];
 }
@@ -3079,7 +3094,7 @@ function normalizeResolutionTiers(value, modelName = "") {
   return clean.length ? clean : defaultModelTiers(modelName);
 }
 
-function normalizeModelOptions(value, fallbackModel = FIXED_MODEL_NAME) {
+function normalizeModelOptions(value, fallbackModel = FIXED_MODEL_NAME, fallbackPriceCents = PLATFORM_PRICE_FALLBACK_CENTS) {
   const source = Array.isArray(value) ? value : [];
   const seen = new Set();
   const items = source
@@ -3087,19 +3102,33 @@ function normalizeModelOptions(value, fallbackModel = FIXED_MODEL_NAME) {
       const name = cleanModelName(typeof item === "string" ? item : item?.name || item?.modelName || item?.value || "");
       if (!name || seen.has(name)) return null;
       seen.add(name);
-      return { name, tiers: normalizeResolutionTiers(item?.tiers || item?.resolutions || item?.resolutionTiers, name) };
+      const displayName = cleanModelDisplayName(typeof item === "string" ? "" : item?.displayName || item?.label || item?.title || "");
+      const rawPrice = typeof item === "string" ? null : item?.priceCents ?? item?.price_cents ?? item?.price;
+      const rawPriceYuan = typeof item === "string" ? null : item?.priceYuan;
+      const priceCents =
+        rawPriceYuan != null && Number(rawPriceYuan) > 0
+          ? normalizeModelPriceCents(Number(rawPriceYuan) * 100, name)
+          : typeof rawPrice === "string" && rawPrice.includes(".") && Number(rawPrice) > 0 && Number(rawPrice) < 1000
+            ? normalizeModelPriceCents(Number(rawPrice) * 100, name)
+            : normalizeModelPriceCents(rawPrice ?? (/(?:pro)/i.test(name) ? defaultModelPriceCents(name) : fallbackPriceCents), name);
+      return {
+        name,
+        displayName: displayName || name,
+        tiers: normalizeResolutionTiers(item?.tiers || item?.resolutions || item?.resolutionTiers, name),
+        priceCents,
+      };
     })
     .filter(Boolean);
   if (items.length) return items.slice(0, 12);
   const fallback = normalizeModelName(fallbackModel || FIXED_MODEL_NAME);
-  return [{ name: fallback, tiers: defaultModelTiers(fallback) }];
+  return [{ name: fallback, displayName: fallback, tiers: defaultModelTiers(fallback), priceCents: normalizeModelPriceCents(fallbackPriceCents, fallback) }];
 }
 
 function currentModelOptions() {
   if (isPlatformApiSelected()) {
-    return normalizeModelOptions(billingState.platformModelOptions, billingState.platformModelName || FIXED_MODEL_NAME);
+    return normalizeModelOptions(billingState.platformModelOptions, billingState.platformModelName || FIXED_MODEL_NAME, billingState.priceCents);
   }
-  return normalizeModelOptions(config.modelOptions, config.modelName || FIXED_MODEL_NAME);
+  return normalizeModelOptions(config.modelOptions, config.modelName || FIXED_MODEL_NAME, billingState.priceCents);
 }
 
 function selectedModelOption() {
@@ -3107,12 +3136,17 @@ function selectedModelOption() {
   return currentModelOptions().find((item) => item.name === name) || currentModelOptions()[0];
 }
 
+function selectedModelPriceCents() {
+  const model = selectedModelOption();
+  return normalizeModelPriceCents(model?.priceCents || billingState.priceCents, model?.name || getModelName());
+}
+
 function renderModelSelector() {
   const input = $("#modelName");
   if (!input) return;
   const options = currentModelOptions();
   const previous = normalizeModelName(input.value || config.modelName || billingState.platformModelName || FIXED_MODEL_NAME);
-  input.innerHTML = options.map((item) => optionHtml(item.name, item.name)).join("");
+  input.innerHTML = options.map((item) => optionHtml(item.name, item.displayName || item.name)).join("");
   const value = options.some((item) => item.name === previous) ? previous : options[0]?.name || FIXED_MODEL_NAME;
   input.value = value;
   config.modelName = value;
@@ -3129,7 +3163,7 @@ function loadConfig() {
     config.multiImageMode = "single";
     config.transportMode = normalizeCustomTransportMode(config.textEndpoint || "", config.editEndpoint || "", config.transportMode || "proxy");
     config.modelName = normalizeModelName(config.modelName || FIXED_MODEL_NAME);
-    config.modelOptions = normalizeModelOptions(config.modelOptions, config.modelName);
+    config.modelOptions = normalizeModelOptions(config.modelOptions, config.modelName, billingState.priceCents);
   } catch {
     showToast("配置读取失败");
   }
@@ -3146,7 +3180,7 @@ function hydrateConfig() {
   if ($("#apiProviderSelect")) $("#apiProviderSelect").value = config.apiProvider || "platform";
   if ($("#customTemplate")) $("#customTemplate").value = config.customTemplate || defaultTemplate;
   config.modelName = normalizeModelName(config.modelName || FIXED_MODEL_NAME);
-  config.modelOptions = normalizeModelOptions(config.modelOptions, config.modelName);
+  config.modelOptions = normalizeModelOptions(config.modelOptions, config.modelName, billingState.priceCents);
   renderModelSelector();
   syncSizeOptions();
   updateTemplateVisibility();
@@ -3215,7 +3249,7 @@ function saveActiveConfig() {
     apiProvider: "platform",
     customTemplate: config.customTemplate || defaultTemplate,
     modelName: normalizeModelName(config.modelName || FIXED_MODEL_NAME),
-    modelOptions: normalizeModelOptions(config.modelOptions, config.modelName),
+    modelOptions: normalizeModelOptions(config.modelOptions, config.modelName, billingState.priceCents),
     configVersion: CONFIG_VERSION,
   };
   localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted));
@@ -3244,7 +3278,7 @@ function sanitizeConfigSnapshot(snapshot) {
     apiProvider: snapshot.apiProvider || "platform",
     customTemplate: snapshot.customTemplate || defaultTemplate,
     modelName: normalizeModelName(snapshot.modelName || FIXED_MODEL_NAME),
-    modelOptions: normalizeModelOptions(snapshot.modelOptions, snapshot.modelName || FIXED_MODEL_NAME),
+    modelOptions: normalizeModelOptions(snapshot.modelOptions, snapshot.modelName || FIXED_MODEL_NAME, billingState.priceCents),
     updatedAt: Number(snapshot.updatedAt) || Date.now(),
   };
 }
@@ -3450,7 +3484,7 @@ async function loadBillingConfig() {
   const info = await readJsonResponse(configResponse);
   billingState.configLoaded = true;
   if (!configResponse.ok) return false;
-  billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+  billingState.priceCents = Number(info.priceCents || info.modelOptions?.[0]?.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
   billingState.platformEnabled = Boolean(info.platformEnabled);
   billingState.rechargeUrl = publicMobileSafeUrl(info.rechargeUrl || billingState.rechargeUrl);
@@ -3460,7 +3494,7 @@ async function loadBillingConfig() {
   billingState.platformTransportMode = info.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = info.customTemplate || "";
   billingState.platformModelName = normalizeModelName(info.modelName || FIXED_MODEL_NAME);
-  billingState.platformModelOptions = normalizeModelOptions(info.modelOptions, billingState.platformModelName);
+  billingState.platformModelOptions = normalizeModelOptions(info.modelOptions, billingState.platformModelName, billingState.priceCents);
   billingState.platformDisplayName = normalizeApiDisplayName(info.displayName || billingState.platformDisplayName);
   renderModelSelector();
   syncSizeOptions();
@@ -3676,6 +3710,14 @@ function applyBillingDashboard(payload) {
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
   billingState.rechargeUrl = publicMobileSafeUrl(payload.rechargeUrl || billingState.rechargeUrl);
+  if (payload.modelName) {
+    billingState.platformModelName = normalizeModelName(payload.modelName);
+  }
+  if (Array.isArray(payload.modelOptions)) {
+    billingState.platformModelOptions = normalizeModelOptions(payload.modelOptions, billingState.platformModelName || FIXED_MODEL_NAME, billingState.priceCents);
+    renderModelSelector();
+    syncSizeOptions();
+  }
   billingState.platformDisplayName = normalizeApiDisplayName(payload.displayName || billingState.platformDisplayName);
   billingState.lastDirectConfig = {
     ...(billingState.lastDirectConfig || {}),
@@ -3687,7 +3729,7 @@ function applyBillingDashboard(payload) {
 function renderWallet() {
   $("#walletBalance").textContent = billingState.authenticated ? `余额 ${formatMoney(billingState.balanceCents)} 元` : "登录钱包";
   $("#walletPanelBalance").textContent = billingState.authenticated ? `${formatMoney(billingState.balanceCents)} 元` : "--";
-  $("#walletPrice").textContent = formatPlatformPriceLabel(billingState.priceCents);
+  $("#walletPrice").textContent = formatModelPriceSummary(billingState.platformModelOptions, billingState.priceCents);
   updateRecommendedApiLabels();
   $("#walletCustomerId").textContent = billingState.authenticated ? billingState.email || `用户 ${billingState.customerId}` : "未登录";
   $("#walletAuthBox").hidden = billingState.authenticated;
@@ -4200,8 +4242,8 @@ async function applyCustomApiAsGlobal() {
     showToast("设置全局 API 前需要填写文生图 API URL 和 API Key");
     return;
   }
-  if (!Number.isFinite(form.priceCents) || form.priceCents <= 0) {
-    showToast("售价需要大于 0 元/张");
+  if (!form.modelOptions.every((item) => Number.isFinite(Number(item.priceCents)) && Number(item.priceCents) > 0)) {
+    showToast("每个模型售价都需要大于 0 元/张");
     return;
   }
 
@@ -4230,13 +4272,13 @@ async function applyCustomApiAsGlobal() {
     customDebugState.current = serverConfig;
     customDebugState.history = Array.isArray(payload.history) ? payload.history : customDebugState.history;
     customDebugState.global = payload.global || serverConfig;
-    billingState.priceCents = Number(payload.priceCents || serverConfig.priceCents || billingState.priceCents);
+    billingState.priceCents = Number(payload.priceCents || serverConfig.priceCents || serverConfig.modelOptions?.[0]?.priceCents || billingState.priceCents);
     billingState.platformEnabled = true;
     billingState.platformRequestFormat = serverConfig.requestFormat === "json" ? "json" : "openai";
     billingState.platformTransportMode = serverConfig.transportMode === "direct" ? "direct" : "proxy";
     billingState.platformCustomTemplate = serverConfig.customTemplate || "";
     billingState.platformModelName = normalizeModelName(serverConfig.modelName || FIXED_MODEL_NAME);
-    billingState.platformModelOptions = normalizeModelOptions(serverConfig.modelOptions, billingState.platformModelName);
+    billingState.platformModelOptions = normalizeModelOptions(serverConfig.modelOptions, billingState.platformModelName, billingState.priceCents);
     billingState.platformDisplayName = normalizeApiDisplayName(serverConfig.displayName || serverConfig.title || billingState.platformDisplayName);
     applyCustomApiRuntimeConfig(serverConfig);
     hydrateAdminCustomApiForm(serverConfig);
@@ -4280,7 +4322,7 @@ function readAdminCustomApiForm() {
     customTemplate: $("#adminCustomTemplate")?.value.trim() || defaultTemplate,
     modelName: modelOptions[0]?.name || normalizeModelName($("#adminCustomModelName")?.value || FIXED_MODEL_NAME),
     modelOptions,
-    priceCents: Math.max(1, Math.round(Number($("#adminCustomPriceYuan")?.value || 0) * 100)),
+    priceCents: modelOptions[0]?.priceCents || PLATFORM_PRICE_FALLBACK_CENTS,
   };
 }
 
@@ -4290,20 +4332,20 @@ function hasApiConfig(item = {}) {
 
 function applyGlobalApiInfo(item = {}) {
   if (!hasApiConfig(item)) return;
-  billingState.priceCents = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
+  billingState.priceCents = Number(item.priceCents || item.modelOptions?.[0]?.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.platformEnabled = true;
   billingState.platformRequestFormat = item.requestFormat === "json" ? "json" : "openai";
   billingState.platformTransportMode = item.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = item.customTemplate || "";
   billingState.platformModelName = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
-  billingState.platformModelOptions = normalizeModelOptions(item.modelOptions, billingState.platformModelName);
+  billingState.platformModelOptions = normalizeModelOptions(item.modelOptions, billingState.platformModelName, billingState.priceCents);
   billingState.platformDisplayName = normalizeApiDisplayName(item.displayName || item.title || billingState.platformDisplayName);
   renderModelSelector();
   syncSizeOptions();
 }
 
 function apiPricingStatus(debugConfig = {}, globalConfig = {}) {
-  const globalText = hasApiConfig(globalConfig) ? `全局 ${formatPlatformPriceLabel(globalConfig.priceCents || billingState.priceCents)}` : "全局 API 尚未设置";
+  const globalText = hasApiConfig(globalConfig) ? `全局 ${formatModelPriceSummary(globalConfig.modelOptions, globalConfig.priceCents || billingState.priceCents)}` : "全局 API 尚未设置";
   if (debugConfig.enabled) return `本机调试已启用；${globalText}`;
   return `本机调试未启用；${globalText}`;
 }
@@ -4318,11 +4360,7 @@ function hydrateAdminCustomApiForm(item = {}) {
     $("#adminCustomTransportMode").value = normalizeCustomTransportMode(item.textEndpoint || "", item.editEndpoint || "", item.transportMode || "proxy");
   }
   if ($("#adminCustomTemplate")) $("#adminCustomTemplate").value = item.customTemplate || defaultTemplate;
-  renderAdminModelList(item.modelOptions || [{ name: item.modelName || FIXED_MODEL_NAME, tiers: defaultModelTiers(item.modelName || FIXED_MODEL_NAME) }]);
-  if ($("#adminCustomPriceYuan")) {
-    const price = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
-    $("#adminCustomPriceYuan").value = formatCodeAdminAmount(price / 100);
-  }
+  renderAdminModelList(item.modelOptions || [{ name: item.modelName || FIXED_MODEL_NAME, tiers: defaultModelTiers(item.modelName || FIXED_MODEL_NAME), priceCents: item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS }]);
   updateAdminCustomTemplateVisibility();
 }
 
@@ -4351,7 +4389,7 @@ function applyCustomApiRuntimeConfig(item = {}) {
   config.multiImageMode = "single";
   config.apiProvider = customDebugState.enabled ? "custom" : "platform";
   config.modelName = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
-  config.modelOptions = normalizeModelOptions(item.modelOptions, config.modelName);
+  config.modelOptions = normalizeModelOptions(item.modelOptions, config.modelName, item.priceCents || billingState.priceCents);
   hydrateConfig();
   saveActiveConfig();
   updateApiProviderUi();
@@ -4366,10 +4404,13 @@ function readAdminModelOptions() {
   const rows = [...document.querySelectorAll("#adminModelList .admin-model-row")];
   const options = rows.map((row) => {
     const name = cleanModelName(row.querySelector(".admin-model-name")?.value || "");
+    const displayName = cleanModelDisplayName(row.querySelector(".admin-model-display-name")?.value || "");
+    const priceValue = row.querySelector(".admin-model-price")?.value || "";
+    const priceCents = priceValue === "" ? defaultModelPriceCents(name) : Math.max(1, Math.round(Number(priceValue || 0) * 100));
     const tiers = [...row.querySelectorAll("[data-tier]:checked")].map((input) => input.dataset.tier);
-    return name ? { name, tiers: normalizeResolutionTiers(tiers, name) } : null;
+    return name ? { name, displayName: displayName || name, tiers: normalizeResolutionTiers(tiers, name), priceCents } : null;
   }).filter(Boolean);
-  const clean = normalizeModelOptions(options, $("#adminCustomModelName")?.value || FIXED_MODEL_NAME);
+  const clean = normalizeModelOptions(options, $("#adminCustomModelName")?.value || FIXED_MODEL_NAME, billingState.priceCents);
   syncAdminPrimaryModelField(clean);
   return clean;
 }
@@ -4382,7 +4423,7 @@ function syncAdminPrimaryModelField(options = readAdminModelOptions()) {
 function renderAdminModelList(modelOptions = []) {
   const list = $("#adminModelList");
   if (!list) return;
-  const options = normalizeModelOptions(modelOptions, $("#adminCustomModelName")?.value || FIXED_MODEL_NAME);
+  const options = normalizeModelOptions(modelOptions, $("#adminCustomModelName")?.value || FIXED_MODEL_NAME, billingState.priceCents);
   list.innerHTML = options.map((item, index) => adminModelRowHtml(item, index)).join("");
   syncAdminPrimaryModelField(options);
   renderIcons();
@@ -4390,6 +4431,7 @@ function renderAdminModelList(modelOptions = []) {
 
 function adminModelRowHtml(item = {}, index = 0) {
   const tiers = normalizeResolutionTiers(item.tiers, item.name);
+  const priceYuan = formatCodeAdminAmount(normalizeModelPriceCents(item.priceCents, item.name) / 100);
   const tierControls = RESOLUTION_TIERS.map((tier) => `
     <label>
       <input type="checkbox" data-tier="${escapeHtml(tier.value)}" ${tiers.includes(tier.value) ? "checked" : ""} />
@@ -4398,7 +4440,9 @@ function adminModelRowHtml(item = {}, index = 0) {
   `).join("");
   return `
     <div class="admin-model-row" data-model-row>
-      <input class="admin-model-name" type="text" value="${escapeHtml(item.name || "")}" placeholder="${index === 0 ? "gpt-image-2" : "gpt-image-2pro"}" />
+      <input class="admin-model-name" type="text" value="${escapeHtml(item.name || "")}" placeholder="${index === 0 ? "gpt-image-2" : "gpt-image-2pro"}" title="模型原名称，实际传给 API" />
+      <input class="admin-model-display-name" type="text" value="${escapeHtml(cleanModelDisplayName(item.displayName || ""))}" placeholder="首页显示名称" title="自定义显示名称" />
+      <input class="admin-model-price" type="number" min="0.01" step="0.01" value="${escapeHtml(priceYuan)}" title="售价（元/张）" />
       <div class="admin-model-tiers">${tierControls}</div>
       <button class="icon-button" type="button" data-action="remove-admin-model" title="删除模型" ${index === 0 ? "disabled" : ""}>
         <i data-icon="trash"></i>
@@ -4411,7 +4455,7 @@ function addAdminModelRow() {
   const list = $("#adminModelList");
   if (!list) return;
   const index = list.querySelectorAll(".admin-model-row").length;
-  list.insertAdjacentHTML("beforeend", adminModelRowHtml({ name: "", tiers: ["1K"] }, index));
+  list.insertAdjacentHTML("beforeend", adminModelRowHtml({ name: "", displayName: "", tiers: ["1K"], priceCents: 30 }, index));
   renderIcons();
   const input = list.querySelector(".admin-model-row:last-child .admin-model-name");
   input?.focus();
@@ -4445,7 +4489,7 @@ function renderAdminCustomHistory() {
       const keyLabel = item.apiKey ? maskApiKey(item.apiKey) : "未保存 Key";
       const transportLabel = item.transportMode === "proxy" ? "代理" : "直连";
       const formatLabel = item.requestFormat === "json" ? "JSON 模板" : "OpenAI";
-      const priceLabel = formatPlatformPriceLabel(item.priceCents || billingState.priceCents);
+      const priceLabel = formatModelPriceSummary(item.modelOptions, item.priceCents || billingState.priceCents);
       const currentClass = isCurrentAdminCustomApi(item) ? " current" : "";
       return `
         <div class="config-history-item${currentClass}" data-admin-custom-id="${escapeHtml(item.id || "")}">
@@ -4484,15 +4528,17 @@ function sameApiConfig(left = {}, right = {}) {
 }
 
 function modelOptionsKey(options, fallbackModel = FIXED_MODEL_NAME) {
-  return JSON.stringify(normalizeModelOptions(options, fallbackModel).map((item) => ({
+  return JSON.stringify(normalizeModelOptions(options, fallbackModel, billingState.priceCents).map((item) => ({
     name: item.name,
+    displayName: item.displayName || item.name,
+    priceCents: item.priceCents,
     tiers: normalizeResolutionTiers(item.tiers, item.name).sort(),
   })));
 }
 
 function modelOptionsLabel(item = {}) {
-  return normalizeModelOptions(item.modelOptions, item.modelName || FIXED_MODEL_NAME)
-    .map((model) => `${model.name}:${normalizeResolutionTiers(model.tiers, model.name).join("/")}`)
+  return normalizeModelOptions(item.modelOptions, item.modelName || FIXED_MODEL_NAME, item.priceCents || billingState.priceCents)
+    .map((model) => `${model.displayName || model.name}:${normalizeResolutionTiers(model.tiers, model.name).join("/")}/${formatPlatformPriceLabel(model.priceCents)}`)
     .join("，");
 }
 
@@ -4557,19 +4603,38 @@ function setCustomApiAdminStatus(text) {
 }
 
 function updateRecommendedApiLabels() {
-  const priceLabel = formatPlatformPriceLabel(billingState.priceCents);
+  const priceLabel = formatModelPriceSummary(billingState.platformModelOptions, billingState.priceCents);
   const label = `站点 API · ${priceLabel}`;
   const option = $('#apiProviderSelect option[value="platform"]');
   if (option) option.textContent = label;
   const intro = $("#platformPriceIntro");
-  if (intro) intro.textContent = "本站使用GPT官方满血Image2模型。";
+  if (intro) intro.textContent = "本站使用GPT官方满血Image2模型，支持4K生图。";
 }
 
 function formatPlatformPriceLabel(cents) {
   const value = Math.max(0, Number(cents || 0));
-  if (value === 10) return "1毛/张";
-  if (value % 10 === 0 && value < 100) return `${value / 10}毛/张`;
-  return `${formatMoney(value)} 元/张`;
+  if (value > 0 && value < 100) return `${formatPriceDecimal(value)}/张`;
+  return `${formatPriceDecimal(value)} 元/张`;
+}
+
+function formatPriceDecimal(cents) {
+  return (Number(cents || 0) / 100).toFixed(2).replace(/\.?0+$/, "") || "0";
+}
+
+function formatModelPriceSummary(options = billingState.platformModelOptions, fallbackPriceCents = PLATFORM_PRICE_FALLBACK_CENTS) {
+  const models = normalizeModelOptions(options, billingState.platformModelName || FIXED_MODEL_NAME, fallbackPriceCents);
+  const groups = new Map();
+  models.forEach((model) => {
+    const price = normalizeModelPriceCents(model.priceCents || fallbackPriceCents, model.name);
+    const tiers = normalizeResolutionTiers(model.tiers, model.name);
+    const primaryTier = tiers.includes("4K") ? "4K" : tiers[0] || "1K";
+    if (!groups.has(price)) groups.set(price, new Set());
+    groups.get(price).add(primaryTier);
+  });
+  const parts = [...groups.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([price, tiers]) => `${formatPlatformPriceLabel(price)}(${[...tiers].sort((a, b) => RESOLUTION_TIERS.findIndex((tier) => tier.value === a) - RESOLUTION_TIERS.findIndex((tier) => tier.value === b)).join("/")})`);
+  return parts.length ? parts.join("、") : formatPlatformPriceLabel(fallbackPriceCents);
 }
 
 function makeRedeemCode() {
@@ -5102,7 +5167,7 @@ function renderGenerationLogs() {
   if (!list) return;
   renderCurrentLogPreview();
 
-  const notice = `<div class="log-notice">生成速度和稳定性主要取决于你使用的 API 服务。不同中转站或模型通道的响应时间、超时策略和跨域支持可能不同；如果遇到超时、失败或结果未知，可以稍后重试、降低单次生成数量，或切换到更稳定的 API 再生成。</div>`;
+  const notice = `<div class="log-notice">如果遇到超时、失败或结果未知，可以稍后重试、降低单次生成数量，或切换模型重试。</div>`;
 
   if (!generationLogs.length) {
     list.innerHTML = `${notice}<div class="log-empty">还没有生成日志。发起一次生成后，这里会显示请求和返回。</div>`;
@@ -5758,7 +5823,7 @@ function ensureModelOption(model) {
   const modelName = normalizeModelName(model || FIXED_MODEL_NAME);
   const options = currentModelOptions();
   if (!options.some((item) => item.name === modelName)) {
-    config.modelOptions = normalizeModelOptions([...options, { name: modelName, tiers: defaultModelTiers(modelName) }], modelName);
+    config.modelOptions = normalizeModelOptions([...options, { name: modelName, displayName: modelName, tiers: defaultModelTiers(modelName), priceCents: defaultModelPriceCents(modelName) }], modelName, billingState.priceCents);
     renderModelSelector();
   }
   input.value = modelName;

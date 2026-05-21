@@ -824,7 +824,7 @@ svg {
 
 .admin-model-row {
   display: grid;
-  grid-template-columns: minmax(130px, 1fr) auto 34px;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(104px, 0.9fr) 86px auto 34px;
   align-items: center;
   gap: 8px;
   padding: 8px;
@@ -833,7 +833,8 @@ svg {
   background: var(--glass-soft);
 }
 
-.admin-model-row input[type="text"] {
+.admin-model-row input[type="text"],
+.admin-model-row input[type="number"] {
   width: 100%;
   min-width: 0;
 }
@@ -1165,7 +1166,9 @@ svg {
 .wallet-summary strong {
   display: block;
   margin-top: 4px;
-  font-size: 22px;
+  font-size: clamp(15px, 4vw, 22px);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .redeem-box {
@@ -1416,6 +1419,7 @@ svg {
 .code-admin-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -2139,7 +2143,44 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .prompt-card {
-    grid-template-columns: 42px minmax(0, 1fr) minmax(104px, 132px) 42px;
+    grid-template-columns: 38px minmax(0, 1fr) minmax(92px, 116px) 38px;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .add-button,
+  .send-button {
+    width: 38px;
+    height: 38px;
+  }
+
+  .prompt-card textarea {
+    min-height: 38px;
+    max-height: 96px;
+    padding: 8px 0;
+    font-size: 16px;
+    line-height: 1.35;
+  }
+
+  .composer-model-select {
+    font-size: 13px;
+    padding-inline: 8px;
+  }
+
+  .control-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+    gap: 6px;
+  }
+
+  .control-row select,
+  .control-row input {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px;
+    padding-inline: 8px;
+    font-size: 14px;
   }
 
   .composer-actions select {
@@ -2147,11 +2188,18 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .admin-model-row {
-    grid-template-columns: 1fr 34px;
+    grid-template-columns: minmax(0, 1fr) 34px;
   }
 
+  .admin-model-row .admin-model-display-name,
+  .admin-model-row .admin-model-price,
   .admin-model-tiers {
     grid-column: 1 / -1;
+  }
+
+  .admin-model-row > .icon-button {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .generation-progress {
@@ -2255,10 +2303,16 @@ body[data-theme="light"] .wallet-panel {
   .code-admin-panel,
   .stats-panel,
   .wallet-panel {
-    top: calc(84px + env(safe-area-inset-top));
+    top: calc(8px + env(safe-area-inset-top));
     right: 8px;
     width: calc(100vw - 16px);
-    max-height: calc(100vh - 100px - env(safe-area-inset-top));
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top));
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .code-admin-actions .pill-button {
+    flex: 1 1 150px;
   }
 
   .wallet-panel {

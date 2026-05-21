@@ -275,10 +275,13 @@ function auth_verify(PDO $pdo, array $config): void
         $pdo->commit();
         set_session_cookie($config, $token, $days * 86400);
         $platform = platform_config($pdo, $config);
+        $modelOptions = $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name'], (int)$platform['price_cents']);
         json_response([
             'ok' => true,
             'user' => public_user($user),
-            'priceCents' => (int)$platform['price_cents'],
+            'priceCents' => (int)($modelOptions[0]['priceCents'] ?? $platform['price_cents']),
+            'modelName' => (string)$platform['model_name'],
+            'modelOptions' => $modelOptions,
             'sessionToken' => $token,
         ]);
     } catch (Throwable $error) {
@@ -293,11 +296,14 @@ function auth_me(PDO $pdo, array $config): void
 {
     $user = current_user($pdo, $config);
     $platform = platform_config($pdo, $config);
+    $modelOptions = $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name'], (int)$platform['price_cents']);
     json_response([
         'ok' => true,
         'authenticated' => (bool)$user,
         'user' => $user ? public_user($user) : null,
-        'priceCents' => (int)$platform['price_cents'],
+        'priceCents' => (int)($modelOptions[0]['priceCents'] ?? $platform['price_cents']),
+        'modelName' => (string)$platform['model_name'],
+        'modelOptions' => $modelOptions,
         'currency' => 'CNY',
         'rechargeUrl' => public_mobile_safe_url((string)$config['app']['recharge_url']),
         'sessionToken' => $user ? current_session_token() : '',
@@ -456,9 +462,10 @@ function request_public_api_base_url(): string
 function billing_config(PDO $pdo, array $config): void
 {
     $platform = platform_config($pdo, $config);
+    $modelOptions = $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name'], (int)$platform['price_cents']);
     json_response([
         'ok' => true,
-        'priceCents' => (int)$platform['price_cents'],
+        'priceCents' => (int)($modelOptions[0]['priceCents'] ?? $platform['price_cents']),
         'upstreamCostCents' => (int)$platform['upstream_cost_cents'],
         'currency' => 'CNY',
         'platformEnabled' => platform_is_configured($platform),
@@ -468,7 +475,7 @@ function billing_config(PDO $pdo, array $config): void
         'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
         'modelName' => (string)$platform['model_name'],
-        'modelOptions' => $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name']),
+        'modelOptions' => $modelOptions,
         'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
     ]);
 }
@@ -552,9 +559,10 @@ function generate_ticket(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $model = select_platform_model($platform, (string)($payload['model'] ?? ''));
+    $modelOption = select_platform_model_option($platform, (string)($payload['model'] ?? ''));
+    $model = (string)$modelOption['name'];
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
-    $price = (int)$platform['price_cents'];
+    $price = custom_api_model_price_cents($modelOption['priceCents'] ?? null, $model, (int)$platform['price_cents']);
     $total = $count * $price;
     if (!platform_is_configured($platform)) {
         throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
@@ -586,9 +594,10 @@ function generate_direct_config(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $model = select_platform_model($platform, (string)($payload['model'] ?? ''));
+    $modelOption = select_platform_model_option($platform, (string)($payload['model'] ?? ''));
+    $model = (string)$modelOption['name'];
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
-    $price = (int)$platform['price_cents'];
+    $price = custom_api_model_price_cents($modelOption['priceCents'] ?? null, $model, (int)$platform['price_cents']);
     $total = $count * $price;
     if (!platform_is_configured($platform)) {
         throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
@@ -620,7 +629,8 @@ function generate_platform(PDO $pdo, array $config): void
 {
     $payload = read_json();
     $platform = platform_config($pdo, $config);
-    $model = select_platform_model($platform, (string)($payload['model'] ?? ''));
+    $modelOption = select_platform_model_option($platform, (string)($payload['model'] ?? ''));
+    $model = (string)$modelOption['name'];
     $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
     if (!$ticket) {
         $user = require_user($pdo, $config);
@@ -628,15 +638,16 @@ function generate_platform(PDO $pdo, array $config): void
             'uid' => (int)$user['id'],
             'mode' => (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text',
             'count' => max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1))),
-            'price' => (int)$platform['price_cents'],
+            'price' => custom_api_model_price_cents($modelOption['priceCents'] ?? null, $model, (int)$platform['price_cents']),
             'model' => $model,
         ];
     }
     $mode = (($ticket['mode'] ?? ($payload['mode'] ?? 'text')) === 'image') ? 'image' : 'text';
     $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
     $count = max(1, min((int)$ticket['count'], (int)$platform['max_count'], (int)($payload['count'] ?? 1)));
-    $price = max(1, (int)$ticket['price']);
-    $model = select_platform_model($platform, (string)($ticket['model'] ?? $payload['model'] ?? ''));
+    $modelOption = select_platform_model_option($platform, (string)($ticket['model'] ?? $payload['model'] ?? ''));
+    $model = (string)$modelOption['name'];
+    $price = max(1, (int)($ticket['price'] ?? custom_api_model_price_cents($modelOption['priceCents'] ?? null, $model, (int)$platform['price_cents'])));
     ensure_user_can_afford($pdo, (int)$ticket['uid'], $count * $price);
     $request = enforce_platform_request_count($request, $count);
     $request = platform_request_with_model($request, $model);
@@ -991,15 +1002,17 @@ function fallback_platform_config(array $config): array
 {
     $platform = is_array($config['platform'] ?? null) ? $config['platform'] : [];
     $modelName = custom_api_model_name((string)($platform['model_name'] ?? $platform['modelName'] ?? 'gpt-image-2'));
+    $priceCents = max(1, (int)($platform['price_cents'] ?? 10));
+    $modelOptions = custom_api_model_options($platform['model_options'] ?? $platform['modelOptions'] ?? [], $modelName, $priceCents);
     return [
         'text_endpoint' => trim((string)($platform['text_endpoint'] ?? '')),
         'edit_endpoint' => trim((string)($platform['edit_endpoint'] ?? '')),
         'api_key' => trim((string)($platform['api_key'] ?? '')),
-        'price_cents' => max(1, (int)($platform['price_cents'] ?? 10)),
+        'price_cents' => (int)($modelOptions[0]['priceCents'] ?? $priceCents),
         'upstream_cost_cents' => max(0, (int)($platform['upstream_cost_cents'] ?? 0)),
         'max_count' => max(1, (int)($platform['max_count'] ?? 4)),
         'model_name' => $modelName,
-        'model_options' => custom_api_model_options($platform['model_options'] ?? $platform['modelOptions'] ?? [], $modelName),
+        'model_options' => $modelOptions,
         'request_format' => 'openai',
         'transport_mode' => 'proxy',
         'custom_template' => '',
@@ -1037,15 +1050,16 @@ function normalize_global_platform_config(array $value, array $fallback): array
     $customTemplate = custom_api_template((string)($value['customTemplate'] ?? $value['custom_template'] ?? $fallback['custom_template']));
     $displayName = custom_api_safe_display_name((string)($value['displayName'] ?? $value['display_name'] ?? $value['title'] ?? $fallback['display_name'] ?? ''), 1);
     $modelName = custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? $fallback['model_name'] ?? 'gpt-image-2'));
+    $modelOptions = custom_api_model_options($value['modelOptions'] ?? $value['model_options'] ?? $fallback['model_options'] ?? [], $modelName, $price);
     return [
         'text_endpoint' => $textEndpoint,
         'edit_endpoint' => $editEndpoint,
         'api_key' => $apiKey,
-        'price_cents' => $price,
+        'price_cents' => (int)($modelOptions[0]['priceCents'] ?? $price),
         'upstream_cost_cents' => $upstreamCost,
         'max_count' => $maxCount,
         'model_name' => $modelName,
-        'model_options' => custom_api_model_options($value['modelOptions'] ?? $value['model_options'] ?? $fallback['model_options'] ?? [], $modelName),
+        'model_options' => $modelOptions,
         'request_format' => $requestFormat,
         'transport_mode' => $transportMode,
         'custom_template' => $customTemplate,
@@ -1057,15 +1071,16 @@ function normalize_global_platform_config(array $value, array $fallback): array
 
 function public_global_platform_config(array $platform): array
 {
+    $modelOptions = $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name'], (int)$platform['price_cents']);
     return [
         'textEndpoint' => (string)$platform['text_endpoint'],
         'editEndpoint' => (string)$platform['edit_endpoint'],
         'apiKey' => (string)$platform['api_key'],
-        'priceCents' => (int)$platform['price_cents'],
+        'priceCents' => (int)($modelOptions[0]['priceCents'] ?? $platform['price_cents']),
         'upstreamCostCents' => (int)$platform['upstream_cost_cents'],
         'maxCount' => (int)$platform['max_count'],
         'modelName' => (string)$platform['model_name'],
-        'modelOptions' => $platform['model_options'] ?? custom_api_model_options([], (string)$platform['model_name']),
+        'modelOptions' => $modelOptions,
         'requestFormat' => (string)$platform['request_format'],
         'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
@@ -1544,8 +1559,10 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
     if ($current['textEndpoint'] === '' || $current['apiKey'] === '') {
         throw new HttpError('设置全局 API 前，请填写文生图 API URL 和 API Key', 400, 'global_api_incomplete');
     }
-    if ($current['priceCents'] <= 0) {
-        throw new HttpError('售价需要大于 0 元/张', 400, 'invalid_price');
+    foreach ($current['modelOptions'] as $modelOption) {
+        if ((int)($modelOption['priceCents'] ?? 0) <= 0) {
+            throw new HttpError('每个模型售价都需要大于 0 元/张', 400, 'invalid_price');
+        }
     }
     $existingPlatform = platform_config($pdo, $config);
 
@@ -1749,8 +1766,9 @@ function normalize_custom_api_config(array $value): array
     if (!in_array($transportMode, ['direct', 'proxy'], true)) {
         $transportMode = 'proxy';
     }
+    $legacyPrice = custom_api_price_cents($value['priceCents'] ?? $value['price_cents'] ?? 10);
     $modelName = custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? 'gpt-image-2'));
-    $modelOptions = custom_api_model_options($value['modelOptions'] ?? $value['model_options'] ?? [], $modelName);
+    $modelOptions = custom_api_model_options($value['modelOptions'] ?? $value['model_options'] ?? [], $modelName, $legacyPrice);
     $modelName = (string)($modelOptions[0]['name'] ?? $modelName);
     return [
         'id' => preg_replace('/[^\w-]/', '', (string)($value['id'] ?? '')),
@@ -1764,7 +1782,7 @@ function normalize_custom_api_config(array $value): array
         'customTemplate' => custom_api_template((string)($value['customTemplate'] ?? '')),
         'modelName' => $modelName,
         'modelOptions' => $modelOptions,
-        'priceCents' => custom_api_price_cents($value['priceCents'] ?? $value['price_cents'] ?? 10),
+        'priceCents' => (int)($modelOptions[0]['priceCents'] ?? $legacyPrice),
         'updatedAt' => (int)($value['updatedAt'] ?? 0),
     ];
 }
@@ -1849,7 +1867,37 @@ function custom_api_model_name(string $modelName): string
     return strlen($modelName) > 120 ? substr($modelName, 0, 120) : $modelName;
 }
 
-function custom_api_model_options($value, string $fallbackModel = 'gpt-image-2'): array
+function custom_api_model_display_name(string $displayName, string $modelName): string
+{
+    $displayName = preg_replace('/[\x00-\x1F\x7F]+/', '', $displayName) ?? '';
+    $displayName = trim(preg_replace('/\s+/u', ' ', $displayName) ?? '');
+    if ($displayName === '') {
+        return $modelName;
+    }
+    if (function_exists('mb_substr')) {
+        return mb_substr($displayName, 0, 36);
+    }
+    return strlen($displayName) > 108 ? substr($displayName, 0, 108) : $displayName;
+}
+
+function custom_api_default_model_price_cents(string $modelName): int
+{
+    return stripos($modelName, 'pro') !== false ? 30 : 10;
+}
+
+function custom_api_model_price_cents($value, string $modelName = '', int $fallbackPrice = 10): int
+{
+    if (is_string($value) && is_numeric($value) && strpos($value, '.') !== false && (float)$value > 0 && (float)$value < 1000) {
+        $value = (int)round(((float)$value) * 100);
+    }
+    $price = (int)$value;
+    if ($price < 1) {
+        $price = stripos($modelName, 'pro') !== false ? custom_api_default_model_price_cents($modelName) : ($fallbackPrice > 0 ? $fallbackPrice : custom_api_default_model_price_cents($modelName));
+    }
+    return min(100000, $price);
+}
+
+function custom_api_model_options($value, string $fallbackModel = 'gpt-image-2', int $fallbackPrice = 10): array
 {
     $source = is_array($value) ? $value : [];
     $items = [];
@@ -1863,9 +1911,17 @@ function custom_api_model_options($value, string $fallbackModel = 'gpt-image-2')
         }
         $seen[$name] = true;
         $tiers = is_array($item) ? ($item['tiers'] ?? $item['resolutions'] ?? $item['resolutionTiers'] ?? []) : [];
+        $displayName = is_array($item) ? custom_api_model_display_name((string)($item['displayName'] ?? $item['display_name'] ?? $item['label'] ?? $item['title'] ?? ''), $name) : $name;
+        if (is_array($item) && array_key_exists('priceYuan', $item) && (float)$item['priceYuan'] > 0) {
+            $priceCents = custom_api_model_price_cents((int)round(((float)$item['priceYuan']) * 100), $name, $fallbackPrice);
+        } else {
+            $priceCents = is_array($item) ? custom_api_model_price_cents($item['priceCents'] ?? $item['price_cents'] ?? $item['price'] ?? null, $name, $fallbackPrice) : custom_api_default_model_price_cents($name);
+        }
         $items[] = [
             'name' => $name,
+            'displayName' => $displayName,
             'tiers' => custom_api_resolution_tiers($tiers, $name),
+            'priceCents' => $priceCents,
         ];
         if (count($items) >= 12) {
             break;
@@ -1877,7 +1933,9 @@ function custom_api_model_options($value, string $fallbackModel = 'gpt-image-2')
     $fallback = custom_api_model_name($fallbackModel);
     return [[
         'name' => $fallback,
+        'displayName' => $fallback,
         'tiers' => custom_api_resolution_tiers([], $fallback),
+        'priceCents' => custom_api_model_price_cents(null, $fallback, $fallbackPrice),
     ]];
 }
 
@@ -1900,14 +1958,25 @@ function custom_api_resolution_tiers($value, string $modelName = ''): array
 
 function select_platform_model(array $platform, string $requestedModel): string
 {
+    $option = select_platform_model_option($platform, $requestedModel);
+    return (string)($option['name'] ?? custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2')));
+}
+
+function select_platform_model_option(array $platform, string $requestedModel): array
+{
     $requested = custom_api_model_name($requestedModel);
-    $options = custom_api_model_options($platform['model_options'] ?? [], (string)($platform['model_name'] ?? 'gpt-image-2'));
+    $options = custom_api_model_options($platform['model_options'] ?? [], (string)($platform['model_name'] ?? 'gpt-image-2'), (int)($platform['price_cents'] ?? 10));
     foreach ($options as $item) {
         if ((string)($item['name'] ?? '') === $requested) {
-            return $requested;
+            return $item;
         }
     }
-    return (string)($options[0]['name'] ?? custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2')));
+    return $options[0] ?? [
+        'name' => custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2')),
+        'displayName' => custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2')),
+        'tiers' => ['1K'],
+        'priceCents' => (int)($platform['price_cents'] ?? 10),
+    ];
 }
 
 function is_gpt_image_2_model(string $modelName): bool
