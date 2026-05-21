@@ -55,6 +55,7 @@ const RESOLUTION_TIERS = [
 ];
 
 const ratioPresets = [
+  { label: "自动", value: "auto", note: "自动", sizes: {} },
   { label: "1:1 方图", value: "1:1", note: "方图", sizes: { "1K": "1024x1024", "2K": "2048x2048", "4K": "2880x2880" } },
   { label: "5:4 横图", value: "5:4", note: "横图", sizes: { "1K": "1040x832", "2K": "2080x1664", "4K": "3200x2560" } },
   { label: "9:16 竖屏", value: "9:16", note: "竖屏", sizes: { "1K": "720x1280", "2K": "1152x2048", "4K": "2160x3840" } },
@@ -65,7 +66,6 @@ const ratioPresets = [
   { label: "3:4 竖图", value: "3:4", note: "竖图", sizes: { "1K": "768x1024", "2K": "1536x2048", "4K": "2448x3264" } },
   { label: "2:3 海报", value: "2:3", note: "海报", sizes: { "1K": "672x1008", "2K": "1344x2016", "4K": "2336x3504" } },
   { label: "21:9 超宽屏", value: "21:9", note: "超宽屏", sizes: { "1K": "1344x576", "2K": "2016x864", "4K": "3696x1584" } },
-  { label: "自动", value: "auto", note: "自动", sizes: {} },
 ];
 
 const DEFAULT_MODEL_OPTIONS = [

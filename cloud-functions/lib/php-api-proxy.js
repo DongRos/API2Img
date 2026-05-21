@@ -13,7 +13,7 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 export async function proxyPhpApi(context) {
-  const base = getEnv(context, "PHP_API_BASE_URL").replace(/\/+$/, "");
+  const base = normalizePhpApiBaseUrl(getEnv(context, "PHP_API_BASE_URL")).replace(/\/+$/, "");
   if (!base) {
     return jsonResponse(503, { error: { code: "php_api_not_configured", message: "PHP API 尚未配置" } });
   }
@@ -81,4 +81,8 @@ function jsonResponse(status, payload) {
 
 function getEnv(context, key) {
   return String(context?.env?.[key] ?? globalThis?.process?.env?.[key] ?? "").trim();
+}
+
+function normalizePhpApiBaseUrl(value) {
+  return String(value || "").replace(/^https?:\/\/api2img\.shop(?=\/|$)/i, "https://www.api2img.shop");
 }
