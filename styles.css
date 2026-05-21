@@ -1166,9 +1166,13 @@ svg {
 .wallet-summary strong {
   display: block;
   margin-top: 4px;
-  font-size: clamp(15px, 4vw, 22px);
+  font-size: clamp(15px, 3.8vw, 22px);
   line-height: 1.2;
   overflow-wrap: anywhere;
+}
+
+#walletPrice {
+  word-break: keep-all;
 }
 
 .redeem-box {
@@ -2168,19 +2172,30 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .control-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    overflow: visible;
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
     gap: 6px;
+  }
+
+  .control-row::-webkit-scrollbar {
+    display: none;
   }
 
   .control-row select,
   .control-row input {
-    width: 100%;
-    min-width: 0;
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 116px;
     min-height: 36px;
     padding-inline: 8px;
     font-size: 14px;
+  }
+
+  .control-row input {
+    width: 150px;
   }
 
   .composer-actions select {

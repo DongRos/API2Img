@@ -3729,7 +3729,7 @@ function applyBillingDashboard(payload) {
 function renderWallet() {
   $("#walletBalance").textContent = billingState.authenticated ? `余额 ${formatMoney(billingState.balanceCents)} 元` : "登录钱包";
   $("#walletPanelBalance").textContent = billingState.authenticated ? `${formatMoney(billingState.balanceCents)} 元` : "--";
-  $("#walletPrice").textContent = formatModelPriceSummary(billingState.platformModelOptions, billingState.priceCents);
+  $("#walletPrice").innerHTML = formatModelPriceSummaryHtml(billingState.platformModelOptions, billingState.priceCents);
   updateRecommendedApiLabels();
   $("#walletCustomerId").textContent = billingState.authenticated ? billingState.email || `用户 ${billingState.customerId}` : "未登录";
   $("#walletAuthBox").hidden = billingState.authenticated;
@@ -4635,6 +4635,13 @@ function formatModelPriceSummary(options = billingState.platformModelOptions, fa
     .sort((a, b) => a[0] - b[0])
     .map(([price, tiers]) => `${formatPlatformPriceLabel(price)}(${[...tiers].sort((a, b) => RESOLUTION_TIERS.findIndex((tier) => tier.value === a) - RESOLUTION_TIERS.findIndex((tier) => tier.value === b)).join("/")})`);
   return parts.length ? parts.join("、") : formatPlatformPriceLabel(fallbackPriceCents);
+}
+
+function formatModelPriceSummaryHtml(options = billingState.platformModelOptions, fallbackPriceCents = PLATFORM_PRICE_FALLBACK_CENTS) {
+  return escapeHtml(formatModelPriceSummary(options, fallbackPriceCents))
+    .split("、")
+    .filter(Boolean)
+    .join("<br>");
 }
 
 function makeRedeemCode() {
