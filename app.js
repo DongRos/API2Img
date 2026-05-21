@@ -486,7 +486,7 @@ function updateSendLoginCodeButton() {
 
 function onModelSelect() {
   const input = $("#modelName");
-  if (input) input.value = FIXED_MODEL_NAME;
+  if (input) input.value = normalizeModelName(input.value);
 }
 
 async function generateImages(extra = {}) {
@@ -2930,8 +2930,16 @@ function syncSizeOptions() {
 
 function getModelName() {
   const input = $("#modelName");
-  if (input) input.value = FIXED_MODEL_NAME;
-  return FIXED_MODEL_NAME;
+  const modelName = isPlatformApiSelected()
+    ? normalizeModelName(billingState.platformModelName || config.modelName || FIXED_MODEL_NAME)
+    : normalizeModelName(config.modelName || input?.value || FIXED_MODEL_NAME);
+  if (input) input.value = modelName;
+  return modelName;
+}
+
+function normalizeModelName(value = "") {
+  const text = String(value || "").trim().replace(/\s+/g, "");
+  return text ? text.slice(0, 120) : FIXED_MODEL_NAME;
 }
 
 function loadConfig() {
@@ -2944,7 +2952,7 @@ function loadConfig() {
     config.apiProvider = "platform";
     config.multiImageMode = "single";
     config.transportMode = normalizeCustomTransportMode(config.textEndpoint || "", config.editEndpoint || "", config.transportMode || "proxy");
-    config.modelName = FIXED_MODEL_NAME;
+    config.modelName = normalizeModelName(config.modelName || FIXED_MODEL_NAME);
   } catch {
     showToast("配置读取失败");
   }
@@ -2960,8 +2968,8 @@ function hydrateConfig() {
   if ($("#multiImageMode")) $("#multiImageMode").value = "single";
   if ($("#apiProviderSelect")) $("#apiProviderSelect").value = config.apiProvider || "platform";
   if ($("#customTemplate")) $("#customTemplate").value = config.customTemplate || defaultTemplate;
-  if ($("#modelName")) $("#modelName").value = FIXED_MODEL_NAME;
-  config.modelName = FIXED_MODEL_NAME;
+  config.modelName = normalizeModelName(config.modelName || FIXED_MODEL_NAME);
+  if ($("#modelName")) $("#modelName").value = config.modelName;
   updateTemplateVisibility();
   updateApiProviderUi();
 }
@@ -2977,7 +2985,7 @@ function saveConfigFromForm() {
   config.multiImageMode = "single";
   config.apiProvider = isCustomApiDebugEnabled() ? "custom" : "platform";
   config.customTemplate = $("#customTemplate")?.value.trim() || defaultTemplate;
-  config.modelName = FIXED_MODEL_NAME;
+  config.modelName = getModelName();
   delete config.id;
   delete config.title;
   delete config.updatedAt;
@@ -3027,7 +3035,7 @@ function saveActiveConfig() {
     multiImageMode: "single",
     apiProvider: "platform",
     customTemplate: config.customTemplate || defaultTemplate,
-    modelName: FIXED_MODEL_NAME,
+    modelName: normalizeModelName(config.modelName || FIXED_MODEL_NAME),
     configVersion: CONFIG_VERSION,
   };
   localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted));
@@ -3055,7 +3063,7 @@ function sanitizeConfigSnapshot(snapshot) {
     multiImageMode: snapshot.multiImageMode || "single",
     apiProvider: snapshot.apiProvider || "platform",
     customTemplate: snapshot.customTemplate || defaultTemplate,
-    modelName: snapshot.modelName || "gpt-image-2",
+    modelName: normalizeModelName(snapshot.modelName || FIXED_MODEL_NAME),
     updatedAt: Number(snapshot.updatedAt) || Date.now(),
   };
 }
@@ -3192,7 +3200,7 @@ function switchConfigHistory(id) {
 
   Object.assign(config, item);
   normalizeConfiguredEditEndpoint();
-  config.modelName = FIXED_MODEL_NAME;
+  config.modelName = normalizeModelName(config.modelName || FIXED_MODEL_NAME);
   ensureModelOption(config.modelName);
   hydrateConfig();
   saveActiveConfig();
@@ -3256,7 +3264,7 @@ async function loadBillingConfig() {
   billingState.platformRequestFormat = info.requestFormat === "json" ? "json" : "openai";
   billingState.platformTransportMode = info.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = info.customTemplate || "";
-  billingState.platformModelName = info.modelName || "";
+  billingState.platformModelName = normalizeModelName(info.modelName || FIXED_MODEL_NAME);
   billingState.platformDisplayName = normalizeApiDisplayName(info.displayName || billingState.platformDisplayName);
   warmDirectApiBase();
   return billingState.platformEnabled;
@@ -4027,7 +4035,7 @@ async function applyCustomApiAsGlobal() {
     billingState.platformRequestFormat = serverConfig.requestFormat === "json" ? "json" : "openai";
     billingState.platformTransportMode = serverConfig.transportMode === "direct" ? "direct" : "proxy";
     billingState.platformCustomTemplate = serverConfig.customTemplate || "";
-    billingState.platformModelName = serverConfig.modelName || "";
+    billingState.platformModelName = normalizeModelName(serverConfig.modelName || FIXED_MODEL_NAME);
     billingState.platformDisplayName = normalizeApiDisplayName(serverConfig.displayName || serverConfig.title || billingState.platformDisplayName);
     applyCustomApiRuntimeConfig(serverConfig);
     hydrateAdminCustomApiForm(serverConfig);
@@ -4066,7 +4074,7 @@ function readAdminCustomApiForm() {
     requestFormat: $("#adminCustomRequestFormat")?.value || "openai",
     transportMode,
     customTemplate: $("#adminCustomTemplate")?.value.trim() || defaultTemplate,
-    modelName: FIXED_MODEL_NAME,
+    modelName: normalizeModelName($("#adminCustomModelName")?.value || FIXED_MODEL_NAME),
     priceCents: Math.max(1, Math.round(Number($("#adminCustomPriceYuan")?.value || 0) * 100)),
   };
 }
@@ -4082,7 +4090,7 @@ function applyGlobalApiInfo(item = {}) {
   billingState.platformRequestFormat = item.requestFormat === "json" ? "json" : "openai";
   billingState.platformTransportMode = item.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = item.customTemplate || "";
-  billingState.platformModelName = FIXED_MODEL_NAME;
+  billingState.platformModelName = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
   billingState.platformDisplayName = normalizeApiDisplayName(item.displayName || item.title || billingState.platformDisplayName);
 }
 
@@ -4102,7 +4110,7 @@ function hydrateAdminCustomApiForm(item = {}) {
     $("#adminCustomTransportMode").value = normalizeCustomTransportMode(item.textEndpoint || "", item.editEndpoint || "", item.transportMode || "proxy");
   }
   if ($("#adminCustomTemplate")) $("#adminCustomTemplate").value = item.customTemplate || defaultTemplate;
-  if ($("#adminCustomModelName")) $("#adminCustomModelName").value = FIXED_MODEL_NAME;
+  if ($("#adminCustomModelName")) $("#adminCustomModelName").value = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
   if ($("#adminCustomPriceYuan")) {
     const price = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
     $("#adminCustomPriceYuan").value = formatCodeAdminAmount(price / 100);
@@ -4134,8 +4142,8 @@ function applyCustomApiRuntimeConfig(item = {}) {
   config.customTemplate = item.customTemplate || defaultTemplate;
   config.multiImageMode = "single";
   config.apiProvider = customDebugState.enabled ? "custom" : "platform";
-  config.modelName = FIXED_MODEL_NAME;
-  if ($("#modelName")) $("#modelName").value = FIXED_MODEL_NAME;
+  config.modelName = normalizeModelName(item.modelName || FIXED_MODEL_NAME);
+  if ($("#modelName")) $("#modelName").value = config.modelName;
   hydrateConfig();
   saveActiveConfig();
   updateApiProviderUi();
@@ -4193,7 +4201,8 @@ function sameApiConfig(left = {}, right = {}) {
     String(left.textEndpoint || "").trim() === String(right.textEndpoint || "").trim() &&
     String(left.editEndpoint || "").trim() === String(right.editEndpoint || "").trim() &&
     String(left.requestFormat || "openai") === String(right.requestFormat || "openai") &&
-    String(left.transportMode || "proxy") === String(right.transportMode || "proxy")
+    String(left.transportMode || "proxy") === String(right.transportMode || "proxy") &&
+    normalizeModelName(left.modelName || FIXED_MODEL_NAME) === normalizeModelName(right.modelName || FIXED_MODEL_NAME)
   );
 }
 
@@ -5446,7 +5455,7 @@ function formatDurationLabel(milliseconds) {
 
 function ensureModelOption(model) {
   const input = $("#modelName");
-  if (input) input.value = FIXED_MODEL_NAME;
+  if (input) input.value = normalizeModelName(model || FIXED_MODEL_NAME);
 }
 
 function optionHtml(value, label) {

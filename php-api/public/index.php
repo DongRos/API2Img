@@ -551,7 +551,7 @@ function generate_ticket(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $model = 'gpt-image-2';
+    $model = custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
@@ -585,7 +585,7 @@ function generate_direct_config(PDO $pdo, array $config): void
     $payload = read_json();
     $platform = platform_config($pdo, $config);
     $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
-    $model = 'gpt-image-2';
+    $model = custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
     $count = max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = (int)$platform['price_cents'];
     $total = $count * $price;
@@ -619,7 +619,7 @@ function generate_platform(PDO $pdo, array $config): void
 {
     $payload = read_json();
     $platform = platform_config($pdo, $config);
-    $model = 'gpt-image-2';
+    $model = custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
     $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
     if (!$ticket) {
         $user = require_user($pdo, $config);
@@ -635,8 +635,10 @@ function generate_platform(PDO $pdo, array $config): void
     $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
     $count = max(1, min((int)$ticket['count'], (int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $price = max(1, (int)$ticket['price']);
+    $model = custom_api_model_name((string)($ticket['model'] ?? $platform['model_name'] ?? 'gpt-image-2'));
     ensure_user_can_afford($pdo, (int)$ticket['uid'], $count * $price);
     $request = enforce_platform_request_count($request, $count);
+    $request = platform_request_with_model($request, $model);
     $endpoint = $mode === 'image' ? platform_image_endpoint($platform) : (string)$platform['text_endpoint'];
     if ($endpoint === '' || trim((string)$platform['api_key']) === '') {
         throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
@@ -876,7 +878,8 @@ function settle_generation(PDO $pdo, array $config): void
         $requestId = 'settle_' . $imageId;
     }
     $price = max(1, (int)$ticket['price']);
-    $result = charge_generation_success($pdo, (int)$ticket['uid'], $requestId, (string)$ticket['mode'], 'gpt-image-2', $price, $imageId);
+    $model = custom_api_model_name((string)($ticket['model'] ?? 'gpt-image-2'));
+    $result = charge_generation_success($pdo, (int)$ticket['uid'], $requestId, (string)$ticket['mode'], $model, $price, $imageId);
     json_response([
         'ok' => true,
         'balanceCents' => (int)$result['balance'],
@@ -993,7 +996,7 @@ function fallback_platform_config(array $config): array
         'price_cents' => max(1, (int)($platform['price_cents'] ?? 10)),
         'upstream_cost_cents' => max(0, (int)($platform['upstream_cost_cents'] ?? 0)),
         'max_count' => max(1, (int)($platform['max_count'] ?? 4)),
-        'model_name' => 'gpt-image-2',
+        'model_name' => custom_api_model_name((string)($platform['model_name'] ?? $platform['modelName'] ?? 'gpt-image-2')),
         'request_format' => 'openai',
         'transport_mode' => 'proxy',
         'custom_template' => '',
@@ -1037,7 +1040,7 @@ function normalize_global_platform_config(array $value, array $fallback): array
         'price_cents' => $price,
         'upstream_cost_cents' => $upstreamCost,
         'max_count' => $maxCount,
-        'model_name' => 'gpt-image-2',
+        'model_name' => custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? $fallback['model_name'] ?? 'gpt-image-2')),
         'request_format' => $requestFormat,
         'transport_mode' => $transportMode,
         'custom_template' => $customTemplate,
@@ -1350,6 +1353,28 @@ function enforce_platform_request_count(array $request, int $count): array
     $decoded = json_decode($body, true);
     if (is_array($decoded)) {
         $request['body'] = json_encode(force_count_fields($decoded, $safeCount, false), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    return $request;
+}
+
+function platform_request_with_model(array $request, string $model): array
+{
+    $model = custom_api_model_name($model);
+    $bodyType = (string)($request['bodyType'] ?? 'json');
+
+    if ($bodyType === 'multipart') {
+        $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
+        $fields['model'] = $model;
+        $request['fields'] = $fields;
+        return $request;
+    }
+
+    $body = (string)($request['body'] ?? '');
+    $decoded = json_decode($body, true);
+    if (is_array($decoded)) {
+        $decoded['model'] = $model;
+        $request['body'] = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
     return $request;
@@ -1710,7 +1735,7 @@ function normalize_custom_api_config(array $value): array
         'requestFormat' => $requestFormat,
         'transportMode' => $transportMode,
         'customTemplate' => custom_api_template((string)($value['customTemplate'] ?? '')),
-        'modelName' => 'gpt-image-2',
+        'modelName' => custom_api_model_name((string)($value['modelName'] ?? $value['model_name'] ?? 'gpt-image-2')),
         'priceCents' => custom_api_price_cents($value['priceCents'] ?? $value['price_cents'] ?? 10),
         'updatedAt' => (int)($value['updatedAt'] ?? 0),
     ];
@@ -1784,6 +1809,16 @@ function custom_api_template(string $template): string
         throw new HttpError('自定义 JSON 模板过长', 400, 'custom_template_too_long');
     }
     return $template;
+}
+
+function custom_api_model_name(string $modelName): string
+{
+    $modelName = preg_replace('/[\x00-\x1F\x7F]+/', '', $modelName) ?? '';
+    $modelName = preg_replace('/\s+/', '', trim($modelName)) ?? '';
+    if ($modelName === '') {
+        return 'gpt-image-2';
+    }
+    return strlen($modelName) > 120 ? substr($modelName, 0, 120) : $modelName;
 }
 
 function custom_api_config_title(array $item): string
