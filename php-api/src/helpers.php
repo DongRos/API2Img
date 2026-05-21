@@ -548,9 +548,15 @@ function curl_request_once(string $url, string $method, array $headerLines, $bod
         CURLOPT_POSTFIELDS => $body,
         CURLOPT_CONNECTTIMEOUT => 30,
         CURLOPT_TIMEOUT => 300,
+        CURLOPT_ENCODING => '',
+        CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+        CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
         CURLOPT_SSL_VERIFYPEER => $strictTls,
         CURLOPT_SSL_VERIFYHOST => $strictTls ? 2 : 0,
     ];
+    if (defined('CURLOPT_TCP_KEEPALIVE')) {
+        $options[CURLOPT_TCP_KEEPALIVE] = 1;
+    }
     if ($strictTls) {
         $caBundle = resolve_curl_ca_bundle();
         if ($caBundle['caInfo'] !== '') {

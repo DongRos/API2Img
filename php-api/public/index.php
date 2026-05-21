@@ -349,6 +349,7 @@ function billing_config(PDO $pdo, array $config): void
         'rechargeUrl' => (string)$config['app']['recharge_url'],
         'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
         'requestFormat' => (string)$platform['request_format'],
+        'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
         'modelName' => (string)$platform['model_name'],
         'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
@@ -880,6 +881,7 @@ function fallback_platform_config(array $config): array
         'max_count' => max(1, (int)($platform['max_count'] ?? 4)),
         'model_name' => 'gpt-image-2',
         'request_format' => 'openai',
+        'transport_mode' => 'proxy',
         'custom_template' => '',
         'display_name' => '站点配置1',
         'source' => 'file',
@@ -908,6 +910,10 @@ function normalize_global_platform_config(array $value, array $fallback): array
     if (!in_array($requestFormat, ['openai', 'json'], true)) {
         $requestFormat = 'openai';
     }
+    $transportMode = (string)($value['transportMode'] ?? $value['transport_mode'] ?? $fallback['transport_mode'] ?? 'proxy');
+    if (!in_array($transportMode, ['direct', 'proxy'], true)) {
+        $transportMode = 'proxy';
+    }
     $customTemplate = custom_api_template((string)($value['customTemplate'] ?? $value['custom_template'] ?? $fallback['custom_template']));
     $displayName = custom_api_safe_display_name((string)($value['displayName'] ?? $value['display_name'] ?? $value['title'] ?? $fallback['display_name'] ?? ''), 1);
     return [
@@ -919,6 +925,7 @@ function normalize_global_platform_config(array $value, array $fallback): array
         'max_count' => $maxCount,
         'model_name' => 'gpt-image-2',
         'request_format' => $requestFormat,
+        'transport_mode' => $transportMode,
         'custom_template' => $customTemplate,
         'display_name' => $displayName,
         'updated_at' => (int)($value['updatedAt'] ?? $value['updated_at'] ?? 0),
@@ -937,6 +944,7 @@ function public_global_platform_config(array $platform): array
         'maxCount' => (int)$platform['max_count'],
         'modelName' => (string)$platform['model_name'],
         'requestFormat' => (string)$platform['request_format'],
+        'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
         'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
         'updatedAt' => (int)($platform['updated_at'] ?? 0),
@@ -1022,10 +1030,10 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
             $headers[(string)$key] = (string)$value;
         }
     }
-    $headers['Accept'] = $headers['Accept'] ?? (request_wants_event_stream($request) ? 'text/event-stream, application/json' : 'application/json');
+    $headers['Accept'] = $headers['Accept'] ?? (request_wants_event_stream($request) ? 'text/event-stream, application/json, */*' : 'application/json, text/plain, */*');
+    $headers['Accept-Language'] = $headers['Accept-Language'] ?? 'zh-CN,zh;q=0.9,en;q=0.8';
     $headers['Expect'] = '';
-    $headers['Connection'] = 'close';
-    $headers['User-Agent'] = $headers['User-Agent'] ?? 'API2Image/1.0';
+    $headers['User-Agent'] = $headers['User-Agent'] ?? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36';
     $tempFiles = [];
     try {
         if (($request['bodyType'] ?? '') === 'multipart') {
@@ -1337,6 +1345,7 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
         'maxCount' => (int)$existingPlatform['max_count'],
         'modelName' => $current['modelName'],
         'requestFormat' => $current['requestFormat'],
+        'transportMode' => $current['transportMode'],
         'customTemplate' => $current['customTemplate'],
         'displayName' => $current['title'],
         'updatedAt' => $current['updatedAt'],

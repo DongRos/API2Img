@@ -133,6 +133,7 @@ const billingState = {
   sessionToken: "",
   lastDirectConfig: null,
   platformRequestFormat: "openai",
+  platformTransportMode: "proxy",
   platformCustomTemplate: "",
   platformModelName: "",
   platformDisplayName: "站点配置1",
@@ -171,6 +172,7 @@ const customDebugState = {
   global: null,
   updatedAt: 0,
 };
+let platformBrowserGlobalLoadPromise = null;
 
 let toastTimer = null;
 let progressTimer = null;
@@ -634,6 +636,7 @@ async function ensurePlatformReadyForGeneration() {
     if (currentWalletSessionToken() && !billingState.authenticated) {
       await Promise.race([refreshBilling(), wait(GENERATION_READY_WAIT_MS)]);
     }
+    await ensurePlatformBrowserGlobalConfigLoaded();
     warmDirectApiBase();
   } catch (error) {
     console.warn("生成前钱包同步失败", error);
@@ -1398,8 +1401,8 @@ async function sendImageRequest(endpoint, request) {
   return fetchCustomImageRequest(endpoint, request);
 }
 
-async function fetchCustomImageRequest(endpoint, request) {
-  const preferredMode = config.transportMode === "direct" ? "direct" : "proxy";
+async function fetchCustomImageRequest(endpoint, request, transportMode = config.transportMode) {
+  const preferredMode = transportMode === "direct" ? "direct" : "proxy";
   const modes = preferredMode === "direct" ? ["direct", "proxy"] : ["proxy", "direct"];
   let lastError = null;
   let lastMode = "";
@@ -1411,7 +1414,7 @@ async function fetchCustomImageRequest(endpoint, request) {
         mode === "direct"
           ? await fetchDirectImageRequest(endpoint, request)
           : await fetchCustomProxyImageRequest(endpoint, request);
-      if (response.ok || !shouldSwitchCustomTransport(response, mode, endpoint, Date.now() - startedAt)) {
+      if (response.ok || !shouldSwitchCustomTransport(response, mode, endpoint, Date.now() - startedAt, preferredMode)) {
         if (lastError && mode !== preferredMode) {
           showToast(mode === "proxy" ? "浏览器直连失败，已切到服务器代理" : "服务器代理异常，已尝试浏览器直连");
         }
@@ -1463,14 +1466,14 @@ function customTransportLabel(mode) {
   return mode === "direct" ? "浏览器直连" : "服务器代理";
 }
 
-function shouldSwitchCustomTransport(response, mode, endpoint = "", elapsedMs = 0) {
+function shouldSwitchCustomTransport(response, mode, endpoint = "", elapsedMs = 0, preferredMode = config.transportMode) {
   if (!response) return false;
   if (elapsedMs > 8000) return false;
   if (mode === "direct") {
     return response.status === 405 || isRetryableHttpStatus(response.status);
   }
   if (requiresServerProxyEndpoint(endpoint)) return false;
-  return shouldFallbackToDirect(response);
+  return shouldFallbackToDirect(response, preferredMode);
 }
 
 function shouldSwitchCustomTransportError(error, elapsedMs = 0) {
@@ -1479,6 +1482,12 @@ function shouldSwitchCustomTransportError(error, elapsedMs = 0) {
 }
 
 async function fetchPlatformServerImageRequest(endpoint, request) {
+  await ensurePlatformBrowserGlobalConfigLoaded();
+  const browserConfig = platformBrowserGlobalConfig(request);
+  if (browserConfig) {
+    return fetchPlatformBrowserImageRequest(request, browserConfig);
+  }
+
   const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
   const ticket = await getPlatformGenerationTicket({
     mode: billingMode || $("#modeSelect").value,
@@ -1504,6 +1513,112 @@ async function fetchPlatformServerImageRequest(endpoint, request) {
   response.platformStatsDisplayName = ticket.displayName || billingState.platformDisplayName;
   response.platformStatsModel = billingModel || getModelName();
   return response;
+}
+
+async function fetchPlatformBrowserImageRequest(request, platformConfig) {
+  const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
+  const mode = billingMode || $("#modeSelect").value;
+  const endpoint = mode === "image"
+    ? ((platformConfig.editEndpoint || "").trim() || inferEditEndpoint(platformConfig.textEndpoint || ""))
+    : (platformConfig.textEndpoint || "").trim();
+  if (!endpoint) throw new Error("站点 API 地址不完整");
+  const ticket = await getPlatformGenerationTicket({
+    mode,
+    count: billingCount || 1,
+    model: billingModel || getModelName(),
+    signal,
+  });
+  const headers = {
+    ...(serverRequest.headers || {}),
+    Authorization: `Bearer ${platformConfig.apiKey}`,
+  };
+  const response = await fetchCustomImageRequest(endpoint, {
+    ...serverRequest,
+    headers,
+    signal,
+  }, platformConfig.transportMode || "proxy");
+  response.platformTicket = ticket.ticket;
+  response.platformPriceCents = ticket.priceCents;
+  response.platformStatsEndpoint = endpoint;
+  response.platformStatsApiKey = platformConfig.apiKey;
+  response.platformStatsDisplayName = ticket.displayName || billingState.platformDisplayName;
+  response.platformStatsModel = billingModel || getModelName();
+  return response;
+}
+
+async function ensurePlatformBrowserGlobalConfigLoaded() {
+  if (!adminPassword()) return;
+  const globalConfig = customDebugState.global || {};
+  if (globalConfig.apiKey && globalConfig.textEndpoint) return;
+  if (!platformBrowserGlobalLoadPromise) {
+    platformBrowserGlobalLoadPromise = loadPlatformBrowserGlobalConfig().finally(() => {
+      platformBrowserGlobalLoadPromise = null;
+    });
+  }
+  try {
+    await platformBrowserGlobalLoadPromise;
+  } catch (error) {
+    console.warn("Platform global config preload failed", error);
+  }
+}
+
+async function loadPlatformBrowserGlobalConfig() {
+  const response = await apiFetchPreferDirect("/api/admin/custom-api", {
+    headers: { "X-Admin-Password": adminPassword() },
+    timeoutMs: ADMIN_API_TIMEOUT_MS,
+  }, {
+    directFirst: true,
+    timeoutMs: ADMIN_API_TIMEOUT_MS,
+    label: "Global API config preload",
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || `Global API config preload failed: HTTP ${response.status}`);
+  }
+  const serverConfig = payload.config || {};
+  const globalConfig = payload.global || {};
+  customDebugState.loaded = true;
+  customDebugState.current = serverConfig;
+  customDebugState.history = Array.isArray(payload.history) ? payload.history : [];
+  customDebugState.global = globalConfig;
+  applyGlobalApiInfo(globalConfig);
+  renderAdminCustomHistory();
+}
+
+function platformBrowserGlobalConfig(request = {}) {
+  const globalConfig = customDebugState.global || {};
+  if (!adminPassword() || !globalConfig.apiKey || !globalConfig.textEndpoint) return null;
+  const mode = request.billingMode || $("#modeSelect").value;
+  const textEndpoint = String(globalConfig.textEndpoint || "").trim();
+  const editEndpoint = String(globalConfig.editEndpoint || "").trim();
+  const endpoint = mode === "image" ? (editEndpoint || inferEditEndpoint(textEndpoint)) : textEndpoint;
+  if (!endpoint) return null;
+  return {
+    ...globalConfig,
+    textEndpoint,
+    editEndpoint,
+    transportMode: normalizeCustomTransportMode(
+      textEndpoint,
+      editEndpoint,
+      matchingAdminCustomTransportMode(globalConfig) || globalConfig.transportMode || billingState.platformTransportMode || "proxy",
+    ),
+  };
+}
+
+function matchingAdminCustomTransportMode(globalConfig = {}) {
+  const candidates = [customDebugState.current, ...(customDebugState.history || [])].filter(Boolean);
+  const globalKey = String(globalConfig.apiKey || "").trim();
+  const globalText = String(globalConfig.textEndpoint || "").trim();
+  const globalEdit = String(globalConfig.editEndpoint || "").trim();
+  const match = candidates.find((item) => {
+    if (!["direct", "proxy"].includes(item.transportMode)) return false;
+    return (
+      String(item.apiKey || "").trim() === globalKey &&
+      String(item.textEndpoint || "").trim() === globalText &&
+      String(item.editEndpoint || "").trim() === globalEdit
+    );
+  });
+  return match?.transportMode || "";
 }
 
 async function fetchPlatformGeneration(payload, signal) {
@@ -1652,8 +1767,8 @@ function normalizeDirectApiBase(value) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
 
-function shouldFallbackToDirect(response) {
-  if (config.transportMode !== "proxy") return false;
+function shouldFallbackToDirect(response, transportMode = config.transportMode) {
+  if (transportMode !== "proxy") return false;
   if (requiresServerProxyEndpoint(config.textEndpoint || config.editEndpoint)) return false;
   const contentType = response.headers.get("content-type") || "";
   return response.status === 504 && /text\/html|text\/plain/i.test(contentType);
@@ -1895,7 +2010,7 @@ function tagPayloadImageBaseUrl(payload, baseUrl = "") {
 
 function normalizeImages(payload, baseUrl = "") {
   const images = [];
-  const resolvedBaseUrl = baseUrl || (payload && typeof payload === "object" ? payload.__imageBaseUrl || "" : "");
+  const resolvedBaseUrl = (payload && typeof payload === "object" ? payload.__imageBaseUrl || "" : "") || baseUrl;
   collectImages(payload, images, new Set(), 0, "", resolvedBaseUrl);
   return images;
 }
@@ -2970,6 +3085,7 @@ async function loadBillingConfig() {
   billingState.rechargeUrl = info.rechargeUrl || billingState.rechargeUrl;
   billingState.directBaseUrl = normalizeDirectApiBase(info.directBaseUrl || billingState.directBaseUrl);
   billingState.platformRequestFormat = info.requestFormat === "json" ? "json" : "openai";
+  billingState.platformTransportMode = info.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = info.customTemplate || "";
   billingState.platformModelName = info.modelName || "";
   billingState.platformDisplayName = normalizeApiDisplayName(info.displayName || billingState.platformDisplayName);
@@ -3731,6 +3847,7 @@ async function applyCustomApiAsGlobal() {
     billingState.priceCents = Number(payload.priceCents || serverConfig.priceCents || billingState.priceCents);
     billingState.platformEnabled = true;
     billingState.platformRequestFormat = serverConfig.requestFormat === "json" ? "json" : "openai";
+    billingState.platformTransportMode = serverConfig.transportMode === "direct" ? "direct" : "proxy";
     billingState.platformCustomTemplate = serverConfig.customTemplate || "";
     billingState.platformModelName = serverConfig.modelName || "";
     billingState.platformDisplayName = normalizeApiDisplayName(serverConfig.displayName || serverConfig.title || billingState.platformDisplayName);
@@ -3785,6 +3902,7 @@ function applyGlobalApiInfo(item = {}) {
   billingState.priceCents = Number(item.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.platformEnabled = true;
   billingState.platformRequestFormat = item.requestFormat === "json" ? "json" : "openai";
+  billingState.platformTransportMode = item.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = item.customTemplate || "";
   billingState.platformModelName = FIXED_MODEL_NAME;
   billingState.platformDisplayName = normalizeApiDisplayName(item.displayName || item.title || billingState.platformDisplayName);
