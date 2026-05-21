@@ -217,6 +217,7 @@ let siteStatsRefreshTimer = null;
 let siteHeartbeatTimer = null;
 let siteHeartbeatInFlight = false;
 let siteVisitTracked = false;
+let lastLoginPresenceTouchAt = 0;
 let announcementRefreshTimer = null;
 let announcementAutoOpenTimer = null;
 let resultMasonryFrame = 0;
@@ -3755,10 +3756,16 @@ async function mergeDirectAdminSiteStats(headers = {}) {
       noHttpFallback: true,
     });
     const payload = await readJsonResponse(response);
-    if (response.ok) applySiteStats(payload.siteStats || payload);
+    if (response.ok) applyAdminOnlySiteStats(payload.siteStats || payload);
   } catch (error) {
     console.warn("站点统计直连补充失败", error);
   }
+}
+
+function applyAdminOnlySiteStats(payload = {}) {
+  assignSiteStat("loggedInOnlineCount", payload.loggedInOnlineCount ?? payload.currentLoggedInUsers);
+  assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
+  assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
 }
 
 function applySiteStats(payload = {}) {
@@ -3842,20 +3849,41 @@ async function sendSiteHeartbeat() {
   if (siteHeartbeatInFlight) return;
   siteHeartbeatInFlight = true;
   try {
+    const headers = { "Content-Type": "application/json" };
+    const sessionToken = currentWalletSessionToken();
+    if (sessionToken) headers["X-Api2Image-Session"] = sessionToken;
     const response = await fetch("/api/site/track", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ kind: "heartbeat", visitorId: getSiteVisitorId() }),
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) return;
     applySiteStats(payload.siteStats || payload);
+    touchLoginPresence();
     renderSiteStats();
   } catch (error) {
     console.warn("站点心跳失败", error);
   } finally {
     siteHeartbeatInFlight = false;
   }
+}
+
+function touchLoginPresence() {
+  const now = Date.now();
+  if (!billingState.authenticated || !currentWalletSessionToken()) return;
+  if (now - lastLoginPresenceTouchAt < 60000) return;
+  lastLoginPresenceTouchAt = now;
+  apiFetchPreferDirect("/api/auth/me", { timeoutMs: FAST_API_TIMEOUT_MS }, {
+    directFirst: true,
+    timeoutMs: FAST_API_TIMEOUT_MS,
+    label: "登录在线状态",
+    noHttpFallback: true,
+  })
+    .then(async (response) => {
+      if (response.ok) applyBillingDashboard(await readJsonResponse(response));
+    })
+    .catch((error) => console.warn("登录在线状态同步失败", error));
 }
 
 function applyBillingDashboard(payload) {
@@ -5624,6 +5652,8 @@ function renderApiStats() {
   const summary = $("#apiStatsSummary");
   const list = $("#apiStatsList");
   if (!summary || !list) return;
+  summary.hidden = true;
+  summary.innerHTML = "";
   list.hidden = true;
   list.innerHTML = "";
 }
@@ -5662,7 +5692,6 @@ async function refreshSiteStatsFromPanel() {
   }
   try {
     await loadSiteStats({ silent: false });
-    renderApiStats();
     showToast("统计已刷新");
   } finally {
     if (button) {

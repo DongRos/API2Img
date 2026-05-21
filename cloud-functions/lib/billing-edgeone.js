@@ -25,6 +25,7 @@ const DEFAULT_DB = {
     totalVisitors: 0,
     dailyVisits: {},
     dailyPeaks: {},
+    adminTotals: {},
     lastVisitAt: 0,
     updatedAt: 0,
   },
@@ -98,8 +99,9 @@ export async function siteTrack(context) {
 
 export async function siteStats(context) {
   const session = await resolveSession(context);
-  const stats = await getSiteStats(context);
-  Object.assign(stats, await getPhpAdminStats(context));
+  const admin = isAdminRequest(context);
+  const stats = await getSiteStats(context, 3 * 60 * 1000, admin);
+  if (admin) Object.assign(stats, await getPhpAdminStats(context));
   return jsonResponse(200, { ok: true, siteStats: stats }, session);
 }
 
@@ -683,7 +685,7 @@ async function getDashboard(context, customerId) {
   };
 }
 
-async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000) {
+async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000, includeAdminTotals = false) {
   const db = await readDb(context);
   const siteStats = normalizeSiteStats(db.siteStats);
   const now = Date.now();
@@ -694,14 +696,14 @@ async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000) {
   const totalVisitors = Math.max(Number(siteStats.totalVisitors || 0), Object.keys(db.sessions).length);
   const todayKey = getDateKey(now);
   const yesterdayKey = getDateKey(now - 24 * 60 * 60 * 1000);
-  const totalRevenueCents = Object.values(db.usage).reduce((sum, item) => sum + Math.max(0, Number(item.amountCents || 0)), 0);
+  const adminTotals = includeAdminTotals ? normalizeAdminSiteTotals(siteStats.adminTotals) : {};
   return {
     onlineCount,
-    loggedInOnlineCount: 0,
+    loggedInOnlineCount: Number(adminTotals.loggedInOnlineCount || 0),
     todayPeak: Math.max(onlineCount, Number(siteStats.dailyPeaks?.[todayKey] || 0)),
     yesterdayPeak: Number(siteStats.dailyPeaks?.[yesterdayKey] || 0),
-    registeredUsers: 0,
-    totalRevenueCents: 0,
+    registeredUsers: Number(adminTotals.registeredUsers || 0),
+    totalRevenueCents: Number(adminTotals.totalRevenueCents || 0),
     totalVisits: Number(siteStats.totalVisits || 0),
     todayVisits: Number(siteStats.dailyVisits?.[todayKey] || 0),
     totalVisitors,
@@ -716,21 +718,38 @@ async function getPhpAdminStats(context) {
   if (!password) return {};
   const base = normalizePhpApiBaseUrl(getEnv(context, "PHP_API_BASE_URL")).replace(/\/+$/, "");
   if (!base) return {};
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3500);
   try {
     const upstream = await fetch(`${base}/api/site/stats`, {
       headers: { "X-Admin-Password": password },
+      signal: controller.signal,
     });
     if (!upstream.ok) return {};
     const payload = await upstream.json().catch(() => ({}));
     const stats = payload?.siteStats || {};
-    return {
+    const next = {
       loggedInOnlineCount: Math.max(0, Number(stats.loggedInOnlineCount || stats.currentLoggedInUsers || 0)),
       registeredUsers: Math.max(0, Number(stats.registeredUsers || stats.totalRegisteredUsers || 0)),
       totalRevenueCents: Math.max(0, Number(stats.totalRevenueCents || stats.totalRevenue || 0)),
+      updatedAt: Date.now(),
     };
+    await cacheAdminSiteTotals(context, next);
+    return next;
   } catch {
     return {};
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+async function cacheAdminSiteTotals(context, totals) {
+  await mutateDb(context, (db) => {
+    const siteStats = normalizeSiteStats(db.siteStats);
+    siteStats.adminTotals = normalizeAdminSiteTotals(totals);
+    siteStats.updatedAt = Date.now();
+    db.siteStats = siteStats;
+  });
 }
 
 async function recordUsage(context, customerId, payload) {
@@ -864,7 +883,17 @@ function normalizeSiteStats(value) {
     dailyPeaks: Object.fromEntries(
       Object.entries(dailyPeaks).map(([key, count]) => [key, Math.max(0, Number(count || 0))]),
     ),
+    adminTotals: normalizeAdminSiteTotals(value?.adminTotals),
     lastVisitAt: Math.max(0, Number(value?.lastVisitAt || 0)),
+    updatedAt: Math.max(0, Number(value?.updatedAt || 0)),
+  };
+}
+
+function normalizeAdminSiteTotals(value) {
+  return {
+    loggedInOnlineCount: Math.max(0, Number(value?.loggedInOnlineCount || 0)),
+    registeredUsers: Math.max(0, Number(value?.registeredUsers || 0)),
+    totalRevenueCents: Math.max(0, Number(value?.totalRevenueCents || 0)),
     updatedAt: Math.max(0, Number(value?.updatedAt || 0)),
   };
 }
