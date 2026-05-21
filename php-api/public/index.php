@@ -1024,7 +1024,7 @@ function fallback_platform_config(array $config): array
 function platform_config(PDO $pdo, array $config): array
 {
     $fallback = fallback_platform_config($config);
-    $stored = read_admin_setting_json($pdo, 'platform_global_api');
+    $stored = read_admin_setting_json($pdo, $config, 'platform_global_api');
     if (!is_array($stored) || $stored === []) {
         return $fallback;
     }
@@ -1497,7 +1497,7 @@ function admin_ping(PDO $pdo, array $config): void
 function admin_get_custom_api(PDO $pdo, array $config): void
 {
     require_admin($pdo, $config);
-    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $settings = read_admin_setting_json($pdo, $config, 'custom_api_debug');
     $current = normalize_custom_api_config($settings['current'] ?? []);
     $history = normalize_custom_api_history($settings['history'] ?? []);
     $global = public_global_platform_config(platform_config($pdo, $config));
@@ -1513,7 +1513,7 @@ function admin_save_custom_api(PDO $pdo, array $config): void
 {
     require_admin($pdo, $config);
     $payload = read_json();
-    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $settings = read_admin_setting_json($pdo, $config, 'custom_api_debug');
     $current = normalize_custom_api_config($payload);
     if ($current['enabled'] && ($current['textEndpoint'] === '' || $current['apiKey'] === '')) {
         throw new HttpError('启用自定义 API 调试前，请填写文生图 API URL 和 API Key', 400, 'custom_api_incomplete');
@@ -1538,7 +1538,7 @@ function admin_save_custom_api(PDO $pdo, array $config): void
     }
 
     $current['updatedAt'] = time() * 1000;
-    write_admin_setting_json($pdo, 'custom_api_debug', [
+    write_admin_setting_json($pdo, $config, 'custom_api_debug', [
         'current' => $current,
         'history' => $history,
     ]);
@@ -1566,7 +1566,7 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
     }
     $existingPlatform = platform_config($pdo, $config);
 
-    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $settings = read_admin_setting_json($pdo, $config, 'custom_api_debug');
     $history = normalize_custom_api_history($settings['history'] ?? []);
     $current['updatedAt'] = time() * 1000;
     $snapshot = $current;
@@ -1583,11 +1583,11 @@ function admin_apply_custom_api_global(PDO $pdo, array $config): void
     }
     $history = array_slice(array_merge([$snapshot], $filtered), 0, 12);
 
-    write_admin_setting_json($pdo, 'custom_api_debug', [
+    write_admin_setting_json($pdo, $config, 'custom_api_debug', [
         'current' => $current,
         'history' => $history,
     ]);
-    write_admin_setting_json($pdo, 'platform_global_api', [
+    write_admin_setting_json($pdo, $config, 'platform_global_api', [
         'textEndpoint' => $current['textEndpoint'],
         'editEndpoint' => $current['editEndpoint'],
         'apiKey' => $current['apiKey'],
@@ -1622,10 +1622,10 @@ function admin_delete_custom_api_history(PDO $pdo, array $config): void
         throw new HttpError('缺少要删除的配置记录', 400, 'custom_api_history_id_required');
     }
 
-    $settings = read_admin_setting_json($pdo, 'custom_api_debug');
+    $settings = read_admin_setting_json($pdo, $config, 'custom_api_debug');
     $history = normalize_custom_api_history($settings['history'] ?? []);
     $history = array_values(array_filter($history, static fn($item) => (string)($item['id'] ?? '') !== $id));
-    write_admin_setting_json($pdo, 'custom_api_debug', [
+    write_admin_setting_json($pdo, $config, 'custom_api_debug', [
         'current' => normalize_custom_api_config($settings['current'] ?? []),
         'history' => $history,
     ]);
@@ -1686,7 +1686,104 @@ function ensure_admin_settings_table(PDO $pdo): bool
     }
 }
 
-function read_admin_setting_json(PDO $pdo, string $key): array
+function admin_setting_payload_is_encrypted(string $value): bool
+{
+    return starts_with(trim($value), 'enc:v1:');
+}
+
+function encode_admin_setting_payload(array $config, string $key, string $json): string
+{
+    if (!function_exists('openssl_encrypt')) {
+        throw new HttpError('服务器 OpenSSL 不可用，无法加密保存 API 配置', 500, 'settings_encryption_unavailable');
+    }
+    $iv = random_bytes(12);
+    $tag = '';
+    $ciphertext = openssl_encrypt(
+        $json,
+        'aes-256-gcm',
+        admin_setting_encryption_key($config, $key),
+        OPENSSL_RAW_DATA,
+        $iv,
+        $tag,
+        admin_setting_encryption_aad($key)
+    );
+    if ($ciphertext === false || $tag === '') {
+        throw new HttpError('API 配置加密失败', 500, 'settings_encrypt_failed');
+    }
+    $payload = json_encode([
+        'iv' => base64_encode($iv),
+        'tag' => base64_encode($tag),
+        'data' => base64_encode($ciphertext),
+    ], JSON_UNESCAPED_SLASHES);
+    if ($payload === false) {
+        throw new HttpError('API 配置加密封装失败', 500, 'settings_encrypt_encode_failed');
+    }
+    return 'enc:v1:' . base64_encode($payload);
+}
+
+function decode_admin_setting_payload(array $config, string $key, string $stored): string
+{
+    $stored = trim($stored);
+    if (!admin_setting_payload_is_encrypted($stored)) {
+        return $stored;
+    }
+    if (!function_exists('openssl_decrypt')) {
+        return '';
+    }
+    $encoded = substr($stored, strlen('enc:v1:'));
+    $json = base64_decode($encoded, true);
+    $payload = is_string($json) ? json_decode($json, true) : null;
+    if (!is_array($payload)) {
+        return '';
+    }
+    $iv = base64_decode((string)($payload['iv'] ?? ''), true);
+    $tag = base64_decode((string)($payload['tag'] ?? ''), true);
+    $ciphertext = base64_decode((string)($payload['data'] ?? ''), true);
+    if (!is_string($iv) || !is_string($tag) || !is_string($ciphertext) || $iv === '' || $tag === '') {
+        return '';
+    }
+    try {
+        $plain = openssl_decrypt(
+            $ciphertext,
+            'aes-256-gcm',
+            admin_setting_encryption_key($config, $key),
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag,
+            admin_setting_encryption_aad($key)
+        );
+    } catch (Throwable $error) {
+        return '';
+    }
+    return is_string($plain) ? $plain : '';
+}
+
+function admin_setting_encryption_key(array $config, string $key): string
+{
+    $hex = secret_hash($config, 'admin-setting-encryption', $key);
+    $binary = hex2bin($hex);
+    if (!is_string($binary) || strlen($binary) !== 32) {
+        throw new HttpError('API 配置加密密钥不可用', 500, 'settings_key_failed');
+    }
+    return $binary;
+}
+
+function admin_setting_encryption_aad(string $key): string
+{
+    return 'api2image-admin-setting:' . $key;
+}
+
+function delete_admin_setting_logs(PDO $pdo, string $key): void
+{
+    try {
+        $stmt = $pdo->prepare("DELETE FROM admin_logs WHERE action = 'admin_setting' AND target_id = ?");
+        $stmt->execute([$key]);
+    } catch (Throwable $error) {
+        // Best-effort cleanup only; encrypted admin_settings remains the source of truth.
+    }
+}
+
+function read_admin_setting_json(PDO $pdo, array $config, string $key): array
 {
     $raw = '';
     if (ensure_admin_settings_table($pdo)) {
@@ -1704,16 +1801,32 @@ function read_admin_setting_json(PDO $pdo, string $key): array
     if ($raw === '') {
         return [];
     }
+    $wasEncrypted = admin_setting_payload_is_encrypted($raw);
+    $raw = decode_admin_setting_payload($config, $key, $raw);
+    if ($raw === '') {
+        return [];
+    }
     $decoded = json_decode($raw, true);
-    return is_array($decoded) ? $decoded : [];
+    if (!is_array($decoded)) {
+        return [];
+    }
+    if (!$wasEncrypted) {
+        try {
+            write_admin_setting_json($pdo, $config, $key, $decoded);
+        } catch (Throwable $error) {
+            // Keep serving the already-read legacy plaintext value; the next save will encrypt it.
+        }
+    }
+    return $decoded;
 }
 
-function write_admin_setting_json(PDO $pdo, string $key, array $value): void
+function write_admin_setting_json(PDO $pdo, array $config, string $key, array $value): void
 {
     $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($json === false) {
         throw new HttpError('配置 JSON 编码失败', 500, 'setting_encode_failed');
     }
+    $stored = encode_admin_setting_payload($config, $key, $json);
     if (ensure_admin_settings_table($pdo)) {
         try {
             $stmt = $pdo->prepare(
@@ -1721,13 +1834,14 @@ function write_admin_setting_json(PDO $pdo, string $key, array $value): void
                  VALUES (?, ?, UTC_TIMESTAMP())
                  ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_at = UTC_TIMESTAMP()'
             );
-            $stmt->execute([$key, $json]);
+            $stmt->execute([$key, $stored]);
+            delete_admin_setting_logs($pdo, $key);
             return;
         } catch (Throwable $error) {
             // Fall through to admin_logs for virtual hosts that restrict table writes.
         }
     }
-    write_admin_setting_log($pdo, $key, $json);
+    write_admin_setting_log($pdo, $key, $stored);
 }
 
 function read_admin_setting_log(PDO $pdo, string $key): string
