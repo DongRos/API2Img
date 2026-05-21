@@ -3701,15 +3701,10 @@ async function trackSiteVisit() {
       }
     } catch {}
 
-    const response = await apiFetchPreferDirect("/api/site/track", {
+    const response = await fetch("/api/site/track", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "visit", visitorId: getSiteVisitorId() }),
-      timeoutMs: FAST_API_TIMEOUT_MS,
-    }, {
-      directFirst: true,
-      timeoutMs: FAST_API_TIMEOUT_MS,
-      label: "站点统计",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "杩囩▼涓婃姤澶辫触");
@@ -3730,14 +3725,10 @@ async function loadSiteStats(options = {}) {
     const headers = {};
     const password = currentCodeAdminPassword();
     if (password) headers["X-Admin-Password"] = password;
-    const response = await apiFetchPreferDirect("/api/site/stats", {
+    const response = await fetchWithTimeout("/api/site/stats", {
       headers,
       timeoutMs: FAST_API_TIMEOUT_MS,
-    }, {
-      directFirst: true,
-      timeoutMs: FAST_API_TIMEOUT_MS,
-      label: "站点统计",
-    });
+    }, FAST_API_TIMEOUT_MS);
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "缁熻璇诲彇澶辫触");
     applySiteStats(payload.siteStats || payload);
@@ -3772,8 +3763,18 @@ function assignSiteStat(key, value) {
 function renderSiteStats() {
   updateStatsPanelCopy();
   const summary = $("#siteStatsSummary");
+  const adminSummary = $("#apiStatsSummary");
   if (!summary) return;
+  summary.hidden = false;
   summary.innerHTML = `
+    <div><strong>${formatCount(siteStatsState.onlineCount)}</strong><span>当前在线</span></div>
+    <div><strong>${formatCount(siteStatsState.totalVisits)}</strong><span>累计访问</span></div>
+    <div><strong>${formatCount(siteStatsState.todayVisits)}</strong><span>今日访问</span></div>
+    <div><strong>${formatCount(siteStatsState.totalVisitors)}</strong><span>累计访客</span></div>
+  `;
+  if (!adminSummary) return;
+  adminSummary.hidden = false;
+  adminSummary.innerHTML = `
     <div><strong>${formatCount(siteStatsState.todayPeak)}</strong><span>今日峰值</span></div>
     <div><strong>${formatCount(siteStatsState.yesterdayPeak)}</strong><span>昨日峰值</span></div>
     <div><strong>${formatCount(siteStatsState.registeredUsers)}</strong><span>总注册用户</span></div>
@@ -3820,15 +3821,10 @@ async function sendSiteHeartbeat() {
   if (siteHeartbeatInFlight) return;
   siteHeartbeatInFlight = true;
   try {
-    const response = await apiFetchPreferDirect("/api/site/track", {
+    const response = await fetch("/api/site/track", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "heartbeat", visitorId: getSiteVisitorId() }),
-      timeoutMs: FAST_API_TIMEOUT_MS,
-    }, {
-      directFirst: true,
-      timeoutMs: FAST_API_TIMEOUT_MS,
-      label: "站点心跳",
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) return;
@@ -5607,9 +5603,7 @@ function renderApiStats() {
   const summary = $("#apiStatsSummary");
   const list = $("#apiStatsList");
   if (!summary || !list) return;
-  summary.hidden = true;
   list.hidden = true;
-  summary.innerHTML = "";
   list.innerHTML = "";
 }
 

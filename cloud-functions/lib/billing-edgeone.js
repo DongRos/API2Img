@@ -98,7 +98,9 @@ export async function siteTrack(context) {
 
 export async function siteStats(context) {
   const session = await resolveSession(context);
-  return jsonResponse(200, { ok: true, siteStats: await getSiteStats(context) }, session);
+  const stats = await getSiteStats(context);
+  Object.assign(stats, await getPhpAdminStats(context));
+  return jsonResponse(200, { ok: true, siteStats: stats }, session);
 }
 
 export async function siteAnnouncements(context) {
@@ -708,6 +710,27 @@ async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000) {
   };
 }
 
+async function getPhpAdminStats(context) {
+  const password = String(context.request.headers.get("x-admin-password") || "").trim();
+  if (!password) return {};
+  const base = normalizePhpApiBaseUrl(getEnv(context, "PHP_API_BASE_URL")).replace(/\/+$/, "");
+  if (!base) return {};
+  try {
+    const upstream = await fetch(`${base}/api/site/stats`, {
+      headers: { "X-Admin-Password": password },
+    });
+    if (!upstream.ok) return {};
+    const payload = await upstream.json().catch(() => ({}));
+    const stats = payload?.siteStats || {};
+    return {
+      registeredUsers: Math.max(0, Number(stats.registeredUsers || stats.totalRegisteredUsers || 0)),
+      totalRevenueCents: Math.max(0, Number(stats.totalRevenueCents || stats.totalRevenue || 0)),
+    };
+  } catch {
+    return {};
+  }
+}
+
 async function recordUsage(context, customerId, payload) {
   return mutateDb(context, (db) => {
     const customer = ensureCustomerRecord(db, customerId);
@@ -789,6 +812,10 @@ async function mutateDb(context, mutator) {
 
 function getBillingStore(context) {
   return getStore({ name: getEnv(context, "BILLING_STORE_NAME") || "api2image-billing", consistency: "strong" });
+}
+
+function normalizePhpApiBaseUrl(value) {
+  return String(value || "").replace(/^https?:\/\/api2img\.shop(?=\/|$)/i, "https://www.api2img.shop");
 }
 
 function normalizeDb(value) {

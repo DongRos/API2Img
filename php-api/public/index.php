@@ -628,12 +628,13 @@ function site_stats_payload(PDO $pdo): array
 
     $registeredUsers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE email <> ''")->fetchColumn();
     $totalRevenueCents = (int)$pdo->query("SELECT COALESCE(SUM(total_cents), 0) FROM generation_requests WHERE status = 'succeeded'")->fetchColumn();
-    $totalVisitors = (int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn();
+    $sessionVisitors = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM sessions")->fetchColumn();
+    $totalVisitors = max((int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn(), $sessionVisitors);
     $updatedAt = (int)round(microtime(true) * 1000);
 
     return [
-        'onlineCount' => $onlineCount,
-        'todayPeak' => max($onlineCount, (int)($peaks['today_peak'] ?? 0)),
+        'onlineCount' => php_online_count($pdo, $onlineWindowSeconds, $onlineCount),
+        'todayPeak' => max(php_online_count($pdo, $onlineWindowSeconds, $onlineCount), (int)($peaks['today_peak'] ?? 0)),
         'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
         'registeredUsers' => $registeredUsers,
         'totalRevenueCents' => $totalRevenueCents,
@@ -666,17 +667,31 @@ function site_public_stats_payload(PDO $pdo): array
     );
     $peaks = $peakStmt->fetch() ?: [];
     $updatedAt = (int)round(microtime(true) * 1000);
+    $sessionVisitors = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM sessions")->fetchColumn();
     return [
-        'onlineCount' => $onlineCount,
-        'todayPeak' => max($onlineCount, (int)($peaks['today_peak'] ?? 0)),
+        'onlineCount' => php_online_count($pdo, $onlineWindowSeconds, $onlineCount),
+        'todayPeak' => max(php_online_count($pdo, $onlineWindowSeconds, $onlineCount), (int)($peaks['today_peak'] ?? 0)),
         'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
         'totalVisits' => (int)($peaks['total_visits'] ?? 0),
         'todayVisits' => (int)($peaks['today_visits'] ?? 0),
-        'totalVisitors' => (int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn(),
+        'totalVisitors' => max((int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn(), $sessionVisitors),
         'lastVisitAt' => $updatedAt,
         'updatedAt' => $updatedAt,
         'onlineWindowMs' => $onlineWindowSeconds * 1000,
     ];
+}
+
+function php_online_count(PDO $pdo, int $onlineWindowSeconds, int $visitorOnlineCount = 0): int
+{
+    $sessionOnline = (int)$pdo
+        ->query(
+            "SELECT COUNT(DISTINCT user_id) FROM sessions
+             WHERE revoked_at IS NULL
+               AND expires_at > UTC_TIMESTAMP()
+               AND last_seen_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL $onlineWindowSeconds SECOND)"
+        )
+        ->fetchColumn();
+    return max($visitorOnlineCount, $sessionOnline);
 }
 
 function refresh_today_peak_online(PDO $pdo): void
