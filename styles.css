@@ -1444,6 +1444,10 @@ button:disabled {
   gap: 8px;
 }
 
+#siteStatsSummary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .api-stats-summary div {
   min-width: 0;
   padding: 10px;
@@ -2367,6 +2371,10 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .api-stats-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #siteStatsSummary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

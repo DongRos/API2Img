@@ -697,10 +697,11 @@ async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000) {
   const totalRevenueCents = Object.values(db.usage).reduce((sum, item) => sum + Math.max(0, Number(item.amountCents || 0)), 0);
   return {
     onlineCount,
+    loggedInOnlineCount: 0,
     todayPeak: Math.max(onlineCount, Number(siteStats.dailyPeaks?.[todayKey] || 0)),
     yesterdayPeak: Number(siteStats.dailyPeaks?.[yesterdayKey] || 0),
-    registeredUsers: Object.keys(db.customers).length,
-    totalRevenueCents,
+    registeredUsers: 0,
+    totalRevenueCents: 0,
     totalVisits: Number(siteStats.totalVisits || 0),
     todayVisits: Number(siteStats.dailyVisits?.[todayKey] || 0),
     totalVisitors,
@@ -723,6 +724,7 @@ async function getPhpAdminStats(context) {
     const payload = await upstream.json().catch(() => ({}));
     const stats = payload?.siteStats || {};
     return {
+      loggedInOnlineCount: Math.max(0, Number(stats.loggedInOnlineCount || stats.currentLoggedInUsers || 0)),
       registeredUsers: Math.max(0, Number(stats.registeredUsers || stats.totalRegisteredUsers || 0)),
       totalRevenueCents: Math.max(0, Number(stats.totalRevenueCents || stats.totalRevenue || 0)),
     };

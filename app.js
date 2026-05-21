@@ -161,6 +161,7 @@ const billingState = {
 
 const siteStatsState = {
   onlineCount: 0,
+  loggedInOnlineCount: 0,
   totalVisits: 0,
   todayVisits: 0,
   totalVisitors: 0,
@@ -3732,6 +3733,7 @@ async function loadSiteStats(options = {}) {
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "缁熻璇诲彇澶辫触");
     applySiteStats(payload.siteStats || payload);
+    if (password) await mergeDirectAdminSiteStats(headers);
     renderSiteStats();
     return payload.siteStats || payload;
   } catch (error) {
@@ -3741,8 +3743,27 @@ async function loadSiteStats(options = {}) {
   }
 }
 
+async function mergeDirectAdminSiteStats(headers = {}) {
+  try {
+    const response = await apiFetchPreferDirect("/api/site/stats", {
+      headers,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "站点统计",
+      noHttpFallback: true,
+    });
+    const payload = await readJsonResponse(response);
+    if (response.ok) applySiteStats(payload.siteStats || payload);
+  } catch (error) {
+    console.warn("站点统计直连补充失败", error);
+  }
+}
+
 function applySiteStats(payload = {}) {
   assignSiteStat("onlineCount", payload.onlineCount);
+  assignSiteStat("loggedInOnlineCount", payload.loggedInOnlineCount ?? payload.currentLoggedInUsers);
   assignSiteStat("totalVisits", payload.totalVisits);
   assignSiteStat("todayVisits", payload.todayVisits);
   assignSiteStat("totalVisitors", payload.totalVisitors);
@@ -3768,18 +3789,18 @@ function renderSiteStats() {
   summary.hidden = false;
   summary.innerHTML = `
     <div><strong>${formatCount(siteStatsState.onlineCount)}</strong><span>当前在线</span></div>
-    <div><strong>${formatCount(siteStatsState.totalVisits)}</strong><span>累计访问</span></div>
-    <div><strong>${formatCount(siteStatsState.todayVisits)}</strong><span>今日访问</span></div>
+    <div><strong>${formatCount(siteStatsState.loggedInOnlineCount)}</strong><span>当前已登录用户</span></div>
+    <div><strong>${formatCount(siteStatsState.todayVisits)}</strong><span>今日访客</span></div>
     <div><strong>${formatCount(siteStatsState.totalVisitors)}</strong><span>累计访客</span></div>
-  `;
-  if (!adminSummary) return;
-  adminSummary.hidden = false;
-  adminSummary.innerHTML = `
     <div><strong>${formatCount(siteStatsState.todayPeak)}</strong><span>今日峰值</span></div>
     <div><strong>${formatCount(siteStatsState.yesterdayPeak)}</strong><span>昨日峰值</span></div>
     <div><strong>${formatCount(siteStatsState.registeredUsers)}</strong><span>总注册用户</span></div>
     <div><strong>${formatMoney(siteStatsState.totalRevenueCents)}</strong><span>总收益</span></div>
   `;
+  if (adminSummary) {
+    adminSummary.hidden = true;
+    adminSummary.innerHTML = "";
+  }
 }
 
 function updateStatsPanelCopy() {

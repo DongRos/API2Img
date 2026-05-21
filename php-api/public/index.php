@@ -634,6 +634,7 @@ function site_stats_payload(PDO $pdo): array
 
     return [
         'onlineCount' => php_online_count($pdo, $onlineWindowSeconds, $onlineCount),
+        'loggedInOnlineCount' => php_logged_in_online_count($pdo, $onlineWindowSeconds),
         'todayPeak' => max(php_online_count($pdo, $onlineWindowSeconds, $onlineCount), (int)($peaks['today_peak'] ?? 0)),
         'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
         'registeredUsers' => $registeredUsers,
@@ -670,6 +671,7 @@ function site_public_stats_payload(PDO $pdo): array
     $sessionVisitors = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM sessions")->fetchColumn();
     return [
         'onlineCount' => php_online_count($pdo, $onlineWindowSeconds, $onlineCount),
+        'loggedInOnlineCount' => php_logged_in_online_count($pdo, $onlineWindowSeconds),
         'todayPeak' => max(php_online_count($pdo, $onlineWindowSeconds, $onlineCount), (int)($peaks['today_peak'] ?? 0)),
         'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
         'totalVisits' => (int)($peaks['total_visits'] ?? 0),
@@ -683,7 +685,12 @@ function site_public_stats_payload(PDO $pdo): array
 
 function php_online_count(PDO $pdo, int $onlineWindowSeconds, int $visitorOnlineCount = 0): int
 {
-    $sessionOnline = (int)$pdo
+    return max($visitorOnlineCount, php_logged_in_online_count($pdo, $onlineWindowSeconds));
+}
+
+function php_logged_in_online_count(PDO $pdo, int $onlineWindowSeconds): int
+{
+    return (int)$pdo
         ->query(
             "SELECT COUNT(DISTINCT user_id) FROM sessions
              WHERE revoked_at IS NULL
@@ -691,7 +698,6 @@ function php_online_count(PDO $pdo, int $onlineWindowSeconds, int $visitorOnline
                AND last_seen_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL $onlineWindowSeconds SECOND)"
         )
         ->fetchColumn();
-    return max($visitorOnlineCount, $sessionOnline);
 }
 
 function refresh_today_peak_online(PDO $pdo): void
