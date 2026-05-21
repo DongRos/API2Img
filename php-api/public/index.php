@@ -626,7 +626,7 @@ function site_stats_payload(PDO $pdo): array
     );
     $peaks = $peakStmt->fetch() ?: [];
 
-    $registeredUsers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE email <> ''")->fetchColumn();
+    $registeredUsers = (int)$pdo->query("SELECT COUNT(DISTINCT LOWER(TRIM(email))) FROM users WHERE TRIM(email) <> ''")->fetchColumn();
     $totalRevenueCents = (int)$pdo->query("SELECT COALESCE(SUM(total_cents), 0) FROM generation_requests WHERE status = 'succeeded'")->fetchColumn();
     $sessionVisitors = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM sessions")->fetchColumn();
     $totalVisitors = max((int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn(), $sessionVisitors);

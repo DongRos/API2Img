@@ -3714,7 +3714,7 @@ async function trackSiteVisit() {
     try {
       sessionStorage.setItem(SITE_VISIT_TRACK_KEY, "1");
     } catch {}
-    applySiteStats(payload.siteStats || payload);
+    applySiteStats(payload.siteStats || payload, { includeAdminFields: false });
     return true;
   } catch (error) {
     console.warn("站点访问上报失败", error);
@@ -3725,7 +3725,7 @@ async function trackSiteVisit() {
 async function loadSiteStats(options = {}) {
   try {
     const headers = {};
-    const password = currentCodeAdminPassword();
+    const password = adminPassword();
     if (password) headers["X-Admin-Password"] = password;
     const response = await fetchWithTimeout("/api/site/stats", {
       headers,
@@ -3733,7 +3733,7 @@ async function loadSiteStats(options = {}) {
     }, FAST_API_TIMEOUT_MS);
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || "缁熻璇诲彇澶辫触");
-    applySiteStats(payload.siteStats || payload);
+    applySiteStats(payload.siteStats || payload, { includeAdminFields: Boolean(password) });
     if (password) await mergeDirectAdminSiteStats(headers);
     renderSiteStats();
     return payload.siteStats || payload;
@@ -3768,16 +3768,18 @@ function applyAdminOnlySiteStats(payload = {}) {
   assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
 }
 
-function applySiteStats(payload = {}) {
+function applySiteStats(payload = {}, options = {}) {
   assignSiteStat("onlineCount", payload.onlineCount);
-  assignSiteStat("loggedInOnlineCount", payload.loggedInOnlineCount ?? payload.currentLoggedInUsers);
   assignSiteStat("totalVisits", payload.totalVisits);
   assignSiteStat("todayVisits", payload.todayVisits);
   assignSiteStat("totalVisitors", payload.totalVisitors);
   assignSiteStat("todayPeak", payload.todayPeak ?? payload.todayPeakOnline);
   assignSiteStat("yesterdayPeak", payload.yesterdayPeak ?? payload.yesterdayPeakOnline);
-  assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
-  assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
+  if (options.includeAdminFields) {
+    assignSiteStat("loggedInOnlineCount", payload.loggedInOnlineCount ?? payload.currentLoggedInUsers);
+    assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
+    assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
+  }
   assignSiteStat("lastVisitAt", payload.lastVisitAt);
   assignSiteStat("updatedAt", payload.updatedAt);
   assignSiteStat("onlineWindowMs", payload.onlineWindowMs);
@@ -3859,7 +3861,7 @@ async function sendSiteHeartbeat() {
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) return;
-    applySiteStats(payload.siteStats || payload);
+    applySiteStats(payload.siteStats || payload, { includeAdminFields: false });
     touchLoginPresence();
     renderSiteStats();
   } catch (error) {
