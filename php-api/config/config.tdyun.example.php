@@ -12,8 +12,8 @@ return [
         'cookie_samesite' => 'Lax',
         'session_days' => 30,
         'code_ttl_minutes' => 10,
-        'recharge_url' => 'https://api2img.shop/',
-        'public_api_base_url' => 'https://api2img.shop/php-api/index.php',
+        'recharge_url' => 'https://www.api2img.shop/',
+        'public_api_base_url' => 'https://www.api2img.shop/php-api/index.php',
     ],
     'db' => [
         'host' => 'localhost',

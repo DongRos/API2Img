@@ -291,7 +291,7 @@ function auth_me(PDO $pdo, array $config): void
         'user' => $user ? public_user($user) : null,
         'priceCents' => (int)$platform['price_cents'],
         'currency' => 'CNY',
-        'rechargeUrl' => (string)$config['app']['recharge_url'],
+        'rechargeUrl' => public_mobile_safe_url((string)$config['app']['recharge_url']),
         'sessionToken' => $user ? current_session_token() : '',
         'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
     ]);
@@ -339,6 +339,11 @@ function api_health(?PDO $pdo, array $config, ?Throwable $dbError = null): void
     ], $dbOk ? 200 : 500);
 }
 
+function public_mobile_safe_url(string $url): string
+{
+    return preg_replace('/^https?:\/\/api2img\.shop(?=\/|$)/i', 'https://www.api2img.shop', $url) ?? $url;
+}
+
 function billing_config(PDO $pdo, array $config): void
 {
     $platform = platform_config($pdo, $config);
@@ -348,8 +353,8 @@ function billing_config(PDO $pdo, array $config): void
         'upstreamCostCents' => (int)$platform['upstream_cost_cents'],
         'currency' => 'CNY',
         'platformEnabled' => platform_is_configured($platform),
-        'rechargeUrl' => (string)$config['app']['recharge_url'],
-        'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
+        'rechargeUrl' => public_mobile_safe_url((string)$config['app']['recharge_url']),
+        'directBaseUrl' => public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')),
         'requestFormat' => (string)$platform['request_format'],
         'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
@@ -458,7 +463,7 @@ function generate_ticket(PDO $pdo, array $config): void
     json_response([
         'ok' => true,
         'ticket' => $ticket,
-        'directBaseUrl' => (string)($config['app']['public_api_base_url'] ?? ''),
+        'directBaseUrl' => public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')),
         'priceCents' => $price,
         'balanceCents' => current_balance($pdo, (int)$user['id']),
         'displayName' => (string)($platform['display_name'] ?? '站点配置1'),

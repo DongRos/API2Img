@@ -23,7 +23,7 @@ const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
 const DEFAULT_IMAGE_SIZE = "1024x1024";
-const DEFAULT_PHP_API_BASE = "https://api2img.shop/php-api/index.php";
+const DEFAULT_PHP_API_BASE = "https://www.api2img.shop/php-api/index.php";
 const FAST_API_TIMEOUT_MS = 6500;
 const GENERATION_READY_WAIT_MS = 2200;
 const ADMIN_API_TIMEOUT_MS = 8000;
@@ -128,7 +128,7 @@ const billingState = {
   upstreamCostCents: 4,
   platformEnabled: false,
   configLoaded: false,
-  rechargeUrl: "https://api2img.shop/",
+  rechargeUrl: "https://www.api2img.shop/",
   directBaseUrl: "",
   sessionToken: "",
   lastDirectConfig: null,
@@ -206,6 +206,7 @@ let lastCodeAdminCsv = "";
 let lastCodeAdminFilename = "";
 let billingReadyPromise = null;
 let directApiWarmupPromise = null;
+let directApiReachable = null;
 const detailView = {
   scale: 1,
   x: 0,
@@ -637,7 +638,7 @@ async function ensurePlatformReadyForGeneration() {
       await Promise.race([refreshBilling(), wait(GENERATION_READY_WAIT_MS)]);
     }
     await ensurePlatformBrowserGlobalConfigLoaded();
-    warmDirectApiBase();
+    await Promise.race([warmDirectApiBase(), wait(GENERATION_READY_WAIT_MS)]);
   } catch (error) {
     console.warn("生成前钱包同步失败", error);
   } finally {
@@ -1990,7 +1991,7 @@ function formatHttpError(status, message) {
   if (code === "504" && /EdgeOne Pages/i.test(text)) {
     return addApiGuidance(
       "EdgeOne 代理超时（HTTP 504），这不是 base64 图片。已改为优先使用站点 API 直连；本次未扣费，请重试。",
-      "如果手机端仍出现，请检查 api2img.shop 是否能直接访问。",
+      "如果手机端仍出现，请检查 www.api2img.shop 是否能直接访问。",
     );
   }
   if (/failed to fetch|fetch failed|network error|network|connection|timeout|timed out|request aborted|aborted|econnreset|enotfound|socket hang up|dns|certificate/i.test(text)) {
@@ -3118,8 +3119,9 @@ async function loadBillingConfig() {
   billingState.priceCents = Number(info.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(info.upstreamCostCents || billingState.upstreamCostCents || 0);
   billingState.platformEnabled = Boolean(info.platformEnabled);
-  billingState.rechargeUrl = info.rechargeUrl || billingState.rechargeUrl;
-  billingState.directBaseUrl = normalizeDirectApiBase(info.directBaseUrl || billingState.directBaseUrl);
+  billingState.rechargeUrl = publicMobileSafeUrl(info.rechargeUrl || billingState.rechargeUrl);
+  billingState.directBaseUrl = normalizeDirectApiBase(publicMobileSafeUrl(info.directBaseUrl || billingState.directBaseUrl));
+  directApiReachable = null;
   billingState.platformRequestFormat = info.requestFormat === "json" ? "json" : "openai";
   billingState.platformTransportMode = info.transportMode === "direct" ? "direct" : "proxy";
   billingState.platformCustomTemplate = info.customTemplate || "";
@@ -3136,7 +3138,15 @@ function warmDirectApiBase() {
     credentials: "omit",
     cache: "no-store",
   }, 5000)
-    .catch((error) => console.warn("PHP 接口预热失败", error))
+    .then((response) => {
+      directApiReachable = Boolean(response.ok);
+      return directApiReachable;
+    })
+    .catch((error) => {
+      directApiReachable = false;
+      console.warn("PHP 接口预热失败", error);
+      return false;
+    })
     .finally(() => {
       setTimeout(() => {
         directApiWarmupPromise = null;
@@ -3328,7 +3338,7 @@ function applyBillingDashboard(payload) {
   if (!billingState.authenticated) billingState.ledgerLoading = false;
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
-  billingState.rechargeUrl = payload.rechargeUrl || billingState.rechargeUrl;
+  billingState.rechargeUrl = publicMobileSafeUrl(payload.rechargeUrl || billingState.rechargeUrl);
   billingState.platformDisplayName = normalizeApiDisplayName(payload.displayName || billingState.platformDisplayName);
   billingState.lastDirectConfig = {
     ...(billingState.lastDirectConfig || {}),
@@ -3346,7 +3356,7 @@ function renderWallet() {
   $("#walletAuthBox").hidden = billingState.authenticated;
   $("#walletAccountBox").hidden = !billingState.authenticated;
   const rechargeLink = $(".wallet-recharge-link");
-  if (rechargeLink) rechargeLink.href = billingState.rechargeUrl || "https://api2img.shop/";
+  if (rechargeLink) rechargeLink.href = publicMobileSafeUrl(billingState.rechargeUrl || "https://www.api2img.shop/");
   renderLedgerList();
 }
 
@@ -3585,6 +3595,7 @@ async function unlockCodeAdminPanel() {
     localStorage.setItem(CODE_ADMIN_PASSWORD_KEY, password);
     codeAdminState.authenticated = true;
     applyCodeAdminAuthState();
+    loadPlatformBrowserGlobalConfig().catch((error) => console.warn("Global API config sync failed", error));
     selectCodeAdminSection(codeAdminState.pendingSection || "codes");
     loadSiteStats({ silent: true });
     renderApiStats();
@@ -4202,9 +4213,9 @@ function apiFetch(path, options = {}) {
 }
 
 async function apiFetchPreferDirect(path, options = {}, preference = {}) {
-  const urls = uniqueUrls([
-    ...(preference.directFirst ? [directPhpApiUrl(path), apiUrl(path)] : [apiUrl(path), directPhpApiUrl(path)]),
-  ]);
+  const urls = directApiReachable === false
+    ? [apiUrl(path)]
+    : uniqueUrls([...(preference.directFirst ? [directPhpApiUrl(path), apiUrl(path)] : [apiUrl(path), directPhpApiUrl(path)])]);
   let lastError = null;
   let lastRetryableResponse = null;
   for (const url of urls) {
@@ -4213,11 +4224,13 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
     try {
       const response = await fetchApiUrl(url, { ...options, timeoutMs: preference.timeoutMs || FAST_API_TIMEOUT_MS }, direct ? "omit" : "include");
       response.apiFetchUrl = url;
+      if (direct) directApiReachable = true;
       if (response.ok || !shouldFallbackApiResponse(response, direct, preference)) return response;
       lastRetryableResponse = response;
       lastError = new Error(`${preference.label || "请求"}失败：HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
+      if (direct && isRetryableFetchError(error)) directApiReachable = false;
       if (options.signal?.aborted) throw error;
       if (!isRetryableFetchError(error)) throw error;
       if (preference.noFetchErrorFallback) throw error;
@@ -4269,14 +4282,22 @@ function fetchWithTimeout(url, init = {}, timeoutMs = 0) {
 }
 
 function directPhpApiUrl(path) {
-  const base = normalizeDirectApiBase(billingState.directBaseUrl || DEFAULT_PHP_API_BASE);
+  const base = effectiveDirectApiBase();
   const value = String(path || "");
   if (/^https?:\/\//i.test(value)) return value;
   return `${base}${value.startsWith("/") ? value : `/${value}`}`;
 }
 
 function isDirectPhpApiUrl(url) {
-  return normalizeDirectApiBase(url).startsWith(normalizeDirectApiBase(billingState.directBaseUrl || DEFAULT_PHP_API_BASE));
+  return normalizeDirectApiBase(url).startsWith(effectiveDirectApiBase());
+}
+
+function effectiveDirectApiBase() {
+  return normalizeDirectApiBase(publicMobileSafeUrl(billingState.directBaseUrl || DEFAULT_PHP_API_BASE));
+}
+
+function publicMobileSafeUrl(url = "") {
+  return String(url || "").replace(/^https?:\/\/api2img\.shop(?=\/|$)/i, "https://www.api2img.shop");
 }
 
 function uniqueUrls(urls) {
