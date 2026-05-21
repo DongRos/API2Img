@@ -707,7 +707,7 @@ svg {
 
 .prompt-card {
   display: grid;
-  grid-template-columns: 48px minmax(132px, 180px) minmax(0, 1fr) auto;
+  grid-template-columns: 48px minmax(0, 1fr) minmax(132px, 180px) auto;
   align-items: center;
   gap: 10px;
   padding: 10px;
@@ -2139,7 +2139,7 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .prompt-card {
-    grid-template-columns: 42px minmax(108px, 140px) minmax(0, 1fr) 42px;
+    grid-template-columns: 42px minmax(0, 1fr) minmax(104px, 132px) 42px;
   }
 
   .composer-actions select {

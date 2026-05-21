@@ -3057,9 +3057,13 @@ function getModelName() {
   return modelName;
 }
 
-function normalizeModelName(value = "") {
+function cleanModelName(value = "") {
   const text = String(value || "").trim().replace(/\s+/g, "");
-  return text ? text.slice(0, 120) : FIXED_MODEL_NAME;
+  return text ? text.slice(0, 120) : "";
+}
+
+function normalizeModelName(value = "") {
+  return cleanModelName(value) || FIXED_MODEL_NAME;
 }
 
 function defaultModelTiers(modelName = "") {
@@ -3080,7 +3084,7 @@ function normalizeModelOptions(value, fallbackModel = FIXED_MODEL_NAME) {
   const seen = new Set();
   const items = source
     .map((item) => {
-      const name = normalizeModelName(typeof item === "string" ? item : item?.name || item?.modelName || item?.value || "");
+      const name = cleanModelName(typeof item === "string" ? item : item?.name || item?.modelName || item?.value || "");
       if (!name || seen.has(name)) return null;
       seen.add(name);
       return { name, tiers: normalizeResolutionTiers(item?.tiers || item?.resolutions || item?.resolutionTiers, name) };
@@ -4170,6 +4174,8 @@ async function saveCustomApiAdminConfig() {
     applyCustomApiRuntimeConfig(serverConfig);
     hydrateAdminCustomApiForm(serverConfig);
     renderAdminCustomHistory();
+    renderModelSelector();
+    syncSizeOptions();
     setCustomApiAdminStatus(apiPricingStatus(serverConfig, customDebugState.global || {}));
     showToast(serverConfig.enabled ? "已切到站长自定义 API 调试" : "已保存调试配置，前台继续使用站点 API");
   } catch (error) {
@@ -4235,6 +4241,8 @@ async function applyCustomApiAsGlobal() {
     applyCustomApiRuntimeConfig(serverConfig);
     hydrateAdminCustomApiForm(serverConfig);
     renderAdminCustomHistory();
+    renderModelSelector();
+    syncSizeOptions();
     renderWallet();
     setCustomApiAdminStatus("已设置为全局 API 与定价，全部用户实时生效");
     showToast("已设置为全局 API，售价也已同步到全站");
@@ -4357,7 +4365,7 @@ function updateAdminCustomTemplateVisibility() {
 function readAdminModelOptions() {
   const rows = [...document.querySelectorAll("#adminModelList .admin-model-row")];
   const options = rows.map((row) => {
-    const name = normalizeModelName(row.querySelector(".admin-model-name")?.value || "");
+    const name = cleanModelName(row.querySelector(".admin-model-name")?.value || "");
     const tiers = [...row.querySelectorAll("[data-tier]:checked")].map((input) => input.dataset.tier);
     return name ? { name, tiers: normalizeResolutionTiers(tiers, name) } : null;
   }).filter(Boolean);
@@ -4400,10 +4408,13 @@ function adminModelRowHtml(item = {}, index = 0) {
 }
 
 function addAdminModelRow() {
-  const current = readAdminModelOptions();
-  const nextName = current.some((item) => item.name === "gpt-image-2pro") ? "" : "gpt-image-2pro";
-  renderAdminModelList([...current, { name: nextName, tiers: nextName ? ["1K", "2K", "4K"] : ["1K"] }]);
-  $("#adminModelList .admin-model-row:last-child .admin-model-name")?.focus();
+  const list = $("#adminModelList");
+  if (!list) return;
+  const index = list.querySelectorAll(".admin-model-row").length;
+  list.insertAdjacentHTML("beforeend", adminModelRowHtml({ name: "", tiers: ["1K"] }, index));
+  renderIcons();
+  const input = list.querySelector(".admin-model-row:last-child .admin-model-name");
+  input?.focus();
 }
 
 function onAdminModelListChange() {
