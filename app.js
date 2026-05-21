@@ -65,6 +65,7 @@ const ratioPresets = [
   { label: "3:4 竖图", value: "3:4", note: "竖图", sizes: { "1K": "768x1024", "2K": "1536x2048", "4K": "2448x3264" } },
   { label: "2:3 海报", value: "2:3", note: "海报", sizes: { "1K": "672x1008", "2K": "1344x2016", "4K": "2336x3504" } },
   { label: "21:9 超宽屏", value: "21:9", note: "超宽屏", sizes: { "1K": "1344x576", "2K": "2016x864", "4K": "3696x1584" } },
+  { label: "自动", value: "auto", note: "自动", sizes: {} },
 ];
 
 const DEFAULT_MODEL_OPTIONS = [
@@ -1200,6 +1201,7 @@ function appendCoreImageFields(target, options, variant) {
 function effectiveRequestSize(options = {}) {
   const selected = String(options.size || "").trim();
   if (selected && selected !== "auto") return selected;
+  if (String(options.ratio || "").trim() === "auto") return "";
   const ratioSize = requestSizeFromRatio(options.ratio);
   if (ratioSize) return ratioSize;
   const inferredSize = inferAutoRequestSize(options);
@@ -3042,6 +3044,11 @@ function syncSizeOptions() {
     tierSelect.value = allowedTiers.includes(previousTier) ? previousTier : allowedTiers[0];
   }
   const tier = tierSelect?.value || allowedTiers[0] || "1K";
+  if (preset.value === "auto") {
+    select.innerHTML = optionHtml("auto", "自动 · 不固定尺寸");
+    select.value = "auto";
+    return;
+  }
   const size = preset.sizes?.[tier] || preset.sizes?.["1K"] || DEFAULT_IMAGE_SIZE;
   select.innerHTML = optionHtml(size, `${size} · ${preset.note || preset.value}`);
   select.value = size;
