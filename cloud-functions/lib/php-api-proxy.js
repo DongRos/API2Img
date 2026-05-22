@@ -38,7 +38,7 @@ export async function proxyPhpApi(context) {
     init.body = await context.request.arrayBuffer();
   }
 
-  const upstream = await fetch(targetUrl.toString(), init);
+  const upstream = await fetchPhpApiWithFallback(targetUrl, init, base);
   const responseHeaders = new Headers();
   const proxiedSession = upstream.headers.get("x-api2image-set-session");
   const proxiedSessionMaxAge = upstream.headers.get("x-api2image-session-max-age") || String(30 * 86400);
@@ -91,4 +91,38 @@ function getEnv(context, key) {
 
 function normalizePhpApiBaseUrl(value) {
   return String(value || "").replace(/^https?:\/\/(?:www\.|api\.)?api2img\.shop(?=\/|$)/i, "https://deep666.top");
+}
+
+async function fetchPhpApiWithFallback(targetUrl, init, base) {
+  try {
+    const response = await fetch(targetUrl.toString(), init);
+    if (!isRetryablePhpApiStatus(response.status)) return response;
+  } catch (error) {
+    if (!phpApiFallbackUrl(targetUrl, base)) throw error;
+  }
+
+  const fallback = phpApiFallbackUrl(targetUrl, base);
+  if (!fallback) return fetch(targetUrl.toString(), init);
+  const fallbackInit = {
+    ...init,
+    headers: new Headers(init.headers || {}),
+  };
+  fallbackInit.headers.set("Host", new URL(base).host);
+  return fetch(fallback, fallbackInit);
+}
+
+function phpApiFallbackUrl(targetUrl, base) {
+  const configured = String(globalThis?.PHP_API_FALLBACK_BASE_URL ?? globalThis?.process?.env?.PHP_API_FALLBACK_BASE_URL ?? "").trim();
+  const defaultFallback = /^https?:\/\/deep666\.top(?=\/|$)/i.test(base) ? "http://156.239.225.155" : "";
+  const fallbackBase = normalizePhpApiBaseUrl(configured || defaultFallback).replace(/\/+$/, "");
+  if (!fallbackBase) return "";
+  const fallback = new URL(targetUrl.toString());
+  const baseUrl = new URL(fallbackBase);
+  fallback.protocol = baseUrl.protocol;
+  fallback.host = baseUrl.host;
+  return fallback.toString();
+}
+
+function isRetryablePhpApiStatus(status) {
+  return [404, 500, 502, 503, 504, 520, 522, 524].includes(Number(status));
 }
