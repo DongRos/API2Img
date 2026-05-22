@@ -342,56 +342,66 @@ svg {
 }
 
 .gallery-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
   gap: 16px;
   max-width: 1720px;
   margin: 0 auto 18px;
+}
+
+.gallery-copy {
+  min-width: 0;
 }
 
 .gallery-head h2 {
   font-size: 20px;
 }
 
+.gallery-switch-wrap {
+  justify-self: center;
+}
+
 .gallery-tools {
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  justify-self: end;
 }
 
 .view-switch {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--glass-border);
-  border-radius: 8px;
-  background: var(--glass-soft);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.22);
-  backdrop-filter: blur(var(--glass-blur)) saturate(1.22);
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 72%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface), transparent 18%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--glass-border), transparent 38%);
 }
 
 .view-switch button {
-  min-width: 66px;
-  min-height: 34px;
-  padding: 0 14px;
+  min-width: 62px;
+  min-height: 30px;
+  padding: 0 16px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 999px;
   background: transparent;
   color: var(--muted);
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 750;
   cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .view-switch button.active {
-  background: rgba(255, 237, 173, 0.62);
-  color: var(--ink);
-  box-shadow: inset 0 0 0 1px rgba(234, 179, 8, 0.2), 0 8px 20px rgba(0, 0, 0, 0.12);
+  background: var(--accent);
+  color: var(--accent-text);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent), transparent 82%);
 }
 
 body[data-theme="light"] .view-switch button.active {
-  background: rgba(255, 246, 204, 0.86);
+  background: var(--accent);
 }
 
 .result-grid {
@@ -2547,8 +2557,8 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .gallery-head {
-    align-items: flex-start;
-    flex-direction: column;
+    grid-template-columns: 1fr;
+    align-items: start;
     margin-bottom: 10px;
     gap: 10px;
   }
@@ -2559,11 +2569,19 @@ body[data-theme="light"] .wallet-panel {
 
   .gallery-tools {
     width: 100%;
-    justify-content: space-between;
+    justify-content: flex-end;
+    justify-self: stretch;
+  }
+
+  .gallery-switch-wrap {
+    width: 100%;
+    justify-self: center;
+    text-align: center;
   }
 
   .view-switch {
-    flex: 1 1 160px;
+    max-width: 190px;
+    width: 100%;
   }
 
   .view-switch button {

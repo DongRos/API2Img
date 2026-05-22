@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>满血Image2生图-支持4K</title>
     <link rel="icon" type="image/png" href="./icon.png?v=2" />
-    <link rel="stylesheet" href="./styles.css?v=45" />
+    <link rel="stylesheet" href="./styles.css?v=46" />
   </head>
   <body data-theme="dark">
     <script>
@@ -47,15 +47,17 @@
 
       <main class="gallery-shell">
         <section class="gallery-head">
-          <div>
+          <div class="gallery-copy">
             <h2>生成结果</h2>
             <p id="resultMeta">生成后的图片会排列在这里</p>
           </div>
-          <div class="gallery-tools">
+          <div class="gallery-switch-wrap">
             <div class="view-switch" role="tablist" aria-label="画布切换">
               <button id="myCanvasTab" type="button" role="tab" data-view="mine">我的</button>
               <button id="publicGalleryTab" type="button" role="tab" data-view="gallery">画廊</button>
             </div>
+          </div>
+          <div class="gallery-tools">
             <button class="pill-button" id="clearResultsButton" type="button">
               <i data-icon="trash"></i><span>清空</span>
             </button>
@@ -546,6 +548,6 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=94"></script>
+    <script src="./app.js?v=95"></script>
   </body>
 </html>

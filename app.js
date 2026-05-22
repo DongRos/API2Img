@@ -2661,7 +2661,7 @@ async function loadGallery(options = {}) {
 
 function normalizeGalleryItem(item) {
   if (!item || typeof item !== "object") return null;
-  const src = String(item.src || item.imageUrl || "").trim();
+  const src = normalizeGalleryImageSource(item.src || item.imageUrl || "");
   if (!src) return null;
   return {
     id: `gallery-${item.id || makeId()}`,
@@ -2677,6 +2677,13 @@ function normalizeGalleryItem(item) {
     height: Math.max(1, Number(item.height || 1)),
     uploader: String(item.uploader || ""),
   };
+}
+
+function normalizeGalleryImageSource(value) {
+  const src = String(value || "").trim();
+  if (!src) return "";
+  if (/^\/api\/gallery\/image\//i.test(src)) return directPhpApiUrl(src);
+  return src;
 }
 
 function galleryVisibleItems() {
@@ -2782,7 +2789,7 @@ function createResultCard(item, options = {}) {
     createResultActionButton("download", "下载", "download"),
   ];
   if (!isGallery) {
-    buttons.push(createResultActionButton("upload-gallery", "上传到画布", "upload"));
+    buttons.push(createResultActionButton("upload-gallery", "上传到画廊", "upload"));
     buttons.push(createResultActionButton("delete", "删除", "trash"));
   }
   actions.append(...buttons);
