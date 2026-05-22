@@ -5681,6 +5681,7 @@ function cleanLedgerNoteForDisplay(note) {
   text = text.replace(/\s+mp[a-z0-9]{5,}(?:-[a-z0-9]{4,})?\s*$/i, "");
   text = text.replace(/\s+image2-[a-z0-9-]{6,}\s*$/i, "");
   text = text.replace(/^站点\s*API\s*生图成功扣费\s*$/i, "生图成功扣费");
+  text = text.replace(/^(文生图|图生图)成功扣费(?=；|;|$)/, "$1");
   return text.trim();
 }
 
