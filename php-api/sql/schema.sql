@@ -85,11 +85,13 @@ CREATE TABLE IF NOT EXISTS wallet_ledger (
   balance_before_cents INT NOT NULL,
   balance_after_cents INT NOT NULL,
   related_id VARCHAR(80) NOT NULL DEFAULT '',
+  log_code VARCHAR(40) NOT NULL DEFAULT '',
   note VARCHAR(255) NOT NULL DEFAULT '',
   created_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   KEY idx_wallet_ledger_user_created (user_id, created_at),
   KEY idx_wallet_ledger_related (related_id),
+  KEY idx_wallet_ledger_log_code (log_code),
   CONSTRAINT fk_wallet_ledger_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -97,8 +99,14 @@ CREATE TABLE IF NOT EXISTS generation_requests (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_id BIGINT UNSIGNED NOT NULL,
   request_id VARCHAR(80) NOT NULL,
+  log_code VARCHAR(40) NOT NULL DEFAULT '',
   mode VARCHAR(16) NOT NULL,
   model VARCHAR(80) NOT NULL DEFAULT '',
+  prompt VARCHAR(1000) NOT NULL DEFAULT '',
+  size VARCHAR(40) NOT NULL DEFAULT '',
+  ratio VARCHAR(40) NOT NULL DEFAULT '',
+  batch_index INT NOT NULL DEFAULT 0,
+  batch_total INT NOT NULL DEFAULT 0,
   image_count INT NOT NULL,
   price_cents INT NOT NULL,
   total_cents INT NOT NULL,
@@ -109,6 +117,7 @@ CREATE TABLE IF NOT EXISTS generation_requests (
   PRIMARY KEY (id),
   UNIQUE KEY uniq_generation_request_id (request_id),
   KEY idx_generation_user_created (user_id, created_at),
+  KEY idx_generation_log_code (log_code),
   CONSTRAINT fk_generation_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

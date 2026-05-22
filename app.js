@@ -177,6 +177,13 @@ const siteStatsState = {
   onlineWindowMs: 3 * 60 * 1000,
 };
 
+const adminUserUsageState = {
+  email: "",
+  loading: false,
+  error: "",
+  data: null,
+};
+
 const announcementState = {
   items: [],
   seenAt: 0,
@@ -365,6 +372,7 @@ function bindEvents() {
   $("#closeLogs").addEventListener("click", () => $("#logsPanel").classList.remove("open"));
   $("#clearLogsButton").addEventListener("click", clearGenerationLogs);
   $("#apiStatsList")?.addEventListener("click", onApiStatsListClick);
+  $("#siteStatsDetails")?.addEventListener("click", onSiteStatsDetailsClick);
   $("#refreshStatsButton")?.addEventListener("click", refreshSiteStatsFromPanel);
   $("#clearStatsButton").addEventListener("click", clearApiStats);
   $("#closeCodeAdmin").addEventListener("click", closeCodeAdminPanel);
@@ -570,6 +578,7 @@ async function generateImages(extra = {}) {
   }
 
   const generationId = makeId();
+  const logCode = makeLogCode();
   generationAbortController = new AbortController();
   generationCancelled = false;
   const options = {
@@ -583,6 +592,7 @@ async function generateImages(extra = {}) {
     quality: $("#qualitySelect").value,
     seed: $("#seedInput").value.trim(),
     model: getModelName(),
+    logCode,
     referenceImages: mode === "image" ? [...state.references] : [],
     generationId,
     abortSignal: generationAbortController.signal,
@@ -1353,6 +1363,12 @@ async function settlePlatformImage(result, options, index, context) {
             imageId: result.id,
             requestId,
             model: options.model || getModelName(),
+            logCode: options.logCode || activeGenerationLog?.traceCode || "",
+            prompt: options.prompt || "",
+            size: options.size || "",
+            ratio: options.ratio || "",
+            batchIndex: Number(options.batchIndex) || index + 1,
+            batchTotal: Number(options.batchTotal || options.count || 1),
           }),
           timeoutMs: FAST_API_TIMEOUT_MS,
         }, {
@@ -1364,6 +1380,12 @@ async function settlePlatformImage(result, options, index, context) {
         if (!response.ok) throw new Error(payload?.error?.message || `结算失败：HTTP ${response.status}`);
         if (Number.isFinite(Number(payload.balanceCents))) {
           billingState.balanceCents = Number(payload.balanceCents);
+        }
+        if (payload.logCode) {
+          options.logCode = payload.logCode;
+          const requestEntry = findRequestLogEntry(options, index);
+          if (requestEntry) requestEntry.traceCode = payload.logCode;
+          if (activeGenerationLog) activeGenerationLog.traceCode = payload.logCode;
         }
         applyPlatformRequestCost(options, index, Number(payload.chargedCents || options.platformPriceCents || billingState.priceCents || 0));
         renderWallet();
@@ -3860,18 +3882,156 @@ function renderSiteStats() {
         <span>注册邮箱</span>
         <div class="site-stats-email-list">
           ${emailStats.length ? emailStats.map((item) => `
-            <div class="site-stats-email-item">
+            <button class="site-stats-email-item ${adminUserUsageState.email.toLowerCase() === String(item.email || "").toLowerCase() ? "active" : ""}" type="button" data-site-email="${escapeHtml(item.email)}">
               <span class="site-stats-email-address">${escapeHtml(item.email)}</span>
               <span class="site-stats-email-money">总充值 ${formatMoney(item.totalRechargeCents)} / 总花费 ${formatMoney(item.totalSpentCents)}</span>
-            </div>
+            </button>
           `).join("") : '<div class="site-stats-email-empty">暂无注册邮箱</div>'}
         </div>
       </div>
+      ${renderAdminUserUsagePanel()}
     `;
   }
   if (adminSummary) {
     adminSummary.hidden = true;
     adminSummary.innerHTML = "";
+  }
+}
+
+function renderAdminUserUsagePanel() {
+  const selectedEmail = adminUserUsageState.email;
+  if (!selectedEmail) {
+    return `<div class="site-user-usage-panel"><div class="log-empty">点击上方邮箱查看该用户的生成日志和余额流水。</div></div>`;
+  }
+  if (adminUserUsageState.loading) {
+    return `<div class="site-user-usage-panel"><div class="log-empty">正在读取 ${escapeHtml(selectedEmail)} 的使用日志...</div></div>`;
+  }
+  if (adminUserUsageState.error) {
+    return `
+      <div class="site-user-usage-panel">
+        <div class="site-user-usage-head">
+          <strong>${escapeHtml(selectedEmail)}</strong>
+          <span class="site-user-usage-error">${escapeHtml(adminUserUsageState.error)}</span>
+        </div>
+      </div>
+    `;
+  }
+  const payload = adminUserUsageState.data || {};
+  const user = payload.user || {};
+  const generationLogs = Array.isArray(payload.generationLogs) ? payload.generationLogs : [];
+  const ledger = Array.isArray(payload.ledger) ? payload.ledger : [];
+  return `
+    <div class="site-user-usage-panel">
+      <div class="site-user-usage-head">
+        <strong>${escapeHtml(user.email || selectedEmail)}</strong>
+        <span>总充值 ${formatMoney(user.totalRechargeCents)} / 总花费 ${formatMoney(user.totalSpentCents)} / 余额 ${formatMoney(user.balanceCents)}</span>
+      </div>
+      <div class="site-user-usage-grid">
+        <section class="site-user-usage-section">
+          <h4>生成日志</h4>
+          <div class="site-user-usage-list">
+            ${generationLogs.length ? generationLogs.map(renderAdminGenerationUsageItem).join("") : '<div class="log-empty">暂无生成日志</div>'}
+          </div>
+        </section>
+        <section class="site-user-usage-section">
+          <h4>余额流水</h4>
+          <div class="site-user-usage-list">
+            ${ledger.length ? ledger.map(renderAdminLedgerUsageItem).join("") : '<div class="log-empty">暂无余额流水</div>'}
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function renderAdminGenerationUsageItem(item) {
+  const logCode = String(item.logCode || "").trim() || "旧记录无随机码";
+  const prompt = String(item.prompt || "").trim() || "无提示词记录";
+  const status = generationUsageStatusLabel(item.status);
+  const meta = [
+    item.mode === "image" ? "图生图" : "文生图",
+    item.model || "",
+    item.size || item.ratio || "",
+    Number(item.batchTotal || 0) > 1 ? `${item.batchIndex || 1}/${item.batchTotal}` : "",
+  ].filter(Boolean).join(" · ");
+  return `
+    <article class="site-user-usage-item">
+      <div class="site-user-usage-row">
+        <strong>${escapeHtml(status)}</strong>
+        <span>${escapeHtml(formatMoney(item.totalCents || item.priceCents || 0))} 元</span>
+      </div>
+      <p>${escapeHtml(prompt)}</p>
+      <div class="site-user-usage-meta">
+        <span>随机码 ${escapeHtml(logCode)}</span>
+        <span>${escapeHtml(meta || "生成记录")}</span>
+        <span>${escapeHtml(formatWalletTime(item.completedAt || item.createdAt))}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderAdminLedgerUsageItem(item) {
+  const amountCents = Number(item.amountCents || 0);
+  const amountClass = amountCents < 0 ? "negative" : amountCents > 0 ? "positive" : "";
+  const typeLabel = walletLedgerTypeLabel(item.type);
+  const logCode = String(item.logCode || "").trim();
+  const note = String(item.note || "").trim();
+  return `
+    <article class="site-user-usage-item">
+      <div class="site-user-usage-row">
+        <strong>${escapeHtml(typeLabel)}</strong>
+        <span class="${amountClass}">${formatSignedMoney(amountCents)} 元</span>
+      </div>
+      ${note ? `<p>${escapeHtml(note)}</p>` : ""}
+      <div class="site-user-usage-meta">
+        ${logCode ? `<span>随机码 ${escapeHtml(logCode)}</span>` : '<span>无随机码</span>'}
+        <span>余额 ${escapeHtml(formatMoney(item.balanceAfterCents))} 元</span>
+        <span>${escapeHtml(formatWalletTime(item.createdAt))}</span>
+      </div>
+    </article>
+  `;
+}
+
+function generationUsageStatusLabel(status) {
+  return { succeeded: "成功", reserved: "处理中", failed: "失败", refunded: "已退款" }[status] || status || "未知";
+}
+
+function onSiteStatsDetailsClick(event) {
+  const button = event.target.closest("[data-site-email]");
+  if (!button) return;
+  const email = String(button.dataset.siteEmail || "").trim();
+  if (!email) return;
+  loadAdminUserUsage(email);
+}
+
+async function loadAdminUserUsage(email) {
+  const password = adminPassword();
+  if (!password) {
+    showToast("请先进入站长后台");
+    return;
+  }
+  adminUserUsageState.email = email;
+  adminUserUsageState.loading = true;
+  adminUserUsageState.error = "";
+  adminUserUsageState.data = null;
+  renderSiteStats();
+  try {
+    const response = await apiFetchPreferDirect(`/api/admin/user-usage?email=${encodeURIComponent(email)}`, {
+      headers: { "X-Admin-Password": password },
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "用户使用日志",
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `读取失败：HTTP ${response.status}`);
+    adminUserUsageState.data = payload;
+  } catch (error) {
+    adminUserUsageState.error = error.message || "读取用户使用日志失败";
+  } finally {
+    adminUserUsageState.loading = false;
+    renderSiteStats();
   }
 }
 
@@ -4016,6 +4176,7 @@ function renderLedgerList() {
         const typeLabel = walletLedgerTypeLabel(item.type);
         const note = String(item.note || "").trim();
         const noteText = note ? `${typeLabel}：${note}` : typeLabel;
+        const logCode = String(item.logCode || "").trim();
         return `
         <article class="wallet-item">
           <div class="wallet-item-top">
@@ -4025,6 +4186,7 @@ function renderLedgerList() {
           <p class="wallet-ledger-note" title="${escapeHtml(noteText)}">
             <span>${escapeHtml(typeLabel)}</span>${note ? `<em>${escapeHtml(note)}</em>` : ""}
           </p>
+          ${logCode ? `<span class="wallet-ledger-code">随机码 ${escapeHtml(logCode)}</span>` : ""}
           <time class="wallet-ledger-time" datetime="${escapeHtml(String(item.createdAt || ""))}">${formatWalletTime(item.createdAt)}</time>
         </article>
       `;
@@ -5332,7 +5494,9 @@ async function persistableImageSource(src, timeoutMs = RESULT_CACHE_TIMEOUT_MS) 
 function loadGenerationLogs() {
   try {
     const saved = JSON.parse(localStorage.getItem(GENERATION_LOGS_KEY) || "[]");
-    generationLogs = Array.isArray(saved) ? saved.slice(0, GENERATION_LOG_LIMIT) : [];
+    generationLogs = Array.isArray(saved)
+      ? saved.slice(0, GENERATION_LOG_LIMIT).map((log) => ({ ...log, traceCode: log.traceCode || log.logCode || makeLogCode() }))
+      : [];
   } catch {
     generationLogs = [];
   }
@@ -5348,8 +5512,11 @@ function saveGenerationLogs() {
 
 function startGenerationLog(endpoint, options) {
   const apiDisplayName = currentApiDisplayName(endpoint, options);
+  const traceCode = options.logCode || makeLogCode();
+  options.logCode = traceCode;
   const log = {
     id: makeId(),
+    traceCode,
     generationId: options.generationId || "",
     status: "running",
     startedAt: Date.now(),
@@ -5388,6 +5555,7 @@ function startRequestLog(endpoint, request, options, meta = {}) {
   const apiDisplayName = currentApiDisplayName(endpoint, options);
   const entry = {
     id: makeId(),
+    traceCode: activeGenerationLog.traceCode || options.logCode || "",
     label: meta.label || requestLogLabel(options),
     variant: meta.variant || "",
     status: "pending",
@@ -5463,6 +5631,7 @@ function renderGenerationLogs() {
             <small>${escapeHtml(prompt || "无提示词")}</small>
           </summary>
           <div class="log-meta">
+            <span>随机码 ${escapeHtml(log.traceCode || "旧记录无随机码")}</span>
             <span>${escapeHtml(apiName)}</span>
             <span>${escapeHtml(summary)}</span>
             <span>请求 ${requestCount} 次</span>
@@ -5509,6 +5678,7 @@ function renderCurrentLogPreview() {
       <span>${escapeHtml(log.options?.prompt || "无提示词")}</span>
     </div>
     <div class="current-log-meta">
+      <span>随机码 ${escapeHtml(log.traceCode || "旧记录无随机码")}</span>
       <span>${escapeHtml(visibleLogApiName(log))}</span>
       <span>请求 ${(log.requests || []).length} 次</span>
       <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
@@ -5538,6 +5708,7 @@ function renderRequestLog(entry) {
 function requestLogText(entry) {
   return [
     `站点配置:\n${visibleLogApiName(entry)}`,
+    `随机码:\n${entry.traceCode || "旧记录无随机码"}`,
     `提示词:\n${entry.prompt || ""}`,
     `请求变体:\n${entry.variant || "-"}`,
     `参数:\n${summarizeLogValue(entry.params)}`,
@@ -5757,6 +5928,7 @@ async function refreshSiteStatsFromPanel() {
   }
   try {
     await loadSiteStats({ silent: false });
+    if (adminUserUsageState.email) await loadAdminUserUsage(adminUserUsageState.email);
     showToast("统计已刷新");
   } finally {
     if (button) {
@@ -6111,6 +6283,17 @@ function autoGrow(textarea) {
 
 function makeId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function makeLogCode() {
+  const bytes = new Uint8Array(5);
+  if (window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  }
+  const randomPart = [...bytes].map((byte) => byte.toString(36).padStart(2, "0")).join("").slice(0, 8).toUpperCase();
+  return `LG${Date.now().toString(36).slice(-5).toUpperCase()}${randomPart}`;
 }
 
 function fileNameFor(item) {

@@ -1370,6 +1370,17 @@ svg {
   white-space: normal;
 }
 
+.wallet-ledger-code {
+  align-self: flex-start;
+  padding: 3px 7px;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
 .wallet-history .config-history-head {
   align-items: flex-start;
   flex-wrap: wrap;
@@ -1538,10 +1549,21 @@ button:disabled {
 }
 
 .site-stats-email-item {
+  width: 100%;
+  appearance: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.site-stats-email-item.active {
+  border-color: color-mix(in srgb, #f7d77a 70%, var(--glass-border));
+  background: color-mix(in srgb, rgba(247, 215, 122, 0.22) 75%, var(--glass-soft));
 }
 
 .site-stats-email-address {
@@ -1553,6 +1575,107 @@ button:disabled {
   flex: 0 0 auto;
   color: var(--muted);
   white-space: nowrap;
+}
+
+.site-user-usage-panel {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+}
+
+.site-user-usage-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.site-user-usage-head strong {
+  overflow-wrap: anywhere;
+}
+
+.site-user-usage-head span,
+.site-user-usage-error {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.site-user-usage-error {
+  color: var(--danger);
+}
+
+.site-user-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.site-user-usage-section {
+  min-width: 0;
+}
+
+.site-user-usage-section h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.site-user-usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.site-user-usage-item {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--glass-border) 85%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--glass-soft) 75%, transparent);
+}
+
+.site-user-usage-row,
+.site-user-usage-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.site-user-usage-row strong,
+.site-user-usage-row span {
+  font-size: 13px;
+}
+
+.site-user-usage-row .positive {
+  color: #7ddc9a;
+}
+
+.site-user-usage-row .negative {
+  color: var(--text);
+}
+
+.site-user-usage-item p {
+  margin: 6px 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.site-user-usage-meta span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .api-stat-card {
@@ -2468,6 +2591,14 @@ body[data-theme="light"] .wallet-panel {
 
   .site-stats-email-money {
     white-space: normal;
+  }
+
+  .site-user-usage-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .site-user-usage-list {
+    max-height: 260px;
   }
 
   .api-stat-grid {
