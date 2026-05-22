@@ -1436,22 +1436,30 @@ body[data-theme="light"] .view-switch button.active {
 
 .wallet-ledger-chips {
   display: inline-flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 5px;
   margin-left: 4px;
   vertical-align: middle;
 }
 
+.wallet-ledger-summary {
+  display: inline;
+  color: var(--muted);
+  font-weight: 400;
+}
+
 .wallet-ledger-chip {
   display: inline-flex;
   align-items: center;
   max-width: 100%;
-  padding: 3px 7px;
+  padding: 2px 7px;
   border: 1px solid var(--glass-border);
   border-radius: 999px;
   background: var(--glass-soft);
   color: var(--muted);
   font-size: 12px;
+  font-weight: 400;
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
@@ -1764,6 +1772,9 @@ button:disabled {
 
 .site-user-usage-item .wallet-ledger-chips {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
   margin: 6px 0;
 }
 

@@ -5685,12 +5685,19 @@ function cleanLedgerNoteForDisplay(note) {
 }
 
 function ledgerNoteChipsHtml(note) {
-  return cleanLedgerNoteForDisplay(note)
+  const parts = cleanLedgerNoteForDisplay(note)
     .split(/[；;]+/)
     .map((part) => part.trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+  const [summary, ...meta] = parts;
+  const summaryHtml = `<span class="wallet-ledger-summary">${escapeHtml(summary)}</span>`;
+  const chipsHtml = meta
+    .map((part) => part.replace(/^尺寸\s*/i, "").trim())
     .filter(Boolean)
     .map((part) => `<span class="wallet-ledger-chip">${escapeHtml(part)}</span>`)
     .join("");
+  return `${summaryHtml}${chipsHtml}`;
 }
 
 function compactLogCode(value) {
