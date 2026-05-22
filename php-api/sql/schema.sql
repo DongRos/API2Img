@@ -121,6 +121,25 @@ CREATE TABLE IF NOT EXISTS generation_requests (
   CONSTRAINT fk_generation_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS gallery_images (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NOT NULL,
+  image_filename VARCHAR(120) NOT NULL,
+  mime_type VARCHAR(80) NOT NULL DEFAULT 'image/jpeg',
+  prompt VARCHAR(1000) NOT NULL DEFAULT '',
+  model VARCHAR(120) NOT NULL DEFAULT '',
+  size VARCHAR(40) NOT NULL DEFAULT '',
+  width INT NOT NULL DEFAULT 1,
+  height INT NOT NULL DEFAULT 1,
+  status ENUM('active','hidden') NOT NULL DEFAULT 'active',
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_gallery_status_created (status, id),
+  KEY idx_gallery_user_created (user_id, id),
+  UNIQUE KEY uniq_gallery_filename (image_filename),
+  CONSTRAINT fk_gallery_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS rate_limits (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   scope VARCHAR(40) NOT NULL,

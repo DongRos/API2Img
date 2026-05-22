@@ -58,7 +58,13 @@ export async function proxyPhpApi(context) {
   if (shouldClearSession) {
     responseHeaders.append("Set-Cookie", "api2image_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
   }
-  responseHeaders.set("Cache-Control", "no-store");
+  if (sourceUrl.pathname.startsWith("/api/gallery/image/")) {
+    if (!responseHeaders.has("Cache-Control")) {
+      responseHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
+    }
+  } else {
+    responseHeaders.set("Cache-Control", "no-store");
+  }
   return new Response(await upstream.arrayBuffer(), {
     status: upstream.status,
     headers: responseHeaders,

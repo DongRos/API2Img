@@ -38,6 +38,8 @@ const REFERENCE_API_JPEG_QUALITY_STEP = 0.06;
 const RESULT_CACHE_TIMEOUT_MS = 4500;
 const IMAGE_DIMENSION_TIMEOUT_MS = 2200;
 const REFERENCE_IMAGE_UPLOAD_TIMEOUT_MS = 30000;
+const GALLERY_PAGE_LIMIT = 80;
+const GALLERY_UPLOAD_TIMEOUT_MS = 45000;
 const FLOW_DB_NAME = "image2.flow.history";
 const FLOW_DB_VERSION = 1;
 const FLOW_META_STORE = "meta";
@@ -98,6 +100,7 @@ const iconPaths = {
   moon: '<path d="M12 3a6 6 0 0 0 9 8 9 9 0 1 1-9-8"/>',
   settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.3 7A2 2 0 1 1 7.1 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
   download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
   "external-link": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
   list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 17V9"/><path d="M13 17V5"/><path d="M18 17v-6"/>',
@@ -131,8 +134,18 @@ const state = {
   results: [],
   references: [],
   selectedResultId: "",
+  selectedResultSource: "mine",
   lastOptions: null,
   latestGenerationId: "",
+};
+
+const galleryState = {
+  view: "gallery",
+  userSelected: false,
+  items: [],
+  loading: false,
+  loaded: false,
+  error: "",
 };
 
 const billingState = {
@@ -263,6 +276,7 @@ async function init() {
   fillControls();
   loadConfig();
   loadWalletSessionToken();
+  initializeGalleryView();
   loadLoginCodeCooldown();
   loadConfigHistory();
   loadGenerationLogs();
@@ -290,6 +304,7 @@ async function init() {
         })
         .catch((error) => console.warn("本地图片状态读取失败", error));
       startSiteHeartbeat();
+      if (galleryState.view === "gallery") loadGallery({ silent: true }).catch((error) => console.warn("画廊读取失败", error));
       trackSiteVisit().catch((error) => console.warn("站点访问上报失败", error));
       loadSiteStats({ silent: true }).catch((error) => console.warn("站点统计读取失败", error));
       loadAnnouncements({ silent: true }).catch((error) => console.warn("公告读取失败", error));
@@ -345,6 +360,8 @@ function bindEvents() {
   $("#generateButton").addEventListener("click", () => generateImages());
   $("#editGenerateButton").addEventListener("click", generateFromDetail);
   $("#clearResultsButton").addEventListener("click", clearResults);
+  $("#myCanvasTab")?.addEventListener("click", () => switchGalleryView("mine", true));
+  $("#publicGalleryTab")?.addEventListener("click", () => switchGalleryView("gallery", true));
   $("#logsToggle").addEventListener("click", () => {
     $("#logsPanel").classList.toggle("open");
     renderGenerationLogs();
@@ -2561,13 +2578,133 @@ function dimensionsFromOptions(options = {}) {
   return { width: 1, height: 1 };
 }
 
+function initializeGalleryView() {
+  galleryState.view = currentWalletSessionToken() ? "mine" : "gallery";
+  galleryState.userSelected = false;
+}
+
+function switchGalleryView(view, userSelected = false) {
+  const next = view === "mine" && billingState.authenticated ? "mine" : "gallery";
+  galleryState.view = next;
+  if (userSelected) galleryState.userSelected = true;
+  renderResults();
+  if (next === "gallery" && !galleryState.loaded && !galleryState.loading) {
+    loadGallery({ silent: false }).catch((error) => console.warn("画廊读取失败", error));
+  }
+}
+
+function syncGalleryViewWithAuth(options = {}) {
+  const preferMine = Boolean(options.preferMine);
+  if (!billingState.authenticated) {
+    galleryState.view = "gallery";
+    galleryState.userSelected = false;
+  } else if (preferMine || !galleryState.userSelected) {
+    galleryState.view = "mine";
+  }
+
+  renderResults();
+  if (galleryState.view === "gallery" && !galleryState.loaded && !galleryState.loading) {
+    loadGallery({ silent: true }).catch((error) => console.warn("画廊读取失败", error));
+  }
+}
+
+function enforceGalleryViewForAuth() {
+  if (!billingState.authenticated && galleryState.view === "mine") {
+    galleryState.view = "gallery";
+  }
+}
+
+function updateGalleryTabs() {
+  enforceGalleryViewForAuth();
+  const myTab = $("#myCanvasTab");
+  const galleryTab = $("#publicGalleryTab");
+  if (myTab) {
+    myTab.hidden = !billingState.authenticated;
+    myTab.classList.toggle("active", galleryState.view === "mine");
+    myTab.setAttribute("aria-selected", galleryState.view === "mine" ? "true" : "false");
+  }
+  if (galleryTab) {
+    galleryTab.classList.toggle("active", galleryState.view === "gallery");
+    galleryTab.setAttribute("aria-selected", galleryState.view === "gallery" ? "true" : "false");
+  }
+  const clearButton = $("#clearResultsButton");
+  if (clearButton) clearButton.hidden = galleryState.view !== "mine";
+}
+
+async function loadGallery(options = {}) {
+  if (galleryState.loading) return galleryState.items;
+  galleryState.loading = true;
+  galleryState.error = "";
+  renderResults();
+  try {
+    const response = await apiFetchPreferDirect(`/api/gallery?limit=${GALLERY_PAGE_LIMIT}`, {
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: false,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "画廊读取",
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `画廊读取失败：HTTP ${response.status}`);
+    galleryState.items = Array.isArray(payload.gallery) ? payload.gallery.map(normalizeGalleryItem).filter(Boolean) : [];
+    galleryState.loaded = true;
+    galleryState.error = "";
+  } catch (error) {
+    galleryState.error = error.message || "画廊读取失败";
+    if (!options.silent) showToast(galleryState.error);
+  } finally {
+    galleryState.loading = false;
+    renderResults();
+  }
+  return galleryState.items;
+}
+
+function normalizeGalleryItem(item) {
+  if (!item || typeof item !== "object") return null;
+  const src = String(item.src || item.imageUrl || "").trim();
+  if (!src) return null;
+  return {
+    id: `gallery-${item.id || makeId()}`,
+    galleryId: String(item.id || ""),
+    src,
+    prompt: String(item.prompt || ""),
+    model: String(item.model || ""),
+    size: String(item.size || ""),
+    quality: "gallery",
+    generationId: "",
+    createdAt: Number(item.createdAt || Date.now()),
+    width: Math.max(1, Number(item.width || 1)),
+    height: Math.max(1, Number(item.height || 1)),
+    uploader: String(item.uploader || ""),
+  };
+}
+
+function galleryVisibleItems() {
+  return galleryState.view === "gallery" ? galleryState.items : state.results;
+}
+
 function renderResults() {
   const grid = $("#resultGrid");
-  $("#resultMeta").textContent = state.results.length ? `${state.results.length} 张图片` : "生成后的图片会排列在这里";
+  updateGalleryTabs();
+  const items = galleryVisibleItems();
+  const isGallery = galleryState.view === "gallery";
+  const title = $(".gallery-head h2");
+  if (title) title.textContent = isGallery ? "画廊" : "生成结果";
+  $("#resultMeta").textContent = isGallery
+    ? galleryState.loading
+      ? "正在加载大家共享的创意..."
+      : galleryState.error
+        ? galleryState.error
+        : items.length ? `${items.length} 张共享图片` : "大家共享的创意会展示在这里"
+    : state.results.length ? `${state.results.length} 张图片` : "生成后的图片会排列在这里";
 
-  if (!state.results.length) {
+  if (!items.length) {
     grid.className = "result-grid empty";
-    grid.innerHTML = `<div class="empty-state"><h3>还没有图片</h3><p>在底部输入提示词，上传参考图，选择模型和质量，然后生成。</p></div>`;
+    const emptyTitle = isGallery ? (galleryState.loading ? "正在加载画廊" : "画廊还没有图片") : "还没有图片";
+    const emptyCopy = isGallery
+      ? (galleryState.error || "登录后可以把自己的生成图上传到画廊，让大家看到你的创意。")
+      : "在底部输入提示词，上传参考图，选择模型和质量，然后生成。";
+    grid.innerHTML = `<div class="empty-state"><h3>${escapeHtml(emptyTitle)}</h3><p>${escapeHtml(emptyCopy)}</p></div>`;
     disconnectResultMasonryObserver();
     return;
   }
@@ -2575,7 +2712,7 @@ function renderResults() {
   grid.className = "result-grid";
   grid.innerHTML = "";
   const fragment = document.createDocumentFragment();
-  state.results.forEach((item) => fragment.appendChild(createResultCard(item)));
+  items.forEach((item) => fragment.appendChild(createResultCard(item, { view: galleryState.view })));
   grid.appendChild(fragment);
   renderIcons();
   watchResultMasonry(grid);
@@ -2586,13 +2723,17 @@ function renderResults() {
 function prependResultCard(item) {
   const grid = $("#resultGrid");
   if (!grid) return renderResults();
+  if (galleryState.view !== "mine") {
+    renderResults();
+    return;
+  }
   $("#resultMeta").textContent = state.results.length ? `${state.results.length} 张图片` : "生成后的图片会排列在这里";
   if (grid.classList.contains("empty")) {
     grid.className = "result-grid";
     grid.innerHTML = "";
   }
   refreshResultNewBadges(grid);
-  const card = createResultCard(item);
+  const card = createResultCard(item, { view: "mine" });
   grid.prepend(card);
   renderIcons(card);
   watchResultMasonry(grid);
@@ -2600,10 +2741,12 @@ function prependResultCard(item) {
   scheduleResultMasonryLayout();
 }
 
-function createResultCard(item) {
-  const isNew = Boolean(item.generationId && item.generationId === state.latestGenerationId);
+function createResultCard(item, options = {}) {
+  const view = options.view || galleryState.view;
+  const isGallery = view === "gallery";
+  const isNew = !isGallery && Boolean(item.generationId && item.generationId === state.latestGenerationId);
   const card = document.createElement("article");
-  card.className = `image-card${isNew ? " is-new" : ""}`;
+  card.className = `image-card${isNew ? " is-new" : ""}${isGallery ? " gallery-card" : ""}`;
   card.dataset.id = item.id;
   card.dataset.generationId = item.generationId || "";
   card.dataset.width = String(item.width || 1);
@@ -2613,9 +2756,9 @@ function createResultCard(item) {
   const image = document.createElement("img");
   image.src = item.src || "";
   image.alt = item.prompt || "";
-  image.loading = "eager";
+  image.loading = isGallery ? "lazy" : "eager";
   image.decoding = "async";
-  image.setAttribute("fetchpriority", isNew ? "high" : "auto");
+  image.setAttribute("fetchpriority", isNew ? "high" : isGallery ? "low" : "auto");
   card.appendChild(image);
 
   if (isNew) {
@@ -2633,16 +2776,20 @@ function createResultCard(item) {
   prompt.textContent = item.prompt || "";
   const actions = document.createElement("div");
   actions.className = "card-actions";
-  actions.append(
+  const buttons = [
     createResultActionButton("edit", "编辑", "sparkles"),
     createResultActionButton("reuse", "回填提示词", "rotate"),
     createResultActionButton("download", "下载", "download"),
-    createResultActionButton("delete", "删除", "trash"),
-  );
+  ];
+  if (!isGallery) {
+    buttons.push(createResultActionButton("upload-gallery", "上传到画布", "upload"));
+    buttons.push(createResultActionButton("delete", "删除", "trash"));
+  }
+  actions.append(...buttons);
   overlay.append(prompt, actions);
   card.appendChild(overlay);
 
-  bindResultCard(card, item);
+  bindResultCard(card, item, { view });
   return card;
 }
 
@@ -2668,7 +2815,8 @@ function refreshResultNewBadges(grid = $("#resultGrid")) {
   });
 }
 
-function bindResultCard(card, item) {
+function bindResultCard(card, item, options = {}) {
+  const view = options.view || galleryState.view;
   const image = card.querySelector("img");
   const refreshCardLayout = () => {
     syncResultCardImageSize(card, image);
@@ -2678,14 +2826,15 @@ function bindResultCard(card, item) {
   image.addEventListener("error", scheduleResultMasonryLayout, { once: true });
   if (image.complete) requestAnimationFrame(refreshCardLayout);
   image.decode?.().then(refreshCardLayout).catch(() => {});
-  image.addEventListener("click", () => openDetail(item.id));
-  card.querySelector('[data-action="edit"]').addEventListener("click", () => openDetail(item.id));
+  image.addEventListener("click", () => openDetail(item.id, view));
+  card.querySelector('[data-action="edit"]').addEventListener("click", () => openDetail(item.id, view));
   card.querySelector('[data-action="reuse"]').addEventListener("click", () => reusePrompt(item.prompt));
   card.querySelector('[data-action="download"]').addEventListener("click", () => {
-    const latest = state.results.find((result) => result.id === item.id) || item;
+    const latest = findCanvasItem(item.id, view) || item;
     downloadImage(latest.src, fileNameFor(latest));
   });
-  card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteResult(item.id));
+  card.querySelector('[data-action="upload-gallery"]')?.addEventListener("click", () => uploadResultToGallery(item.id));
+  card.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteResult(item.id));
 }
 
 function updateResultCardAsset(item) {
@@ -2806,10 +2955,16 @@ function debounce(callback, delay = 100) {
   };
 }
 
-function openDetail(id) {
-  const item = state.results.find((result) => result.id === id);
+function findCanvasItem(id, view = galleryState.view) {
+  const items = view === "gallery" ? galleryState.items : state.results;
+  return items.find((result) => result.id === id);
+}
+
+function openDetail(id, view = galleryState.view) {
+  const item = findCanvasItem(id, view);
   if (!item) return;
   state.selectedResultId = id;
+  state.selectedResultSource = view;
   const detailImage = $("#detailImage");
   detailImage.onload = resetDetailView;
   detailImage.src = item.src;
@@ -2818,6 +2973,7 @@ function openDetail(id) {
   $("#detailPrompt").textContent = item.prompt;
   $("#detailInfo").textContent = `${item.size || ""} · ${item.quality || ""}`;
   $("#editPromptInput").value = "";
+  $("#deleteDetail").hidden = view === "gallery";
   $("#detailModal").hidden = false;
   resetDetailView();
   if (detailImage.complete) resetDetailView();
@@ -2825,6 +2981,7 @@ function openDetail(id) {
 
 function closeDetail() {
   $("#detailModal").hidden = true;
+  $("#deleteDetail").hidden = false;
   resetDetailView();
 }
 
@@ -3078,21 +3235,26 @@ function clampDetailPan() {
   detailView.y = clamp(detailView.y, -maxY, maxY);
 }
 
-function generateFromDetail() {
-  const item = selectedResult();
-  if (!item) return;
-  state.references = [{ id: item.id, name: fileNameFor(item), dataUrl: item.src }];
-  renderReferences();
-  const editPrompt = $("#editPromptInput").value.trim();
-  $("#promptInput").value = editPrompt || item.prompt;
-  autoGrow($("#promptInput"));
-  $("#modeSelect").value = "image";
-  closeDetail();
-  generateImages({ mode: "image", prompt: $("#promptInput").value });
+async function generateFromDetail() {
+  try {
+    const item = selectedResult();
+    if (!item) return;
+    const dataUrl = await imageSourceToDataUrl(item.src);
+    state.references = [{ id: item.id, name: fileNameFor(item), dataUrl }];
+    renderReferences();
+    const editPrompt = $("#editPromptInput").value.trim();
+    $("#promptInput").value = editPrompt || item.prompt;
+    autoGrow($("#promptInput"));
+    $("#modeSelect").value = "image";
+    closeDetail();
+    generateImages({ mode: "image", prompt: $("#promptInput").value });
+  } catch (error) {
+    showToast(error.message || "图片读取失败，请重试");
+  }
 }
 
 function selectedResult() {
-  return state.results.find((item) => item.id === state.selectedResultId);
+  return findCanvasItem(state.selectedResultId, state.selectedResultSource || galleryState.view);
 }
 
 function downloadSelected() {
@@ -3101,6 +3263,7 @@ function downloadSelected() {
 }
 
 function deleteSelected() {
+  if (state.selectedResultSource === "gallery") return;
   const item = selectedResult();
   if (item) deleteResult(item.id);
   closeDetail();
@@ -3112,6 +3275,86 @@ async function deleteResult(id) {
   await persistState();
   renderResults();
   showToast("图片已删除");
+}
+
+async function uploadResultToGallery(id) {
+  if (!billingState.authenticated) {
+    $("#walletPanel")?.classList.add("open");
+    showToast("请先登录后再上传到画廊");
+    return;
+  }
+  const item = findCanvasItem(id, "mine");
+  if (!item) return;
+  if (item.galleryUploaded) {
+    showToast("这张图已上传到画廊");
+    return;
+  }
+  if (item.galleryUploading) return;
+
+  item.galleryUploading = true;
+  showToast("正在上传到画廊...");
+  try {
+    const dataUrl = await prepareGalleryUploadImage(item.src);
+    const response = await apiFetchPreferDirect("/api/gallery", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        dataUrl,
+        prompt: item.prompt || "",
+        model: item.model || "",
+        size: item.size || "",
+        width: item.width || 1,
+        height: item.height || 1,
+      }),
+      timeoutMs: GALLERY_UPLOAD_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: GALLERY_UPLOAD_TIMEOUT_MS,
+      label: "画廊上传",
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `上传到画廊失败：HTTP ${response.status}`);
+    const galleryItem = normalizeGalleryItem(payload.item);
+    if (galleryItem) {
+      galleryState.items = [galleryItem, ...galleryState.items.filter((entry) => entry.galleryId !== galleryItem.galleryId)];
+      galleryState.loaded = true;
+      galleryState.error = "";
+    }
+    item.galleryUploaded = true;
+    item.galleryUploading = false;
+    await persistState();
+    renderResults();
+    showToast("已上传到画廊");
+  } catch (error) {
+    showToast(error.message || "上传到画廊失败，请重试");
+  } finally {
+    item.galleryUploading = false;
+  }
+}
+
+async function prepareGalleryUploadImage(src) {
+  const dataUrl = await imageSourceToDataUrl(src);
+  const blob = dataUrlToBlob(dataUrl);
+  if (!/^image\/(?:png|jpe?g|webp)$/i.test(blob.type || "")) {
+    throw new Error("画廊只支持 PNG、JPG、WEBP 图片");
+  }
+  const dimensions = await imageBlobDimensions(blob);
+  const longest = Math.max(dimensions.width || 1, dimensions.height || 1);
+  if (blob.size <= REFERENCE_API_MAX_BYTES && longest <= REFERENCE_API_MAX_DIMENSION) return dataUrl;
+  const compressedBlob = await compressReferenceImageBlob(blob, dimensions);
+  return blobToDataUrl(compressedBlob);
+}
+
+async function imageSourceToDataUrl(src) {
+  const source = String(src || "").trim();
+  if (!source) throw new Error("图片地址为空");
+  if (source.startsWith("data:image/")) return source;
+
+  const response = await fetchWithTimeout(source, { cache: "no-store" }, RESULT_CACHE_TIMEOUT_MS);
+  if (!response.ok) throw new Error(`图片读取失败：HTTP ${response.status}`);
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType && !contentType.startsWith("image/")) throw new Error("图片读取失败：返回内容不是图片");
+  return blobToDataUrl(await response.blob());
 }
 
 function reuseSelectedPrompt() {
@@ -4113,6 +4356,7 @@ function touchLoginPresence() {
 
 function applyBillingDashboard(payload) {
   const user = payload.user || payload.customer || null;
+  const wasAuthenticated = billingState.authenticated;
   billingState.authenticated = Boolean(payload.authenticated || user);
   billingState.customerId = user?.id ? String(user.id) : "";
   billingState.email = user?.email || "";
@@ -4138,6 +4382,7 @@ function applyBillingDashboard(payload) {
     priceCents: billingState.priceCents,
     displayName: billingState.platformDisplayName,
   };
+  syncGalleryViewWithAuth({ preferMine: !wasAuthenticated && billingState.authenticated });
 }
 
 function renderWallet() {
@@ -4299,6 +4544,7 @@ async function logoutWallet() {
   billingState.ledger = [];
   billingState.ledgerLoading = false;
   clearWalletSessionToken();
+  syncGalleryViewWithAuth();
   renderWallet();
   showToast("已退出登录");
 }

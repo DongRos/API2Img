@@ -354,6 +354,46 @@ svg {
   font-size: 20px;
 }
 
+.gallery-tools {
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.view-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.22);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.22);
+}
+
+.view-switch button {
+  min-width: 66px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.view-switch button.active {
+  background: rgba(255, 237, 173, 0.62);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(234, 179, 8, 0.2), 0 8px 20px rgba(0, 0, 0, 0.12);
+}
+
+body[data-theme="light"] .view-switch button.active {
+  background: rgba(255, 246, 204, 0.86);
+}
+
 .result-grid {
   --grid-gap: 16px;
   --masonry-row: 8px;
@@ -470,6 +510,10 @@ svg {
   opacity: 1;
 }
 
+.image-card:focus-within .card-overlay {
+  opacity: 1;
+}
+
 .card-prompt {
   min-width: 0;
   overflow: hidden;
@@ -491,6 +535,12 @@ svg {
   background: rgba(255, 255, 255, 0.14);
   color: white;
   cursor: pointer;
+}
+
+@media (hover: none) {
+  .card-overlay {
+    opacity: 1;
+  }
 }
 
 .composer {
@@ -2497,12 +2547,27 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .gallery-head {
+    align-items: flex-start;
+    flex-direction: column;
     margin-bottom: 10px;
     gap: 10px;
   }
 
   .gallery-head h2 {
     font-size: 18px;
+  }
+
+  .gallery-tools {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .view-switch {
+    flex: 1 1 160px;
+  }
+
+  .view-switch button {
+    flex: 1 1 0;
   }
 
   .result-grid.empty {

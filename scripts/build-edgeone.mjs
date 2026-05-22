@@ -30,6 +30,7 @@ const config = {
     { src: "^/api/proxy-image/?$", methods: ["POST", "OPTIONS"] },
     { src: "^/api/cache-image/?$", methods: ["POST", "OPTIONS"] },
     { src: "^/api/reference-image(?:/.*)?$", methods: ["GET", "POST", "OPTIONS"] },
+    { src: "^/api/gallery(?:/.*)?$", methods: ["GET", "POST", "OPTIONS"] },
     { src: "^/api/health/?$", methods: ["GET", "OPTIONS"] },
     { src: "^/api/auth/(.*)$", methods: ["GET", "POST", "OPTIONS"] },
     { src: "^/api/generate/(.*)$", methods: ["POST", "OPTIONS"] },

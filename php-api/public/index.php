@@ -96,6 +96,18 @@ function route_request(PDO $pdo, array $config): void
         site_track($pdo, $config);
         return;
     }
+    if ($method === 'GET' && $path === '/api/gallery') {
+        gallery_list($pdo, $config);
+        return;
+    }
+    if ($method === 'POST' && $path === '/api/gallery') {
+        gallery_upload($pdo, $config);
+        return;
+    }
+    if ($method === 'GET' && preg_match('#^/api/gallery/image/([^/]+)$#', $path, $matches)) {
+        gallery_image_read((string)$matches[1]);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/generate/ticket') {
         generate_ticket($pdo, $config);
         return;
@@ -584,6 +596,169 @@ function site_stats(PDO $pdo, array $config): void
 {
     require_admin($pdo, $config);
     json_response(['ok' => true, 'siteStats' => site_stats_payload($pdo)]);
+}
+
+function gallery_list(PDO $pdo, array $config): void
+{
+    ensure_gallery_tables($pdo);
+    $limit = max(1, min(120, (int)($_GET['limit'] ?? 80)));
+    $stmt = $pdo->prepare(
+        "SELECT g.*, u.email AS user_email
+         FROM gallery_images g
+         LEFT JOIN users u ON u.id = g.user_id
+         WHERE g.status = 'active'
+         ORDER BY g.id DESC
+         LIMIT ?"
+    );
+    $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+    $stmt->execute();
+    $items = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $item = public_gallery_item($row);
+        if ($item !== []) {
+            $items[] = $item;
+        }
+    }
+    json_response(['ok' => true, 'gallery' => $items]);
+}
+
+function gallery_upload(PDO $pdo, array $config): void
+{
+    $user = require_user($pdo, $config);
+    ensure_gallery_tables($pdo);
+    $payload = read_json();
+    [$bytes, $mime, $extension] = reference_image_decode((string)($payload['dataUrl'] ?? ''));
+    if (strlen($bytes) > 5 * 1024 * 1024) {
+        throw new HttpError('上传到画廊的图片不能超过 5MB', 413, 'gallery_image_too_large');
+    }
+    $info = @getimagesizefromstring($bytes);
+    $width = is_array($info) ? max(1, (int)($info[0] ?? 1)) : max(1, (int)($payload['width'] ?? 1));
+    $height = is_array($info) ? max(1, (int)($info[1] ?? 1)) : max(1, (int)($payload['height'] ?? 1));
+    $dir = gallery_image_dir();
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new HttpError('画廊目录不可写', 500, 'gallery_storage_failed');
+    }
+    $filename = random_token(18) . '.' . ($extension === 'jpeg' ? 'jpg' : $extension);
+    $path = $dir . DIRECTORY_SEPARATOR . $filename;
+    if (file_put_contents($path, $bytes, LOCK_EX) === false) {
+        throw new HttpError('画廊图片保存失败', 500, 'gallery_storage_failed');
+    }
+
+    $stmt = $pdo->prepare(
+        "INSERT INTO gallery_images
+         (user_id, image_filename, mime_type, prompt, model, size, width, height, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', UTC_TIMESTAMP())"
+    );
+    $stmt->execute([
+        (int)$user['id'],
+        $filename,
+        $mime,
+        usage_log_text((string)($payload['prompt'] ?? ''), 1000),
+        custom_api_model_name((string)($payload['model'] ?? '')),
+        usage_log_text((string)($payload['size'] ?? ''), 40),
+        $width,
+        $height,
+    ]);
+    $id = (int)$pdo->lastInsertId();
+    $row = [
+        'id' => $id,
+        'image_filename' => $filename,
+        'mime_type' => $mime,
+        'prompt' => usage_log_text((string)($payload['prompt'] ?? ''), 1000),
+        'model' => custom_api_model_name((string)($payload['model'] ?? '')),
+        'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+        'width' => $width,
+        'height' => $height,
+        'created_at' => now_sql(),
+        'user_email' => (string)($user['email'] ?? ''),
+    ];
+    json_response(['ok' => true, 'item' => public_gallery_item($row)]);
+}
+
+function gallery_image_read(string $filename): void
+{
+    $filename = basename(rawurldecode($filename));
+    if (!preg_match('/^[A-Za-z0-9_-]+\.(?:png|jpe?g|webp)$/', $filename)) {
+        throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
+    }
+    $path = gallery_image_dir() . DIRECTORY_SEPARATOR . $filename;
+    if (!is_file($path)) {
+        throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
+    }
+    discard_accidental_output();
+    $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    $mime = $extension === 'png' ? 'image/png' : ($extension === 'webp' ? 'image/webp' : 'image/jpeg');
+    header('Content-Type: ' . $mime);
+    header('Cache-Control: public, max-age=31536000, immutable');
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
+    exit;
+}
+
+function public_gallery_item(array $row): array
+{
+    $filename = (string)($row['image_filename'] ?? '');
+    if ($filename === '') {
+        return [];
+    }
+    return [
+        'id' => (string)($row['id'] ?? ''),
+        'src' => '/api/gallery/image/' . rawurlencode($filename),
+        'prompt' => (string)($row['prompt'] ?? ''),
+        'model' => (string)($row['model'] ?? ''),
+        'size' => (string)($row['size'] ?? ''),
+        'width' => max(1, (int)($row['width'] ?? 1)),
+        'height' => max(1, (int)($row['height'] ?? 1)),
+        'createdAt' => isset($row['created_at']) ? utc_sql_timestamp_ms((string)$row['created_at']) : 0,
+        'uploader' => mask_gallery_email((string)($row['user_email'] ?? '')),
+    ];
+}
+
+function gallery_image_dir(): string
+{
+    return dirname(__DIR__) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'gallery';
+}
+
+function ensure_gallery_tables(PDO $pdo): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS gallery_images (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+          user_id BIGINT UNSIGNED NOT NULL,
+          image_filename VARCHAR(120) NOT NULL,
+          mime_type VARCHAR(80) NOT NULL DEFAULT 'image/jpeg',
+          prompt VARCHAR(1000) NOT NULL DEFAULT '',
+          model VARCHAR(120) NOT NULL DEFAULT '',
+          size VARCHAR(40) NOT NULL DEFAULT '',
+          width INT NOT NULL DEFAULT 1,
+          height INT NOT NULL DEFAULT 1,
+          status ENUM('active','hidden') NOT NULL DEFAULT 'active',
+          created_at DATETIME NOT NULL,
+          PRIMARY KEY (id),
+          KEY idx_gallery_status_created (status, id),
+          KEY idx_gallery_user_created (user_id, id),
+          UNIQUE KEY uniq_gallery_filename (image_filename)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    );
+    $done = true;
+}
+
+function mask_gallery_email(string $email): string
+{
+    $email = normalize_email($email);
+    if ($email === '') {
+        return '';
+    }
+    [$name, $domain] = array_pad(explode('@', $email, 2), 2, '');
+    if ($domain === '') {
+        return '';
+    }
+    $prefix = function_exists('mb_substr') ? mb_substr($name, 0, 2) : substr($name, 0, 2);
+    return $prefix . '***@' . $domain;
 }
 
 function record_site_activity(PDO $pdo, array $config, string $visitorId, string $kind): void
