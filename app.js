@@ -169,6 +169,8 @@ const siteStatsState = {
   yesterdayPeak: 0,
   registeredUsers: 0,
   totalRevenueCents: 0,
+  totalRechargeCents: 0,
+  registeredEmails: [],
   lastVisitAt: 0,
   updatedAt: 0,
   onlineWindowMs: 3 * 60 * 1000,
@@ -3766,6 +3768,8 @@ function applyAdminOnlySiteStats(payload = {}) {
   assignSiteStat("loggedInOnlineCount", payload.loggedInOnlineCount ?? payload.currentLoggedInUsers);
   assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
   assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
+  assignSiteStat("totalRechargeCents", payload.totalRechargeCents ?? payload.totalRechargedCents ?? payload.totalRecharge);
+  assignSiteStatList("registeredEmails", payload.registeredEmails ?? payload.registeredUserEmails ?? payload.emails);
 }
 
 function applySiteStats(payload = {}, options = {}) {
@@ -3779,6 +3783,8 @@ function applySiteStats(payload = {}, options = {}) {
     assignSiteStat("loggedInOnlineCount", payload.loggedInOnlineCount ?? payload.currentLoggedInUsers);
     assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
     assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
+    assignSiteStat("totalRechargeCents", payload.totalRechargeCents ?? payload.totalRechargedCents ?? payload.totalRecharge);
+    assignSiteStatList("registeredEmails", payload.registeredEmails ?? payload.registeredUserEmails ?? payload.emails);
   }
   assignSiteStat("lastVisitAt", payload.lastVisitAt);
   assignSiteStat("updatedAt", payload.updatedAt);
@@ -3790,9 +3796,25 @@ function assignSiteStat(key, value) {
   siteStatsState[key] = Math.max(0, Number(value || 0));
 }
 
+function assignSiteStatList(key, value) {
+  const items = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const next = [];
+  for (const item of items) {
+    const email = String(item || "").trim();
+    if (!email) continue;
+    const fingerprint = email.toLowerCase();
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    next.push(email);
+  }
+  siteStatsState[key] = next;
+}
+
 function renderSiteStats() {
   updateStatsPanelCopy();
   const summary = $("#siteStatsSummary");
+  const details = $("#siteStatsDetails");
   const adminSummary = $("#apiStatsSummary");
   if (!summary) return;
   summary.hidden = false;
@@ -3806,6 +3828,23 @@ function renderSiteStats() {
     <div><strong>${formatCount(siteStatsState.registeredUsers)}</strong><span>总注册用户</span></div>
     <div><strong>${formatMoney(siteStatsState.totalRevenueCents)}</strong><span>总收益</span></div>
   `;
+  if (details) {
+    const emails = Array.isArray(siteStatsState.registeredEmails) ? siteStatsState.registeredEmails : [];
+    details.hidden = false;
+    details.innerHTML = `
+      <div class="site-stats-detail-card">
+        <strong>${formatMoney(siteStatsState.totalRechargeCents)}</strong>
+        <span>总充值金额</span>
+      </div>
+      <div class="site-stats-detail-card site-stats-email-card">
+        <strong>${formatCount(emails.length)}</strong>
+        <span>注册邮箱</span>
+        <div class="site-stats-email-list">
+          ${emails.length ? emails.map((email) => `<div class="site-stats-email-item">${escapeHtml(email)}</div>`).join("") : '<div class="site-stats-email-empty">暂无注册邮箱</div>'}
+        </div>
+      </div>
+    `;
+  }
   if (adminSummary) {
     adminSummary.hidden = true;
     adminSummary.innerHTML = "";

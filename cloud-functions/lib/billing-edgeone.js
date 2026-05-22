@@ -704,6 +704,8 @@ async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000, includeAdmi
     yesterdayPeak: Number(siteStats.dailyPeaks?.[yesterdayKey] || 0),
     registeredUsers: Number(adminTotals.registeredUsers || 0),
     totalRevenueCents: Number(adminTotals.totalRevenueCents || 0),
+    totalRechargeCents: Number(adminTotals.totalRechargeCents || 0),
+    registeredEmails: Array.isArray(adminTotals.registeredEmails) ? adminTotals.registeredEmails : [],
     totalVisits: Number(siteStats.totalVisits || 0),
     todayVisits: Number(siteStats.dailyVisits?.[todayKey] || 0),
     totalVisitors,
@@ -732,6 +734,8 @@ async function getPhpAdminStats(context) {
       loggedInOnlineCount: Math.max(0, Number(stats.loggedInOnlineCount || stats.currentLoggedInUsers || 0)),
       registeredUsers: Math.max(0, Number(stats.registeredUsers || stats.totalRegisteredUsers || 0)),
       totalRevenueCents: Math.max(0, Number(stats.totalRevenueCents || stats.totalRevenue || 0)),
+      totalRechargeCents: Math.max(0, Number(stats.totalRechargeCents || stats.totalRechargedCents || stats.totalRecharge || 0)),
+      registeredEmails: Array.isArray(stats.registeredEmails) ? stats.registeredEmails.map((item) => String(item || "").trim()).filter(Boolean) : [],
       updatedAt: Date.now(),
     };
     await cacheAdminSiteTotals(context, next);
@@ -890,10 +894,13 @@ function normalizeSiteStats(value) {
 }
 
 function normalizeAdminSiteTotals(value) {
+  const emails = Array.isArray(value?.registeredEmails) ? value.registeredEmails : [];
   return {
     loggedInOnlineCount: Math.max(0, Number(value?.loggedInOnlineCount || 0)),
     registeredUsers: Math.max(0, Number(value?.registeredUsers || 0)),
     totalRevenueCents: Math.max(0, Number(value?.totalRevenueCents || 0)),
+    totalRechargeCents: Math.max(0, Number(value?.totalRechargeCents || 0)),
+    registeredEmails: [...new Set(emails.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean))],
     updatedAt: Math.max(0, Number(value?.updatedAt || 0)),
   };
 }

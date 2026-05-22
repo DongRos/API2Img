@@ -1477,6 +1477,56 @@ button:disabled {
   gap: 10px;
 }
 
+.api-stats-details {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.site-stats-detail-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  background: var(--glass-soft);
+}
+
+.site-stats-detail-card strong,
+.site-stats-detail-card span {
+  display: block;
+}
+
+.site-stats-detail-card strong {
+  font-size: 20px;
+}
+
+.site-stats-detail-card span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.site-stats-email-list {
+  margin-top: 8px;
+  max-height: 220px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.site-stats-email-item,
+.site-stats-email-empty {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--glass-soft) 75%, transparent);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 85%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  word-break: break-all;
+}
+
 .api-stat-card {
   padding: 10px;
   border: 1px solid var(--glass-border);
@@ -2376,6 +2426,10 @@ body[data-theme="light"] .wallet-panel {
 
   #siteStatsSummary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .api-stats-details {
+    grid-template-columns: 1fr;
   }
 
   .api-stat-grid {

@@ -627,6 +627,8 @@ function site_stats_payload(PDO $pdo): array
     $peaks = $peakStmt->fetch() ?: [];
 
     $registeredUsers = (int)$pdo->query("SELECT COUNT(DISTINCT LOWER(TRIM(email))) FROM users WHERE TRIM(email) <> ''")->fetchColumn();
+    $registeredEmails = $pdo->query("SELECT DISTINCT LOWER(TRIM(email)) AS email FROM users WHERE TRIM(email) <> '' ORDER BY email ASC")->fetchAll(PDO::FETCH_COLUMN);
+    $totalRechargeCents = (int)$pdo->query("SELECT COALESCE(SUM(amount_cents), 0) FROM wallet_ledger WHERE type = 'redeem' AND amount_cents > 0")->fetchColumn();
     $totalRevenueCents = (int)$pdo->query("SELECT COALESCE(SUM(total_cents), 0) FROM generation_requests WHERE status = 'succeeded'")->fetchColumn();
     $sessionVisitors = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM sessions")->fetchColumn();
     $totalVisitors = max((int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn(), $sessionVisitors);
@@ -638,6 +640,8 @@ function site_stats_payload(PDO $pdo): array
         'todayPeak' => max(php_online_count($pdo, $onlineWindowSeconds, $onlineCount), (int)($peaks['today_peak'] ?? 0)),
         'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
         'registeredUsers' => $registeredUsers,
+        'registeredEmails' => $registeredEmails,
+        'totalRechargeCents' => $totalRechargeCents,
         'totalRevenueCents' => $totalRevenueCents,
         'totalVisits' => (int)($peaks['total_visits'] ?? 0),
         'todayVisits' => (int)($peaks['today_visits'] ?? 0),
