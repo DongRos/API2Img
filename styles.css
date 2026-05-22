@@ -2373,7 +2373,7 @@ body[data-theme="light"] .wallet-panel {
   .detail-actions {
     flex: 0 0 auto;
     display: grid;
-    grid-template-columns: repeat(2, 36px);
+    grid-template-columns: repeat(3, 36px);
     gap: 6px;
   }
 
@@ -2562,30 +2562,56 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .gallery-head {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "copy tools"
+      "switch switch";
     align-items: start;
-    margin-bottom: 10px;
-    gap: 10px;
+    margin-bottom: 12px;
+    gap: 12px 10px;
+  }
+
+  .gallery-copy {
+    grid-area: copy;
   }
 
   .gallery-head h2 {
-    font-size: 18px;
+    font-size: 19px;
+    line-height: 1.18;
+  }
+
+  .gallery-head p {
+    line-height: 1.28;
   }
 
   .gallery-tools {
-    width: 100%;
+    grid-area: tools;
+    width: auto;
     justify-content: flex-end;
-    justify-self: stretch;
+    justify-self: end;
+    align-self: center;
+  }
+
+  #clearResultsButton {
+    width: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+  }
+
+  #clearResultsButton span {
+    display: none;
   }
 
   .gallery-switch-wrap {
+    grid-area: switch;
     width: 100%;
     justify-self: center;
     text-align: center;
   }
 
   .view-switch {
-    max-width: 190px;
+    max-width: 210px;
     width: 100%;
   }
 

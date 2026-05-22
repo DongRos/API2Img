@@ -418,6 +418,8 @@ function bindEvents() {
   $("#doneDetail").addEventListener("click", closeDetail);
   $("#downloadDetail").addEventListener("click", downloadSelected);
   $("#deleteDetail").addEventListener("click", deleteSelected);
+  $("#uploadGalleryDetail").addEventListener("click", uploadSelectedToGallery);
+  $("#deleteGalleryDetail").addEventListener("click", deleteSelectedGalleryItem);
   $("#reusePrompt").addEventListener("click", reuseSelectedPrompt);
   $("#detailViewport").addEventListener("wheel", onDetailWheel, { passive: false });
   $("#detailViewport").addEventListener("pointerdown", onDetailPointerDown);
@@ -2990,7 +2992,10 @@ function openDetail(id, view = galleryState.view) {
   $("#detailPrompt").textContent = item.prompt;
   $("#detailInfo").textContent = `${item.size || ""} · ${item.quality || ""}`;
   $("#editPromptInput").value = "";
-  $("#deleteDetail").hidden = view === "gallery";
+  const isGallery = view === "gallery";
+  $("#uploadGalleryDetail").hidden = isGallery;
+  $("#deleteDetail").hidden = isGallery;
+  $("#deleteGalleryDetail").hidden = !(isGallery && isGalleryAdminUnlocked());
   $("#detailModal").hidden = false;
   resetDetailView();
   if (detailImage.complete) resetDetailView();
@@ -2998,7 +3003,9 @@ function openDetail(id, view = galleryState.view) {
 
 function closeDetail() {
   $("#detailModal").hidden = true;
+  $("#uploadGalleryDetail").hidden = false;
   $("#deleteDetail").hidden = false;
+  $("#deleteGalleryDetail").hidden = true;
   resetDetailView();
 }
 
@@ -3286,6 +3293,20 @@ function deleteSelected() {
   closeDetail();
 }
 
+function uploadSelectedToGallery() {
+  if (state.selectedResultSource === "gallery") return;
+  const item = selectedResult();
+  if (item) uploadResultToGallery(item.id);
+}
+
+async function deleteSelectedGalleryItem() {
+  if (state.selectedResultSource !== "gallery") return;
+  const item = selectedResult();
+  if (!item) return;
+  const deleted = await deleteGalleryItem(item.id);
+  if (deleted) closeDetail();
+}
+
 async function deleteResult(id) {
   state.results = state.results.filter((item) => item.id !== id);
   if (state.selectedResultId === id) state.selectedResultId = "";
@@ -3298,10 +3319,10 @@ async function deleteGalleryItem(id) {
   const item = findCanvasItem(id, "gallery");
   const galleryId = String(item?.galleryId || "").trim();
   const password = adminPassword();
-  if (!item || !galleryId) return;
+  if (!item || !galleryId) return false;
   if (!password) {
     showToast("请先进入站长后台");
-    return;
+    return false;
   }
   try {
     const response = await apiFetchPreferDirect("/api/admin/gallery/delete", {
@@ -3323,8 +3344,10 @@ async function deleteGalleryItem(id) {
     if (state.selectedResultId === id) state.selectedResultId = "";
     renderResults();
     showToast("画廊图片已删除");
+    return true;
   } catch (error) {
     showToast(error.message || "画廊图片删除失败");
+    return false;
   }
 }
 
