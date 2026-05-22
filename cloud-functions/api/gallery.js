@@ -46,7 +46,10 @@ async function listGallery(context, url) {
 }
 
 async function uploadGalleryItem(context) {
-  const user = await requireGalleryUser(context);
+  const user = await currentGalleryUser(context);
+  if (!user) {
+    return jsonResponse(401, { ok: false, error: { code: "auth_required", message: "请先登录" } });
+  }
   const payload = await readJson(context.request);
   const parsed = dataUrlToImage(payload.dataUrl || "");
   if (parsed.bytes.byteLength > MAX_GALLERY_BYTES) {
@@ -105,9 +108,9 @@ async function readGalleryItem(store, key) {
   }
 }
 
-async function requireGalleryUser(context) {
+async function currentGalleryUser(context) {
   const base = normalizePhpApiBaseUrl(getEnv(context, "PHP_API_BASE_URL")).replace(/\/+$/, "");
-  if (!base) throw new Error("PHP API 尚未配置，无法校验登录状态");
+  if (!base) return null;
   const headers = new Headers();
   const token = context.request.headers.get("x-api2image-session") || parseCookies(context.request.headers.get("cookie") || "").api2image_session || "";
   if (token) headers.set("X-Api2Image-Session", token);
@@ -115,13 +118,7 @@ async function requireGalleryUser(context) {
   if (cookie) headers.set("Cookie", cookie);
   const response = await fetch(`${base}/api/auth/me`, { headers });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload?.authenticated || !payload?.user) {
-    const message = payload?.error?.message || "请先登录";
-    const error = new Error(message);
-    error.status = response.ok ? 401 : response.status || 401;
-    throw error;
-  }
-  return payload.user;
+  return response.ok && payload?.authenticated && payload?.user ? payload.user : null;
 }
 
 function publicGalleryItem(item) {
