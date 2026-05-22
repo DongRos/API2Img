@@ -775,13 +775,39 @@ function json_looks_like_image_base64(string $value): bool
     return preg_match('/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR)/', $clean) === 1;
 }
 
-function create_ledger(PDO $pdo, int $userId, string $type, int $amountCents, int $before, int $after, string $relatedId, string $note = ''): void
+function make_ledger_log_code(): string
 {
-    $stmt = $pdo->prepare(
-        'INSERT INTO wallet_ledger (user_id, type, amount_cents, balance_before_cents, balance_after_cents, related_id, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())'
-    );
-    $stmt->execute([$userId, $type, $amountCents, $before, $after, $relatedId, $note]);
+    return 'LG' . str_pad(strtoupper(substr(base_convert((string)time(), 10, 36), -5)), 5, '0', STR_PAD_LEFT) . strtoupper(bin2hex(random_bytes(4)));
+}
+
+function ledger_log_code(string $value): string
+{
+    $value = strtoupper(preg_replace('/[^A-Za-z0-9_-]+/', '', trim($value)) ?? '');
+    return substr($value, 0, 40);
+}
+
+function create_ledger(PDO $pdo, int $userId, string $type, int $amountCents, int $before, int $after, string $relatedId, string $note = '', string $logCode = ''): void
+{
+    $logCode = ledger_log_code($logCode);
+    if ($logCode === '') {
+        $logCode = make_ledger_log_code();
+    }
+    try {
+        $stmt = $pdo->prepare(
+            'INSERT INTO wallet_ledger (user_id, type, amount_cents, balance_before_cents, balance_after_cents, related_id, log_code, note, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())'
+        );
+        $stmt->execute([$userId, $type, $amountCents, $before, $after, $relatedId, $logCode, $note]);
+    } catch (PDOException $error) {
+        if (stripos($error->getMessage(), 'log_code') === false) {
+            throw $error;
+        }
+        $stmt = $pdo->prepare(
+            'INSERT INTO wallet_ledger (user_id, type, amount_cents, balance_before_cents, balance_after_cents, related_id, note, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())'
+        );
+        $stmt->execute([$userId, $type, $amountCents, $before, $after, $relatedId, $note]);
+    }
 }
 
 class HttpError extends RuntimeException

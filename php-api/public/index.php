@@ -519,6 +519,7 @@ function billing_redeem(PDO $pdo, array $config): void
     enforce_rate_limit($pdo, $config, 'redeem_user', (string)$user['id'], 30, 3600);
     enforce_rate_limit($pdo, $config, 'redeem_ip', client_ip(), 80, 3600);
     $codeHash = secret_hash($config, 'redeem-code', $code);
+    ensure_usage_log_columns($pdo);
 
     $pdo->beginTransaction();
     try {
@@ -561,6 +562,8 @@ function billing_redeem(PDO $pdo, array $config): void
 function billing_ledger(PDO $pdo, array $config): void
 {
     $user = require_user($pdo, $config);
+    ensure_usage_log_columns($pdo);
+    backfill_redeem_ledger_log_codes($pdo, (int)$user['id']);
     $stmt = $pdo->prepare(
         'SELECT * FROM wallet_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 50'
     );
@@ -582,9 +585,20 @@ function public_ledger_item(array $item): array
         'balanceAfterCents' => (int)$item['balance_after_cents'],
         'relatedId' => (string)$item['related_id'],
         'logCode' => (string)($item['log_code'] ?? ''),
-        'note' => (string)$item['note'],
+        'note' => public_ledger_note((string)$item['note']),
         'createdAt' => utc_sql_timestamp_ms((string)$item['created_at']),
     ];
+}
+
+function public_ledger_note(string $note): string
+{
+    $note = trim($note);
+    if ($note === '') {
+        return '';
+    }
+    $note = preg_replace('/\s+mp[a-z0-9]{5,}(?:-[a-z0-9]{4,})?\s*$/i', '', $note) ?? $note;
+    $note = preg_replace('/\s+image2-[a-z0-9-]{6,}\s*$/i', '', $note) ?? $note;
+    return trim($note);
 }
 
 function site_track(PDO $pdo, array $config): void
@@ -1017,6 +1031,29 @@ function ensure_usage_log_columns(PDO $pdo): bool
     return $done;
 }
 
+function backfill_redeem_ledger_log_codes(PDO $pdo, int $userId): void
+{
+    try {
+        $stmt = $pdo->prepare(
+            "SELECT id FROM wallet_ledger
+             WHERE user_id = ? AND type = 'redeem' AND log_code = ''
+             ORDER BY id DESC
+             LIMIT 100"
+        );
+        $stmt->execute([$userId]);
+        $ids = array_map('intval', array_column($stmt->fetchAll(), 'id'));
+        if (!count($ids)) {
+            return;
+        }
+        $update = $pdo->prepare("UPDATE wallet_ledger SET log_code = ? WHERE id = ? AND log_code = ''");
+        foreach ($ids as $id) {
+            $update->execute([make_ledger_log_code(), $id]);
+        }
+    } catch (Throwable $error) {
+        error_log('redeem ledger log code backfill failed: ' . $error->getMessage());
+    }
+}
+
 function ensure_table_column(PDO $pdo, string $table, string $column, string $definition): void
 {
     $stmt = $pdo->prepare(
@@ -1061,6 +1098,53 @@ function usage_log_text(string $value, int $limit): string
     return strlen($value) > $limit ? substr($value, 0, $limit) : $value;
 }
 
+function charge_ledger_note(string $mode, array $usageMeta): string
+{
+    $modeLabel = $mode === 'image' ? '图生图' : '文生图';
+    $tier = charge_ledger_tier_label((string)($usageMeta['tier'] ?? ''), (string)($usageMeta['size'] ?? ''));
+    $size = charge_ledger_size_label((string)($usageMeta['size'] ?? ''));
+    $siteConfig = usage_log_text((string)($usageMeta['siteConfig'] ?? ''), 80);
+    $parts = [$modeLabel . '成功扣费'];
+    if ($tier !== '') {
+        $parts[] = $tier;
+    }
+    if ($size !== '') {
+        $parts[] = '尺寸 ' . $size;
+    }
+    if ($siteConfig !== '') {
+        $parts[] = $siteConfig;
+    }
+    return implode('；', $parts);
+}
+
+function charge_ledger_tier_label(string $tier, string $size): string
+{
+    $tier = strtoupper(preg_replace('/[^0-9K]+/', '', trim($tier)) ?? '');
+    if (in_array($tier, ['1K', '2K', '4K'], true)) {
+        return $tier;
+    }
+    if (preg_match('/^(\d{2,5})x(\d{2,5})$/i', trim($size), $match)) {
+        $max = max((int)$match[1], (int)$match[2]);
+        if ($max >= 2800) {
+            return '4K';
+        }
+        if ($max >= 1900) {
+            return '2K';
+        }
+        return '1K';
+    }
+    return '';
+}
+
+function charge_ledger_size_label(string $size): string
+{
+    $size = usage_log_text($size, 40);
+    if ($size === '' || strtolower($size) === 'auto') {
+        return '自动';
+    }
+    return $size;
+}
+
 function generate_ticket(PDO $pdo, array $config): void
 {
     $user = require_user($pdo, $config);
@@ -1083,6 +1167,9 @@ function generate_ticket(PDO $pdo, array $config): void
         'count' => $count,
         'price' => $price,
         'model' => $model,
+        'tier' => usage_log_text((string)($payload['tier'] ?? ''), 16),
+        'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+        'siteConfig' => usage_log_text((string)($platform['display_name'] ?? '站点配置1'), 80),
         'exp' => time() + 600,
         'nonce' => random_token(12),
     ], $token);
@@ -1121,6 +1208,9 @@ function generate_direct_config(PDO $pdo, array $config): void
         'count' => $count,
         'price' => $price,
         'model' => $model,
+        'tier' => usage_log_text((string)($payload['tier'] ?? ''), 16),
+        'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+        'siteConfig' => usage_log_text((string)($platform['display_name'] ?? '站点配置1'), 80),
         'exp' => time() + 600,
         'nonce' => random_token(12),
     ], random_token(32));
@@ -1148,6 +1238,9 @@ function generate_platform(PDO $pdo, array $config): void
             'count' => max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1))),
             'price' => custom_api_model_price_cents($modelOption['priceCents'] ?? null, $model, (int)$platform['price_cents']),
             'model' => $model,
+            'tier' => usage_log_text((string)($payload['tier'] ?? ''), 16),
+            'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+            'siteConfig' => usage_log_text((string)($platform['display_name'] ?? '站点配置1'), 80),
         ];
     }
     $mode = (($ticket['mode'] ?? ($payload['mode'] ?? 'text')) === 'image') ? 'image' : 'text';
@@ -1400,15 +1493,21 @@ function settle_generation(PDO $pdo, array $config): void
     $price = max(1, (int)$ticket['price']);
     $model = custom_api_model_name((string)($ticket['model'] ?? 'gpt-image-2'));
     $logCode = usage_log_code((string)($payload['logCode'] ?? $payload['traceCode'] ?? ''));
+    if ($logCode === '') {
+        $logCode = make_ledger_log_code();
+    }
     $usageMeta = [
         'logCode' => $logCode,
         'prompt' => usage_log_text((string)($payload['prompt'] ?? ''), 1000),
-        'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+        'size' => usage_log_text((string)($payload['size'] ?? ($ticket['size'] ?? '')), 40),
         'ratio' => usage_log_text((string)($payload['ratio'] ?? ''), 40),
+        'tier' => usage_log_text((string)($payload['tier'] ?? ($ticket['tier'] ?? '')), 16),
+        'siteConfig' => usage_log_text((string)($payload['siteConfig'] ?? ($ticket['siteConfig'] ?? '')), 80),
         'batchIndex' => max(0, (int)($payload['batchIndex'] ?? 0)),
         'batchTotal' => max(0, (int)($payload['batchTotal'] ?? 0)),
     ];
     $result = charge_generation_success($pdo, (int)$ticket['uid'], $requestId, (string)$ticket['mode'], $model, $price, $imageId, $usageMeta);
+    $logCode = (string)($result['logCode'] ?? $logCode);
     json_response([
         'ok' => true,
         'balanceCents' => (int)$result['balance'],
@@ -1439,6 +1538,9 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
 {
     $hasUsageColumns = ensure_usage_log_columns($pdo);
     $logCode = usage_log_code((string)($usageMeta['logCode'] ?? ''));
+    if ($logCode === '') {
+        $logCode = make_ledger_log_code();
+    }
     $pdo->beginTransaction();
     try {
         $existing = $pdo->prepare('SELECT * FROM generation_requests WHERE request_id = ? LIMIT 1 FOR UPDATE');
@@ -1448,7 +1550,11 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
             if ((int)$old['user_id'] !== $userId) {
                 throw new HttpError('请勿重复提交同一次生成请求', 409, 'duplicate_request');
             }
-            if ($hasUsageColumns && $logCode !== '' && trim((string)($old['log_code'] ?? '')) === '') {
+            $oldLogCode = usage_log_code((string)($old['log_code'] ?? ''));
+            if ($oldLogCode !== '') {
+                $logCode = $oldLogCode;
+            }
+            if ($hasUsageColumns && $logCode !== '' && $oldLogCode === '') {
                 $updateGeneration = $pdo->prepare(
                     "UPDATE generation_requests
                      SET log_code = ?, prompt = IF(prompt = '', ?, prompt), size = IF(size = '', ?, size), ratio = IF(ratio = '', ?, ratio),
@@ -1474,7 +1580,7 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
                 $updateLedger->execute([$logCode, $userId, $requestId]);
             }
             $pdo->commit();
-            return ['balance' => current_balance($pdo, $userId), 'duplicate' => true];
+            return ['balance' => current_balance($pdo, $userId), 'duplicate' => true, 'logCode' => $logCode];
         }
         $beforeStmt = $pdo->prepare('SELECT balance_cents FROM users WHERE id = ? FOR UPDATE');
         $beforeStmt->execute([$userId]);
@@ -1520,20 +1626,10 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
             $insert->execute([$userId, $requestId, $mode, $model, $price, $price]);
         }
         $generationId = (int)$pdo->lastInsertId();
-        create_ledger($pdo, $userId, 'charge', -$price, $before, $after, $requestId, '站点 API 生图成功扣费 ' . $imageId);
-        if ($hasUsageColumns && $logCode !== '') {
-            $updateLedger = $pdo->prepare(
-                "UPDATE wallet_ledger
-                 SET log_code = ?
-                 WHERE user_id = ? AND type = 'charge' AND related_id = ?
-                 ORDER BY id DESC
-                 LIMIT 1"
-            );
-            $updateLedger->execute([$logCode, $userId, $requestId]);
-        }
+        create_ledger($pdo, $userId, 'charge', -$price, $before, $after, $requestId, charge_ledger_note($mode, $usageMeta), $logCode);
         complete_generation_charge($pdo, $generationId, 'succeeded', '');
         $pdo->commit();
-        return ['balance' => $after, 'duplicate' => false];
+        return ['balance' => $after, 'duplicate' => false, 'logCode' => $logCode];
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) {
             $pdo->rollBack();
@@ -1565,7 +1661,7 @@ function refund_generation_charge(PDO $pdo, int $userId, int $generationId, stri
         $after = $before + $total;
         $pdo->prepare('UPDATE users SET balance_cents = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?')->execute([$after, $userId]);
         $pdo->prepare("UPDATE generation_requests SET status = 'refunded', error_message = ?, completed_at = UTC_TIMESTAMP() WHERE id = ?")->execute([substr($message, 0, 500), $generationId]);
-        create_ledger($pdo, $userId, 'refund', $total, $before, $after, $requestId, '站点 API 失败退款');
+        create_ledger($pdo, $userId, 'refund', $total, $before, $after, $requestId, '站点 API 失败退款', (string)($record['log_code'] ?? ''));
         $pdo->commit();
     } catch (Throwable $error) {
         if ($pdo->inTransaction()) {
@@ -2080,6 +2176,7 @@ function admin_user_usage(PDO $pdo, array $config): void
         throw new HttpError('用户不存在', 404, 'user_not_found');
     }
     $userId = (int)$user['id'];
+    backfill_redeem_ledger_log_codes($pdo, $userId);
 
     $totalsStmt = $pdo->prepare(
         "SELECT

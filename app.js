@@ -606,6 +606,7 @@ async function generateImages(extra = {}) {
     negativePrompt: $("#negativePrompt").value.trim(),
     ratio: $("#ratioSelect").value,
     size: $("#sizeSelect").value,
+    resolutionTier: $("#resolutionTierSelect")?.value || "",
     count: Number($("#countSelect").value),
     multiImageMode: "single",
     quality: $("#qualitySelect").value,
@@ -735,6 +736,8 @@ async function requestImages(endpoint, options) {
         billingModel: options.model,
         billingGenerationId: options.generationId,
         billingRequestId: platformBillingRequestId(options),
+        billingResolutionTier: options.resolutionTier || "",
+        billingSize: options.size || "",
       },
       options,
       { variant: "custom-json", label: requestLogLabel(options) },
@@ -907,6 +910,8 @@ async function requestTextImages(endpoint, headers, options, variant) {
       billingModel: options.model,
       billingGenerationId: options.generationId,
       billingRequestId: platformBillingRequestId(options),
+      billingResolutionTier: options.resolutionTier || "",
+      billingSize: options.size || "",
     },
     options,
     { variant, label: requestLogLabel(options) },
@@ -929,6 +934,8 @@ async function requestReferenceJsonImages(endpoint, headers, options, variant) {
       billingModel: options.model,
       billingGenerationId: options.generationId,
       billingRequestId: platformBillingRequestId(options),
+      billingResolutionTier: options.resolutionTier || "",
+      billingSize: options.size || "",
     },
     options,
     { variant: `${variant}-reference-json`, label: requestLogLabel(options) },
@@ -980,6 +987,8 @@ async function requestEditImages(endpoint, headers, options, variant, fileFieldM
       billingModel: options.model,
       billingGenerationId: options.generationId,
       billingRequestId: platformBillingRequestId(options),
+      billingResolutionTier: options.resolutionTier || "",
+      billingSize: options.size || "",
     },
     options,
     { variant: variantLabel, label: requestLogLabel(options) },
@@ -1386,6 +1395,8 @@ async function settlePlatformImage(result, options, index, context) {
             prompt: options.prompt || "",
             size: options.size || "",
             ratio: options.ratio || "",
+            tier: options.resolutionTier || "",
+            siteConfig: options.apiDisplayName || billingState.platformDisplayName || "",
             batchIndex: Number(options.batchIndex) || index + 1,
             batchTotal: Number(options.batchTotal || options.count || 1),
           }),
@@ -1402,6 +1413,7 @@ async function settlePlatformImage(result, options, index, context) {
         }
         if (payload.logCode) {
           options.logCode = payload.logCode;
+          result.logCode = payload.logCode;
           const requestEntry = findRequestLogEntry(options, index);
           if (requestEntry) requestEntry.traceCode = payload.logCode;
           if (activeGenerationLog) activeGenerationLog.traceCode = payload.logCode;
@@ -1452,6 +1464,7 @@ async function requestImageBatch(endpoint, options, context) {
     if (payload?.platformTicket) {
       options.platformTicket = payload.platformTicket;
       options.platformPriceCents = payload.platformPriceCents || options.platformPriceCents;
+      options.apiDisplayName = payload.platformDisplayName || options.apiDisplayName;
       if (context) context.platformTicket = payload.platformTicket;
     }
     images = normalizeImages(payload, endpoint).slice(0, desired);
@@ -1502,6 +1515,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
           if (payload?.platformTicket) {
             oneOptions.platformTicket = payload.platformTicket;
             oneOptions.platformPriceCents = payload.platformPriceCents || oneOptions.platformPriceCents;
+            oneOptions.apiDisplayName = payload.platformDisplayName || oneOptions.apiDisplayName;
             if (context) context.platformTicket = payload.platformTicket;
           }
           const source = normalizeImages(payload, endpoint)[0] || "";
@@ -1739,11 +1753,23 @@ async function fetchPlatformServerImageRequest(endpoint, request, requestLog = n
     return fetchPlatformBrowserImageRequest(request, browserConfigs, requestLog);
   }
 
-  const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
+  const {
+    signal,
+    billingCount,
+    billingMode,
+    billingModel,
+    billingGenerationId,
+    billingRequestId,
+    billingResolutionTier,
+    billingSize,
+    ...serverRequest
+  } = request;
   const ticket = await getPlatformGenerationTicket({
     mode: billingMode || $("#modeSelect").value,
     count: billingCount || 1,
     model: billingModel || getModelName(),
+    resolutionTier: billingResolutionTier || "",
+    size: billingSize || "",
     signal,
   });
   const payload = {
@@ -1751,6 +1777,8 @@ async function fetchPlatformServerImageRequest(endpoint, request, requestLog = n
     count: billingCount || 1,
     model: billingModel || getModelName(),
     requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
+    tier: billingResolutionTier || "",
+    size: billingSize || "",
     ticket: ticket.ticket,
     request: {
       ...serverRequest,
@@ -1768,7 +1796,17 @@ async function fetchPlatformServerImageRequest(endpoint, request, requestLog = n
 
 async function fetchPlatformBrowserImageRequest(request, platformConfigs, requestLog = null) {
   const configs = Array.isArray(platformConfigs) ? platformConfigs : [platformConfigs];
-  const { signal, billingCount, billingMode, billingModel, billingGenerationId, billingRequestId, ...serverRequest } = request;
+  const {
+    signal,
+    billingCount,
+    billingMode,
+    billingModel,
+    billingGenerationId,
+    billingRequestId,
+    billingResolutionTier,
+    billingSize,
+    ...serverRequest
+  } = request;
   const mode = billingMode || $("#modeSelect").value;
   const validConfigs = configs
     .map((item) => normalizePlatformBrowserConfig(item, mode))
@@ -1778,6 +1816,8 @@ async function fetchPlatformBrowserImageRequest(request, platformConfigs, reques
     mode,
     count: billingCount || 1,
     model: billingModel || getModelName(),
+    resolutionTier: billingResolutionTier || "",
+    size: billingSize || "",
     signal,
   });
   let lastResponse = null;
@@ -1985,6 +2025,8 @@ async function getPlatformGenerationTicket(options = {}) {
     mode: options.mode || $("#modeSelect").value,
     count: options.count || 1,
     model: options.model || getModelName(),
+    tier: options.resolutionTier || $("#resolutionTierSelect")?.value || "",
+    size: options.size || $("#sizeSelect")?.value || "",
   };
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -2027,6 +2069,8 @@ async function getPlatformDirectConfig(options = {}) {
     mode: options.mode || $("#modeSelect").value,
     count: options.count || 1,
     model: options.model || getModelName(),
+    tier: options.resolutionTier || $("#resolutionTierSelect")?.value || "",
+    size: options.size || $("#sizeSelect")?.value || "",
   };
   let lastError = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -2192,6 +2236,7 @@ async function parseApiResponse(response, requestLog = null, imageBaseUrl = "") 
   if (response.platformTicket && payload && typeof payload === "object") {
     payload.platformTicket = response.platformTicket;
     payload.platformPriceCents = response.platformPriceCents;
+    payload.platformDisplayName = response.platformStatsDisplayName || "";
   }
   return payload;
 }
@@ -4292,7 +4337,7 @@ function renderAdminLedgerUsageItem(item) {
   const amountClass = amountCents < 0 ? "negative" : amountCents > 0 ? "positive" : "";
   const typeLabel = walletLedgerTypeLabel(item.type);
   const logCode = String(item.logCode || "").trim();
-  const note = String(item.note || "").trim();
+  const note = cleanLedgerNoteForDisplay(item.note);
   return `
     <article class="site-user-usage-item">
       <div class="site-user-usage-row">
@@ -4493,7 +4538,7 @@ function renderLedgerList() {
         const amountCents = Number(item.amountCents || 0);
         const amountClass = amountCents < 0 ? "negative" : amountCents > 0 ? "positive" : "";
         const typeLabel = walletLedgerTypeLabel(item.type);
-        const note = String(item.note || "").trim();
+        const note = cleanLedgerNoteForDisplay(item.note);
         const noteText = note ? `${typeLabel}：${note}` : typeLabel;
         const logCode = String(item.logCode || "").trim();
         return `
@@ -5615,11 +5660,20 @@ function formatSignedMoney(cents) {
 function walletLedgerTypeLabel(type) {
   const labels = {
     redeem: "充值码到账",
-    charge: "站点 API 扣费",
+    charge: "站点API扣费",
     refund: "生成失败退款",
     adjust: "余额调整",
   };
   return labels[type] || "余额变动";
+}
+
+function cleanLedgerNoteForDisplay(note) {
+  let text = String(note || "").trim();
+  if (!text) return "";
+  text = text.replace(/\s+mp[a-z0-9]{5,}(?:-[a-z0-9]{4,})?\s*$/i, "");
+  text = text.replace(/\s+image2-[a-z0-9-]{6,}\s*$/i, "");
+  text = text.replace(/^站点\s*API\s*生图成功扣费\s*$/i, "生图成功扣费");
+  return text.trim();
 }
 
 function formatMoney(cents) {
@@ -6301,6 +6355,7 @@ function summarizeOptionsForLog(options) {
     negativePrompt: options.negativePrompt,
     ratio: options.ratio,
     size: options.size,
+    resolutionTier: options.resolutionTier || "",
     count: options.count,
     multiImageMode: options.multiImageMode,
     quality: options.quality,
