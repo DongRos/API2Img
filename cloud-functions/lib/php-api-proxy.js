@@ -90,5 +90,5 @@ function getEnv(context, key) {
 }
 
 function normalizePhpApiBaseUrl(value) {
-  return String(value || "").replace(/^https?:\/\/api2img\.shop(?=\/|$)/i, "https://www.api2img.shop");
+  return String(value || "").replace(/^https?:\/\/(?:www\.|api\.)?api2img\.shop(?=\/|$)/i, "https://deep666.top");
 }

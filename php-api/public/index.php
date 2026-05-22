@@ -383,7 +383,7 @@ function api_health(?PDO $pdo, array $config, ?Throwable $dbError = null): void
 
 function public_mobile_safe_url(string $url): string
 {
-    return preg_replace('/^https?:\/\/api2img\.shop(?=\/|$)/i', 'https://www.api2img.shop', $url) ?? $url;
+    return preg_replace('/^https?:\/\/(?:www\.|api\.)?api2img\.shop(?=\/|$)/i', 'https://deep666.top', $url) ?? $url;
 }
 
 function reference_image_upload(array $config): void

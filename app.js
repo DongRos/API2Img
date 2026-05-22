@@ -24,7 +24,7 @@ const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
 const DEFAULT_IMAGE_SIZE = "1024x1024";
-const DEFAULT_PHP_API_BASE = "https://www.api2img.shop/php-api/index.php";
+const DEFAULT_PHP_API_BASE = "https://deep666.top/php-api/index.php";
 const FAST_API_TIMEOUT_MS = 6500;
 const GENERATION_READY_WAIT_MS = 2200;
 const ADMIN_API_TIMEOUT_MS = 8000;
@@ -157,7 +157,7 @@ const billingState = {
   upstreamCostCents: 4,
   platformEnabled: false,
   configLoaded: false,
-  rechargeUrl: "https://www.api2img.shop/",
+  rechargeUrl: "https://deep666.top/",
   directBaseUrl: "",
   sessionToken: "",
   lastDirectConfig: null,
@@ -2280,7 +2280,7 @@ function formatHttpError(status, message) {
   if (code === "504" && /EdgeOne Pages/i.test(text)) {
     return addApiGuidance(
       "EdgeOne 代理超时（HTTP 504），这不是 base64 图片。已改为优先使用站点 API 直连；本次未扣费，请重试。",
-      "如果手机端仍出现，请检查 www.api2img.shop 是否能直接访问。",
+      "如果手机端仍出现，请检查 deep666.top 是否能直接访问。",
     );
   }
   if (/failed to fetch|fetch failed|network error|network|connection|timeout|timed out|request aborted|aborted|econnreset|enotfound|socket hang up|dns|certificate/i.test(text)) {
@@ -4445,7 +4445,7 @@ function renderWallet() {
   $("#walletAuthBox").hidden = billingState.authenticated;
   $("#walletAccountBox").hidden = !billingState.authenticated;
   const rechargeLink = $(".wallet-recharge-link");
-  if (rechargeLink) rechargeLink.href = publicMobileSafeUrl(billingState.rechargeUrl || "https://www.api2img.shop/");
+  if (rechargeLink) rechargeLink.href = publicMobileSafeUrl(billingState.rechargeUrl || "https://deep666.top/");
   renderLedgerList();
 }
 
@@ -5525,7 +5525,7 @@ function effectiveDirectApiBase() {
 }
 
 function publicMobileSafeUrl(url = "") {
-  return String(url || "").replace(/^https?:\/\/api2img\.shop(?=\/|$)/i, "https://www.api2img.shop");
+  return String(url || "").replace(/^https?:\/\/(?:www\.|api\.)?api2img\.shop(?=\/|$)/i, "https://deep666.top");
 }
 
 function uniqueUrls(urls) {
