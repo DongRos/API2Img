@@ -1439,8 +1439,11 @@ body[data-theme="light"] .view-switch button.active {
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
-  margin-left: 4px;
   vertical-align: middle;
+}
+
+.wallet-ledger-note > span + .wallet-ledger-chips {
+  margin-left: 4px;
 }
 
 .wallet-ledger-summary {

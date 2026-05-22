@@ -4548,6 +4548,7 @@ function renderLedgerList() {
         const chips = ledgerNoteChipsHtml(item.note);
         const note = cleanLedgerNoteForDisplay(item.note);
         const noteText = note ? `${typeLabel}：${note}` : typeLabel;
+        const showTypeLabel = item.type !== "charge";
         const logCode = String(item.logCode || "").trim();
         return `
         <article class="wallet-item">
@@ -4556,7 +4557,7 @@ function renderLedgerList() {
             <span class="wallet-balance-after">余额 ${formatMoney(item.balanceAfterCents)} 元</span>
           </div>
           <p class="wallet-ledger-note" title="${escapeHtml(noteText)}">
-            <span>${escapeHtml(typeLabel)}</span>${chips ? `<em class="wallet-ledger-chips">${chips}</em>` : ""}
+            ${showTypeLabel ? `<span>${escapeHtml(typeLabel)}</span>` : ""}${chips ? `<em class="wallet-ledger-chips">${chips}</em>` : ""}
           </p>
           ${logCode ? `<span class="wallet-ledger-code">${escapeHtml(logCode)}</span>` : ""}
           <time class="wallet-ledger-time" datetime="${escapeHtml(String(item.createdAt || ""))}">${formatWalletTime(item.createdAt)}</time>
