@@ -706,6 +706,7 @@ async function getSiteStats(context, onlineWindowMs = 3 * 60 * 1000, includeAdmi
     totalRevenueCents: Number(adminTotals.totalRevenueCents || 0),
     totalRechargeCents: Number(adminTotals.totalRechargeCents || 0),
     registeredEmails: Array.isArray(adminTotals.registeredEmails) ? adminTotals.registeredEmails : [],
+    registeredEmailStats: Array.isArray(adminTotals.registeredEmailStats) ? adminTotals.registeredEmailStats : [],
     totalVisits: Number(siteStats.totalVisits || 0),
     todayVisits: Number(siteStats.dailyVisits?.[todayKey] || 0),
     totalVisitors,
@@ -736,6 +737,7 @@ async function getPhpAdminStats(context) {
       totalRevenueCents: Math.max(0, Number(stats.totalRevenueCents || stats.totalRevenue || 0)),
       totalRechargeCents: Math.max(0, Number(stats.totalRechargeCents || stats.totalRechargedCents || stats.totalRecharge || 0)),
       registeredEmails: Array.isArray(stats.registeredEmails) ? stats.registeredEmails.map((item) => String(item || "").trim()).filter(Boolean) : [],
+      registeredEmailStats: normalizeRegisteredEmailStats(stats.registeredEmailStats || stats.registeredUserStats || stats.userStats),
       updatedAt: Date.now(),
     };
     await cacheAdminSiteTotals(context, next);
@@ -893,14 +895,35 @@ function normalizeSiteStats(value) {
   };
 }
 
+function normalizeRegisteredEmailStats(value, fallbackEmails = []) {
+  const records = Array.isArray(value) ? value : [];
+  const fallback = Array.isArray(fallbackEmails) ? fallbackEmails : [];
+  const seen = new Map();
+  const addRecord = (item) => {
+    const email = String(typeof item === "string" ? item : item?.email || item?.userEmail || "").trim().toLowerCase();
+    if (!email) return;
+    const current = seen.get(email) || { email, totalRechargeCents: 0, totalSpentCents: 0 };
+    if (typeof item !== "string") {
+      current.totalRechargeCents += Math.max(0, Math.round(Number(item?.totalRechargeCents ?? item?.rechargeCents ?? item?.totalRecharge ?? 0)));
+      current.totalSpentCents += Math.max(0, Math.round(Number(item?.totalSpentCents ?? item?.spentCents ?? item?.totalSpent ?? item?.totalCostCents ?? 0)));
+    }
+    seen.set(email, current);
+  };
+  records.forEach(addRecord);
+  if (!seen.size) fallback.forEach(addRecord);
+  return [...seen.values()].sort((a, b) => a.email.localeCompare(b.email, "zh-CN"));
+}
+
 function normalizeAdminSiteTotals(value) {
   const emails = Array.isArray(value?.registeredEmails) ? value.registeredEmails : [];
+  const emailStats = normalizeRegisteredEmailStats(value?.registeredEmailStats, emails);
   return {
     loggedInOnlineCount: Math.max(0, Number(value?.loggedInOnlineCount || 0)),
     registeredUsers: Math.max(0, Number(value?.registeredUsers || 0)),
     totalRevenueCents: Math.max(0, Number(value?.totalRevenueCents || 0)),
     totalRechargeCents: Math.max(0, Number(value?.totalRechargeCents || 0)),
-    registeredEmails: [...new Set(emails.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean))],
+    registeredEmails: emailStats.map((item) => item.email),
+    registeredEmailStats: emailStats,
     updatedAt: Math.max(0, Number(value?.updatedAt || 0)),
   };
 }

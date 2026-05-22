@@ -1465,6 +1465,12 @@ button:disabled {
   font-size: 20px;
 }
 
+.api-stats-summary .site-stats-money-pair {
+  font-size: 16px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .api-stats-summary span {
   margin-top: 3px;
   color: var(--muted);
@@ -1507,6 +1513,10 @@ button:disabled {
   font-size: 12px;
 }
 
+.site-stats-email-card {
+  grid-column: 1 / -1;
+}
+
 .site-stats-email-list {
   margin-top: 8px;
   max-height: 220px;
@@ -1525,6 +1535,24 @@ button:disabled {
   color: var(--text);
   font-size: 13px;
   word-break: break-all;
+}
+
+.site-stats-email-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.site-stats-email-address {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.site-stats-email-money {
+  flex: 0 0 auto;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .api-stat-card {
@@ -2430,6 +2458,16 @@ body[data-theme="light"] .wallet-panel {
 
   .api-stats-details {
     grid-template-columns: 1fr;
+  }
+
+  .site-stats-email-item {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .site-stats-email-money {
+    white-space: normal;
   }
 
   .api-stat-grid {

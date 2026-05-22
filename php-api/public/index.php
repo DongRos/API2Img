@@ -627,9 +627,32 @@ function site_stats_payload(PDO $pdo): array
     $peaks = $peakStmt->fetch() ?: [];
 
     $registeredUsers = (int)$pdo->query("SELECT COUNT(DISTINCT LOWER(TRIM(email))) FROM users WHERE TRIM(email) <> ''")->fetchColumn();
-    $registeredEmails = $pdo->query("SELECT DISTINCT LOWER(TRIM(email)) AS email FROM users WHERE TRIM(email) <> '' ORDER BY email ASC")->fetchAll(PDO::FETCH_COLUMN);
-    $totalRechargeCents = (int)$pdo->query("SELECT COALESCE(SUM(amount_cents), 0) FROM wallet_ledger WHERE type = 'redeem' AND amount_cents > 0")->fetchColumn();
-    $totalRevenueCents = (int)$pdo->query("SELECT COALESCE(SUM(total_cents), 0) FROM generation_requests WHERE status = 'succeeded'")->fetchColumn();
+    $emailStatsStmt = $pdo->query(
+        "SELECT
+           LOWER(TRIM(u.email)) AS email,
+           COALESCE(SUM(CASE WHEN wl.type = 'redeem' AND wl.amount_cents > 0 THEN wl.amount_cents ELSE 0 END), 0) AS total_recharge_cents,
+           COALESCE(SUM(CASE WHEN wl.type = 'charge' AND wl.amount_cents < 0 THEN -wl.amount_cents ELSE 0 END), 0) AS total_spent_cents
+         FROM users u
+         LEFT JOIN wallet_ledger wl ON wl.user_id = u.id
+         WHERE TRIM(u.email) <> ''
+         GROUP BY LOWER(TRIM(u.email))
+         ORDER BY email ASC"
+    );
+    $registeredEmailStats = [];
+    foreach ($emailStatsStmt->fetchAll() as $row) {
+        $email = trim((string)($row['email'] ?? ''));
+        if ($email === '') {
+            continue;
+        }
+        $registeredEmailStats[] = [
+            'email' => $email,
+            'totalRechargeCents' => (int)($row['total_recharge_cents'] ?? 0),
+            'totalSpentCents' => (int)($row['total_spent_cents'] ?? 0),
+        ];
+    }
+    $registeredEmails = array_map(static fn(array $item): string => (string)$item['email'], $registeredEmailStats);
+    $totalRechargeCents = array_reduce($registeredEmailStats, static fn(int $sum, array $item): int => $sum + (int)$item['totalRechargeCents'], 0);
+    $totalRevenueCents = array_reduce($registeredEmailStats, static fn(int $sum, array $item): int => $sum + (int)$item['totalSpentCents'], 0);
     $sessionVisitors = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM sessions")->fetchColumn();
     $totalVisitors = max((int)$pdo->query("SELECT COUNT(*) FROM site_visitors")->fetchColumn(), $sessionVisitors);
     $updatedAt = (int)round(microtime(true) * 1000);
@@ -641,6 +664,7 @@ function site_stats_payload(PDO $pdo): array
         'yesterdayPeak' => (int)($peaks['yesterday_peak'] ?? 0),
         'registeredUsers' => $registeredUsers,
         'registeredEmails' => $registeredEmails,
+        'registeredEmailStats' => $registeredEmailStats,
         'totalRechargeCents' => $totalRechargeCents,
         'totalRevenueCents' => $totalRevenueCents,
         'totalVisits' => (int)($peaks['total_visits'] ?? 0),

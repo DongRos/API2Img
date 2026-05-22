@@ -171,6 +171,7 @@ const siteStatsState = {
   totalRevenueCents: 0,
   totalRechargeCents: 0,
   registeredEmails: [],
+  registeredEmailStats: [],
   lastVisitAt: 0,
   updatedAt: 0,
   onlineWindowMs: 3 * 60 * 1000,
@@ -3769,7 +3770,7 @@ function applyAdminOnlySiteStats(payload = {}) {
   assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
   assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
   assignSiteStat("totalRechargeCents", payload.totalRechargeCents ?? payload.totalRechargedCents ?? payload.totalRecharge);
-  assignSiteStatList("registeredEmails", payload.registeredEmails ?? payload.registeredUserEmails ?? payload.emails);
+  assignSiteEmailStats(payload.registeredEmailStats ?? payload.registeredUserStats ?? payload.userStats, payload.registeredEmails ?? payload.registeredUserEmails ?? payload.emails);
 }
 
 function applySiteStats(payload = {}, options = {}) {
@@ -3784,7 +3785,7 @@ function applySiteStats(payload = {}, options = {}) {
     assignSiteStat("registeredUsers", payload.registeredUsers ?? payload.totalRegisteredUsers);
     assignSiteStat("totalRevenueCents", payload.totalRevenueCents ?? payload.totalRevenue);
     assignSiteStat("totalRechargeCents", payload.totalRechargeCents ?? payload.totalRechargedCents ?? payload.totalRecharge);
-    assignSiteStatList("registeredEmails", payload.registeredEmails ?? payload.registeredUserEmails ?? payload.emails);
+    assignSiteEmailStats(payload.registeredEmailStats ?? payload.registeredUserStats ?? payload.userStats, payload.registeredEmails ?? payload.registeredUserEmails ?? payload.emails);
   }
   assignSiteStat("lastVisitAt", payload.lastVisitAt);
   assignSiteStat("updatedAt", payload.updatedAt);
@@ -3811,6 +3812,28 @@ function assignSiteStatList(key, value) {
   siteStatsState[key] = next;
 }
 
+function assignSiteEmailStats(value, fallbackEmails = []) {
+  const records = Array.isArray(value) ? value : [];
+  const fallback = Array.isArray(fallbackEmails) ? fallbackEmails : [];
+  const seen = new Map();
+  const addRecord = (item) => {
+    const email = String(typeof item === "string" ? item : item?.email || item?.userEmail || "").trim();
+    if (!email) return;
+    const key = email.toLowerCase();
+    const current = seen.get(key) || { email, totalRechargeCents: 0, totalSpentCents: 0 };
+    if (typeof item !== "string") {
+      current.totalRechargeCents += Math.max(0, Math.round(Number(item?.totalRechargeCents ?? item?.rechargeCents ?? item?.totalRecharge ?? 0)));
+      current.totalSpentCents += Math.max(0, Math.round(Number(item?.totalSpentCents ?? item?.spentCents ?? item?.totalSpent ?? item?.totalCostCents ?? 0)));
+    }
+    seen.set(key, current);
+  };
+  records.forEach(addRecord);
+  if (!seen.size) fallback.forEach(addRecord);
+  const stats = [...seen.values()].sort((a, b) => a.email.localeCompare(b.email, "zh-CN"));
+  siteStatsState.registeredEmailStats = stats;
+  siteStatsState.registeredEmails = stats.map((item) => item.email);
+}
+
 function renderSiteStats() {
   updateStatsPanelCopy();
   const summary = $("#siteStatsSummary");
@@ -3826,21 +3849,22 @@ function renderSiteStats() {
     <div><strong>${formatCount(siteStatsState.todayPeak)}</strong><span>今日峰值</span></div>
     <div><strong>${formatCount(siteStatsState.yesterdayPeak)}</strong><span>昨日峰值</span></div>
     <div><strong>${formatCount(siteStatsState.registeredUsers)}</strong><span>总注册用户</span></div>
-    <div><strong>${formatMoney(siteStatsState.totalRevenueCents)}</strong><span>总收益</span></div>
+    <div><strong class="site-stats-money-pair">${formatMoney(siteStatsState.totalRechargeCents)} / ${formatMoney(siteStatsState.totalRevenueCents)}</strong><span>总充值/总收益</span></div>
   `;
   if (details) {
-    const emails = Array.isArray(siteStatsState.registeredEmails) ? siteStatsState.registeredEmails : [];
+    const emailStats = Array.isArray(siteStatsState.registeredEmailStats) ? siteStatsState.registeredEmailStats : [];
     details.hidden = false;
     details.innerHTML = `
-      <div class="site-stats-detail-card">
-        <strong>${formatMoney(siteStatsState.totalRechargeCents)}</strong>
-        <span>总充值金额</span>
-      </div>
       <div class="site-stats-detail-card site-stats-email-card">
-        <strong>${formatCount(emails.length)}</strong>
+        <strong>${formatCount(emailStats.length)}</strong>
         <span>注册邮箱</span>
         <div class="site-stats-email-list">
-          ${emails.length ? emails.map((email) => `<div class="site-stats-email-item">${escapeHtml(email)}</div>`).join("") : '<div class="site-stats-email-empty">暂无注册邮箱</div>'}
+          ${emailStats.length ? emailStats.map((item) => `
+            <div class="site-stats-email-item">
+              <span class="site-stats-email-address">${escapeHtml(item.email)}</span>
+              <span class="site-stats-email-money">总充值 ${formatMoney(item.totalRechargeCents)} / 总花费 ${formatMoney(item.totalSpentCents)}</span>
+            </div>
+          `).join("") : '<div class="site-stats-email-empty">暂无注册邮箱</div>'}
         </div>
       </div>
     `;
