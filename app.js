@@ -3308,7 +3308,7 @@ async function uploadResultToGallery(id) {
       }),
       timeoutMs: GALLERY_UPLOAD_TIMEOUT_MS,
     }, {
-      directFirst: false,
+      directFirst: true,
       timeoutMs: GALLERY_UPLOAD_TIMEOUT_MS,
       label: "画廊上传",
     });
