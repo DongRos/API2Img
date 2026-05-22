@@ -164,6 +164,10 @@ function route_request(PDO $pdo, array $config): void
         admin_delete_custom_api_history($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/admin/gallery/delete') {
+        gallery_delete($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/admin/proxy-image') {
         admin_proxy_image($pdo, $config);
         return;
@@ -693,6 +697,34 @@ function gallery_image_read(string $filename): void
     header('Content-Length: ' . filesize($path));
     readfile($path);
     exit;
+}
+
+function gallery_delete(PDO $pdo, array $config): void
+{
+    require_admin($pdo, $config);
+    ensure_gallery_tables($pdo);
+    $payload = read_json();
+    $id = max(0, (int)($payload['id'] ?? 0));
+    if ($id <= 0) {
+        throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
+    }
+
+    $stmt = $pdo->prepare("SELECT id, image_filename FROM gallery_images WHERE id = ? AND status = 'active' LIMIT 1");
+    $stmt->execute([$id]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
+    }
+
+    $pdo->prepare("UPDATE gallery_images SET status = 'hidden' WHERE id = ?")->execute([$id]);
+    $filename = basename((string)($row['image_filename'] ?? ''));
+    if ($filename !== '' && preg_match('/^[A-Za-z0-9_-]+\.(?:png|jpe?g|webp)$/', $filename)) {
+        $path = gallery_image_dir() . DIRECTORY_SEPARATOR . $filename;
+        if (is_file($path)) {
+            @unlink($path);
+        }
+    }
+    json_response(['ok' => true, 'deletedId' => (string)$id]);
 }
 
 function public_gallery_item(array $row): array

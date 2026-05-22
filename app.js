@@ -2686,6 +2686,10 @@ function normalizeGalleryImageSource(value) {
   return src;
 }
 
+function isGalleryAdminUnlocked() {
+  return Boolean(adminPassword());
+}
+
 function galleryVisibleItems() {
   return galleryState.view === "gallery" ? galleryState.items : state.results;
 }
@@ -2751,6 +2755,7 @@ function prependResultCard(item) {
 function createResultCard(item, options = {}) {
   const view = options.view || galleryState.view;
   const isGallery = view === "gallery";
+  const canAdminDeleteGallery = isGallery && isGalleryAdminUnlocked();
   const isNew = !isGallery && Boolean(item.generationId && item.generationId === state.latestGenerationId);
   const card = document.createElement("article");
   card.className = `image-card${isNew ? " is-new" : ""}${isGallery ? " gallery-card" : ""}`;
@@ -2791,6 +2796,8 @@ function createResultCard(item, options = {}) {
   if (!isGallery) {
     buttons.push(createResultActionButton("upload-gallery", "上传到画廊", "upload"));
     buttons.push(createResultActionButton("delete", "删除", "trash"));
+  } else if (canAdminDeleteGallery) {
+    buttons.push(createResultActionButton("delete-gallery", "删除", "trash"));
   }
   actions.append(...buttons);
   overlay.append(prompt, actions);
@@ -2841,6 +2848,7 @@ function bindResultCard(card, item, options = {}) {
     downloadImage(latest.src, fileNameFor(latest));
   });
   card.querySelector('[data-action="upload-gallery"]')?.addEventListener("click", () => uploadResultToGallery(item.id));
+  card.querySelector('[data-action="delete-gallery"]')?.addEventListener("click", () => deleteGalleryItem(item.id));
   card.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteResult(item.id));
 }
 
@@ -3282,6 +3290,40 @@ async function deleteResult(id) {
   await persistState();
   renderResults();
   showToast("图片已删除");
+}
+
+async function deleteGalleryItem(id) {
+  const item = findCanvasItem(id, "gallery");
+  const galleryId = String(item?.galleryId || "").trim();
+  const password = adminPassword();
+  if (!item || !galleryId) return;
+  if (!password) {
+    showToast("请先进入站长后台");
+    return;
+  }
+  try {
+    const response = await apiFetchPreferDirect("/api/admin/gallery/delete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify({ id: galleryId }),
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "画廊删除",
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `删除失败：HTTP ${response.status}`);
+    galleryState.items = galleryState.items.filter((entry) => entry.id !== id && entry.galleryId !== galleryId);
+    if (state.selectedResultId === id) state.selectedResultId = "";
+    renderResults();
+    showToast("画廊图片已删除");
+  } catch (error) {
+    showToast(error.message || "画廊图片删除失败");
+  }
 }
 
 async function uploadResultToGallery(id) {
@@ -4647,6 +4689,7 @@ async function unlockCodeAdminPanel() {
     selectCodeAdminSection(codeAdminState.pendingSection || "codes");
     loadSiteStats({ silent: true });
     renderApiStats();
+    renderResults();
     startSiteStatsPolling();
     setCodeAdminAuthStatus("已进入站长后台");
     showToast("已进入站长后台");
