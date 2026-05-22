@@ -1313,6 +1313,7 @@ async function commitGeneratedImage(src, options, index, context) {
   state.results.unshift(result);
   if (context) context.created.push(result);
   updateRunningGenerationImageCount(context?.created?.length || state.results.filter((item) => item.generationId === options.generationId).length);
+  revealMineCanvasAfterGeneration();
   prependResultCard(result);
   void finalizeResultAsset(result.id, src, options);
   void persistState();
@@ -1324,6 +1325,12 @@ async function commitGeneratedImage(src, options, index, context) {
   });
   await settlePlatformImage(result, options, index, context);
   return result;
+}
+
+function revealMineCanvasAfterGeneration() {
+  if (galleryState.view !== "gallery") return;
+  galleryState.view = "mine";
+  galleryState.userSelected = true;
 }
 
 function updateRunningGenerationImageCount(imageCount) {
@@ -4307,7 +4314,7 @@ function renderAdminUserUsagePanel() {
 }
 
 function renderAdminGenerationUsageItem(item) {
-  const logCode = String(item.logCode || "").trim() || "旧记录无随机码";
+  const logCode = compactLogCode(item.logCode);
   const prompt = String(item.prompt || "").trim() || "无提示词记录";
   const status = generationUsageStatusLabel(item.status);
   const meta = [
@@ -4324,7 +4331,7 @@ function renderAdminGenerationUsageItem(item) {
       </div>
       <p>${escapeHtml(prompt)}</p>
       <div class="site-user-usage-meta">
-        <span>随机码 ${escapeHtml(logCode)}</span>
+        <span>${escapeHtml(logCode)}</span>
         <span>${escapeHtml(meta || "生成记录")}</span>
         <span>${escapeHtml(formatWalletTime(item.completedAt || item.createdAt))}</span>
       </div>
@@ -4336,17 +4343,17 @@ function renderAdminLedgerUsageItem(item) {
   const amountCents = Number(item.amountCents || 0);
   const amountClass = amountCents < 0 ? "negative" : amountCents > 0 ? "positive" : "";
   const typeLabel = walletLedgerTypeLabel(item.type);
-  const logCode = String(item.logCode || "").trim();
-  const note = cleanLedgerNoteForDisplay(item.note);
+  const logCode = compactLogCode(item.logCode);
+  const chips = ledgerNoteChipsHtml(item.note);
   return `
     <article class="site-user-usage-item">
       <div class="site-user-usage-row">
         <strong>${escapeHtml(typeLabel)}</strong>
         <span class="${amountClass}">${formatSignedMoney(amountCents)} 元</span>
       </div>
-      ${note ? `<p>${escapeHtml(note)}</p>` : ""}
+      ${chips ? `<div class="wallet-ledger-chips">${chips}</div>` : ""}
       <div class="site-user-usage-meta">
-        ${logCode ? `<span>随机码 ${escapeHtml(logCode)}</span>` : '<span>无随机码</span>'}
+        <span>${escapeHtml(logCode)}</span>
         <span>余额 ${escapeHtml(formatMoney(item.balanceAfterCents))} 元</span>
         <span>${escapeHtml(formatWalletTime(item.createdAt))}</span>
       </div>
@@ -4538,6 +4545,7 @@ function renderLedgerList() {
         const amountCents = Number(item.amountCents || 0);
         const amountClass = amountCents < 0 ? "negative" : amountCents > 0 ? "positive" : "";
         const typeLabel = walletLedgerTypeLabel(item.type);
+        const chips = ledgerNoteChipsHtml(item.note);
         const note = cleanLedgerNoteForDisplay(item.note);
         const noteText = note ? `${typeLabel}：${note}` : typeLabel;
         const logCode = String(item.logCode || "").trim();
@@ -4548,9 +4556,9 @@ function renderLedgerList() {
             <span class="wallet-balance-after">余额 ${formatMoney(item.balanceAfterCents)} 元</span>
           </div>
           <p class="wallet-ledger-note" title="${escapeHtml(noteText)}">
-            <span>${escapeHtml(typeLabel)}</span>${note ? `<em>${escapeHtml(note)}</em>` : ""}
+            <span>${escapeHtml(typeLabel)}</span>${chips ? `<em class="wallet-ledger-chips">${chips}</em>` : ""}
           </p>
-          ${logCode ? `<span class="wallet-ledger-code">随机码 ${escapeHtml(logCode)}</span>` : ""}
+          ${logCode ? `<span class="wallet-ledger-code">${escapeHtml(logCode)}</span>` : ""}
           <time class="wallet-ledger-time" datetime="${escapeHtml(String(item.createdAt || ""))}">${formatWalletTime(item.createdAt)}</time>
         </article>
       `;
@@ -5676,6 +5684,19 @@ function cleanLedgerNoteForDisplay(note) {
   return text.trim();
 }
 
+function ledgerNoteChipsHtml(note) {
+  return cleanLedgerNoteForDisplay(note)
+    .split(/[；;]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => `<span class="wallet-ledger-chip">${escapeHtml(part)}</span>`)
+    .join("");
+}
+
+function compactLogCode(value) {
+  return String(value || "").trim() || "旧记录无代码";
+}
+
 function formatMoney(cents) {
   return (Number(cents || 0) / 100).toFixed(2);
 }
@@ -6006,7 +6027,7 @@ function renderGenerationLogs() {
             <small>${escapeHtml(prompt || "无提示词")}</small>
           </summary>
           <div class="log-meta">
-            <span>随机码 ${escapeHtml(log.traceCode || "旧记录无随机码")}</span>
+            <span>${escapeHtml(compactLogCode(log.traceCode))}</span>
             <span>${escapeHtml(apiName)}</span>
             <span>${escapeHtml(summary)}</span>
             <span>请求 ${requestCount} 次</span>
@@ -6053,7 +6074,7 @@ function renderCurrentLogPreview() {
       <span>${escapeHtml(log.options?.prompt || "无提示词")}</span>
     </div>
     <div class="current-log-meta">
-      <span>随机码 ${escapeHtml(log.traceCode || "旧记录无随机码")}</span>
+      <span>${escapeHtml(compactLogCode(log.traceCode))}</span>
       <span>${escapeHtml(visibleLogApiName(log))}</span>
       <span>请求 ${(log.requests || []).length} 次</span>
       <span>返回图片 ${Number(log.imageCount) || 0} 张</span>
@@ -6083,7 +6104,7 @@ function renderRequestLog(entry) {
 function requestLogText(entry) {
   return [
     `站点配置:\n${visibleLogApiName(entry)}`,
-    `随机码:\n${entry.traceCode || "旧记录无随机码"}`,
+    `代码:\n${compactLogCode(entry.traceCode)}`,
     `提示词:\n${entry.prompt || ""}`,
     `请求变体:\n${entry.variant || "-"}`,
     `参数:\n${summarizeLogValue(entry.params)}`,
