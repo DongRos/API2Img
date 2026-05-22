@@ -2701,6 +2701,8 @@ function renderResults() {
   const isGallery = galleryState.view === "gallery";
   const title = $(".gallery-head h2");
   if (title) title.textContent = isGallery ? "画廊" : "生成结果";
+  const galleryHint = $("#galleryHint");
+  if (galleryHint) galleryHint.hidden = !isGallery;
   $("#resultMeta").textContent = isGallery
     ? galleryState.loading
       ? "正在加载大家共享的创意..."
