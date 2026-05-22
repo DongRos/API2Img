@@ -2755,7 +2755,7 @@ function renderResults() {
       ? "正在加载大家共享的创意..."
       : galleryState.error
         ? galleryState.error
-        : items.length ? `${items.length} 张共享图片` : "大家共享的创意会展示在这里"
+        : items.length ? `${items.length} 张共享图片。此处展示用户分享的生图案例。` : "大家共享的创意会展示在这里"
     : state.results.length ? `${state.results.length} 张图片` : "生成后的图片会排列在这里";
 
   if (!items.length) {
