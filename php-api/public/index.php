@@ -774,7 +774,11 @@ function gallery_pin(PDO $pdo, array $config): void
         throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
     }
 
-    $pdo->prepare("UPDATE gallery_images SET pinned_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'active'")->execute([$id]);
+    $shouldPin = filter_var($payload['pinned'] ?? true, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+    if ($shouldPin === null) {
+        $shouldPin = true;
+    }
+    $pdo->prepare("UPDATE gallery_images SET pinned_at = " . ($shouldPin ? 'UTC_TIMESTAMP()' : 'NULL') . " WHERE id = ? AND status = 'active'")->execute([$id]);
     $rowStmt = $pdo->prepare(
         "SELECT g.*, u.email AS user_email
          FROM gallery_images g

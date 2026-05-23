@@ -2829,6 +2829,8 @@ function orderedCanvasItems(items = []) {
       const leftPinned = Number(left.item?.pinnedAt || 0);
       const rightPinned = Number(right.item?.pinnedAt || 0);
       if (leftPinned || rightPinned) return rightPinned - leftPinned;
+      const createdDiff = Number(right.item?.createdAt || 0) - Number(left.item?.createdAt || 0);
+      if (createdDiff) return createdDiff;
       return left.index - right.index;
     })
     .map((entry) => entry.item);
@@ -2941,7 +2943,7 @@ function createResultCard(item, options = {}) {
     createResultActionButton("download", "下载", "download"),
   ];
   if (canPin) {
-    buttons.push(createResultActionButton("pin", "置顶", "pin"));
+    buttons.push(createResultActionButton("pin", item.pinnedAt ? "取消置顶" : "置顶", "pin"));
   }
   if (!isGallery) {
     buttons.push(createResultActionButton("upload-gallery", "上传到画廊", "upload"));
@@ -3142,6 +3144,7 @@ function openDetail(id, view = galleryState.view) {
   const isGallery = view === "gallery";
   const canPin = !isGallery || isGalleryAdminUnlocked();
   $("#pinDetail").hidden = !canPin;
+  $("#pinDetail").title = item.pinnedAt ? "取消置顶" : "置顶";
   $("#uploadGalleryDetail").hidden = isGallery;
   $("#deleteDetail").hidden = isGallery;
   $("#deleteGalleryDetail").hidden = !(isGallery && isGalleryAdminUnlocked());
@@ -3448,10 +3451,12 @@ function pinResultItem(id, view = galleryState.view) {
 async function pinMineResult(id) {
   const item = findCanvasItem(id, "mine");
   if (!item) return false;
-  item.pinnedAt = Date.now();
+  const shouldPin = !Number(item.pinnedAt || 0);
+  if (shouldPin) item.pinnedAt = Date.now();
+  else delete item.pinnedAt;
   await persistState();
   renderResults();
-  showToast("图片已置顶");
+  showToast(shouldPin ? "图片已置顶" : "已取消置顶");
   return true;
 }
 
@@ -3503,9 +3508,10 @@ async function deleteGalleryItem(id) {
       body: JSON.stringify({ id: galleryId }),
       timeoutMs: ADMIN_API_TIMEOUT_MS,
     }, {
-      directFirst: true,
+      directFirst: false,
       timeoutMs: ADMIN_API_TIMEOUT_MS,
       label: "画廊删除",
+      fallbackStatuses: [404, 405],
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `删除失败：HTTP ${response.status}`);
@@ -3532,18 +3538,20 @@ async function pinGalleryItem(id) {
     return false;
   }
   try {
+    const shouldPin = !Number(item.pinnedAt || 0);
     const response = await apiFetchPreferDirect("/api/admin/gallery/pin", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Admin-Password": password,
       },
-      body: JSON.stringify({ id: galleryId }),
+      body: JSON.stringify({ id: galleryId, pinned: shouldPin }),
       timeoutMs: ADMIN_API_TIMEOUT_MS,
     }, {
-      directFirst: true,
+      directFirst: false,
       timeoutMs: ADMIN_API_TIMEOUT_MS,
       label: "画廊置顶",
+      fallbackStatuses: [404, 405],
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `置顶失败：HTTP ${response.status}`);
@@ -3552,11 +3560,12 @@ async function pinGalleryItem(id) {
       galleryState.items = orderedCanvasItems([pinnedItem, ...galleryState.items.filter((entry) => entry.galleryId !== pinnedItem.galleryId)]);
       if (state.selectedResultId === id) state.selectedResultId = pinnedItem.id;
     } else if (item) {
-      item.pinnedAt = Date.now();
+      if (shouldPin) item.pinnedAt = Date.now();
+      else delete item.pinnedAt;
       galleryState.items = orderedCanvasItems(galleryState.items);
     }
     renderResults();
-    showToast("画廊图片已置顶");
+    showToast(shouldPin ? "画廊图片已置顶" : "已取消画廊置顶");
     return true;
   } catch (error) {
     showToast(error.message || "画廊图片置顶失败");
@@ -5934,6 +5943,8 @@ function uniqueUrls(urls) {
 
 function shouldFallbackApiResponse(response, direct, preference = {}) {
   if (preference.noHttpFallback) return false;
+  const fallbackStatuses = Array.isArray(preference.fallbackStatuses) ? preference.fallbackStatuses.map(Number) : [];
+  if (fallbackStatuses.includes(Number(response.status))) return true;
   if (isRetryableHttpStatus(response.status)) return true;
   if (direct && response.status === 401 && !currentWalletSessionToken()) return true;
   return false;
