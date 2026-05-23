@@ -735,6 +735,11 @@ function gallery_delete(PDO $pdo, array $config): void
     require_admin($pdo, $config);
     ensure_gallery_tables($pdo);
     $payload = read_json();
+    $action = strtolower(trim((string)($payload['action'] ?? 'delete')));
+    if ($action === 'pin' || $action === 'toggle-pin') {
+        gallery_pin_payload($pdo, $payload);
+        return;
+    }
     $id = max(0, (int)($payload['id'] ?? 0));
     if ($id <= 0) {
         throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
@@ -763,6 +768,11 @@ function gallery_pin(PDO $pdo, array $config): void
     require_admin($pdo, $config);
     ensure_gallery_tables($pdo);
     $payload = read_json();
+    gallery_pin_payload($pdo, $payload);
+}
+
+function gallery_pin_payload(PDO $pdo, array $payload): void
+{
     $id = max(0, (int)($payload['id'] ?? 0));
     if ($id <= 0) {
         throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');

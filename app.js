@@ -2810,7 +2810,7 @@ function normalizeGalleryItem(item) {
 function normalizeGalleryImageSource(value) {
   const src = String(value || "").trim();
   if (!src) return "";
-  if (/^\/api\/gallery\/image\//i.test(src)) return directPhpApiUrl(src);
+  if (/^\/api\/gallery\/image\//i.test(src)) return fixedPhpApiUrl(src);
   return src;
 }
 
@@ -5888,11 +5888,11 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
 }
 
 async function apiFetchGalleryAdmin(path, options = {}, preference = {}) {
-  const urls = uniqueUrls([directPhpApiUrl(path), apiUrl(path)]);
+  const urls = uniqueUrls([fixedPhpApiUrl(path), apiUrl(path)]);
   let lastError = null;
   let lastRetryableResponse = null;
   for (const url of urls) {
-    const direct = isDirectPhpApiUrl(url);
+    const direct = isFixedPhpApiUrl(url);
     try {
       const response = await fetchApiUrl(url, { ...options, timeoutMs: preference.timeoutMs || ADMIN_API_TIMEOUT_MS }, direct ? "omit" : "include");
       response.apiFetchUrl = url;
@@ -5958,8 +5958,19 @@ function directPhpApiUrl(path) {
   return `${base}${value.startsWith("/") ? value : `/${value}`}`;
 }
 
+function fixedPhpApiUrl(path) {
+  const base = normalizeDirectApiBase(publicMobileSafeUrl(DEFAULT_PHP_API_BASE));
+  const value = String(path || "");
+  if (/^https?:\/\//i.test(value)) return value;
+  return `${base}${value.startsWith("/") ? value : `/${value}`}`;
+}
+
 function isDirectPhpApiUrl(url) {
   return normalizeDirectApiBase(url).startsWith(effectiveDirectApiBase());
+}
+
+function isFixedPhpApiUrl(url) {
+  return normalizeDirectApiBase(url).startsWith(normalizeDirectApiBase(publicMobileSafeUrl(DEFAULT_PHP_API_BASE)));
 }
 
 function effectiveDirectApiBase() {
