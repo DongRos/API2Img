@@ -135,9 +135,11 @@ CREATE TABLE IF NOT EXISTS gallery_images (
   width INT NOT NULL DEFAULT 1,
   height INT NOT NULL DEFAULT 1,
   status ENUM('active','hidden') NOT NULL DEFAULT 'active',
+  pinned_at DATETIME NULL,
   created_at DATETIME NOT NULL,
   PRIMARY KEY (id),
   KEY idx_gallery_status_created (status, id),
+  KEY idx_gallery_status_pinned_created (status, pinned_at, id),
   KEY idx_gallery_user_created (user_id, id),
   UNIQUE KEY uniq_gallery_filename (image_filename),
   CONSTRAINT fk_gallery_user FOREIGN KEY (user_id) REFERENCES users(id)

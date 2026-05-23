@@ -418,6 +418,7 @@ function bindEvents() {
   $("#closeDetail").addEventListener("click", closeDetail);
   $("#doneDetail").addEventListener("click", closeDetail);
   $("#downloadDetail").addEventListener("click", downloadSelected);
+  $("#pinDetail").addEventListener("click", pinSelectedResult);
   $("#deleteDetail").addEventListener("click", deleteSelected);
   $("#uploadGalleryDetail").addEventListener("click", uploadSelectedToGallery);
   $("#deleteGalleryDetail").addEventListener("click", deleteSelectedGalleryItem);
@@ -2799,6 +2800,7 @@ function normalizeGalleryItem(item) {
     quality: String(item.quality || "gallery"),
     generationId: "",
     createdAt: Number(item.createdAt || Date.now()),
+    pinnedAt: Number(item.pinnedAt || 0),
     width: Math.max(1, Number(item.width || 1)),
     height: Math.max(1, Number(item.height || 1)),
     uploader: String(item.uploader || ""),
@@ -2817,7 +2819,19 @@ function isGalleryAdminUnlocked() {
 }
 
 function galleryVisibleItems() {
-  return galleryState.view === "gallery" ? galleryState.items : state.results;
+  return orderedCanvasItems(galleryState.view === "gallery" ? galleryState.items : state.results);
+}
+
+function orderedCanvasItems(items = []) {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => {
+      const leftPinned = Number(left.item?.pinnedAt || 0);
+      const rightPinned = Number(right.item?.pinnedAt || 0);
+      if (leftPinned || rightPinned) return rightPinned - leftPinned;
+      return left.index - right.index;
+    })
+    .map((entry) => entry.item);
 }
 
 function renderResults() {
@@ -2866,6 +2880,10 @@ function prependResultCard(item) {
     renderResults();
     return;
   }
+  if (!item.pinnedAt && state.results.some((result) => result.id !== item.id && Number(result.pinnedAt || 0) > 0)) {
+    renderResults();
+    return;
+  }
   $("#resultMeta").textContent = state.results.length ? `${state.results.length} 张图片` : "生成后的图片会排列在这里";
   if (grid.classList.contains("empty")) {
     grid.className = "result-grid";
@@ -2884,9 +2902,10 @@ function createResultCard(item, options = {}) {
   const view = options.view || galleryState.view;
   const isGallery = view === "gallery";
   const canAdminDeleteGallery = isGallery && isGalleryAdminUnlocked();
+  const canPin = !isGallery || canAdminDeleteGallery;
   const isNew = !isGallery && Boolean(item.generationId && item.generationId === state.latestGenerationId);
   const card = document.createElement("article");
-  card.className = `image-card${isNew ? " is-new" : ""}${isGallery ? " gallery-card" : ""}`;
+  card.className = `image-card${isNew ? " is-new" : ""}${isGallery ? " gallery-card" : ""}${item.pinnedAt ? " is-pinned" : ""}`;
   card.dataset.id = item.id;
   card.dataset.generationId = item.generationId || "";
   card.dataset.width = String(item.width || 1);
@@ -2921,6 +2940,9 @@ function createResultCard(item, options = {}) {
     createResultActionButton("reuse", "回填提示词", "rotate"),
     createResultActionButton("download", "下载", "download"),
   ];
+  if (canPin) {
+    buttons.push(createResultActionButton("pin", "置顶", "pin"));
+  }
   if (!isGallery) {
     buttons.push(createResultActionButton("upload-gallery", "上传到画廊", "upload"));
     buttons.push(createResultActionButton("delete", "删除", "trash"));
@@ -2975,6 +2997,7 @@ function bindResultCard(card, item, options = {}) {
     const latest = findCanvasItem(item.id, view) || item;
     downloadImage(latest.src, fileNameFor(latest));
   });
+  card.querySelector('[data-action="pin"]')?.addEventListener("click", () => pinResultItem(item.id, view));
   card.querySelector('[data-action="upload-gallery"]')?.addEventListener("click", () => uploadResultToGallery(item.id));
   card.querySelector('[data-action="delete-gallery"]')?.addEventListener("click", () => deleteGalleryItem(item.id));
   card.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteResult(item.id));
@@ -3117,6 +3140,8 @@ function openDetail(id, view = galleryState.view) {
   $("#detailInfo").textContent = `${item.size || ""} · ${item.quality || ""}`;
   $("#editPromptInput").value = "";
   const isGallery = view === "gallery";
+  const canPin = !isGallery || isGalleryAdminUnlocked();
+  $("#pinDetail").hidden = !canPin;
   $("#uploadGalleryDetail").hidden = isGallery;
   $("#deleteDetail").hidden = isGallery;
   $("#deleteGalleryDetail").hidden = !(isGallery && isGalleryAdminUnlocked());
@@ -3129,6 +3154,7 @@ function closeDetail() {
   $("#detailModal").hidden = true;
   $("#uploadGalleryDetail").hidden = false;
   $("#deleteDetail").hidden = false;
+  $("#pinDetail").hidden = false;
   $("#deleteGalleryDetail").hidden = true;
   resetDetailView();
 }
@@ -3410,6 +3436,25 @@ function downloadSelected() {
   if (item) downloadImage(item.src, fileNameFor(item));
 }
 
+function pinSelectedResult() {
+  const item = selectedResult();
+  if (item) pinResultItem(item.id, state.selectedResultSource || galleryState.view);
+}
+
+function pinResultItem(id, view = galleryState.view) {
+  return view === "gallery" ? pinGalleryItem(id) : pinMineResult(id);
+}
+
+async function pinMineResult(id) {
+  const item = findCanvasItem(id, "mine");
+  if (!item) return false;
+  item.pinnedAt = Date.now();
+  await persistState();
+  renderResults();
+  showToast("图片已置顶");
+  return true;
+}
+
 function deleteSelected() {
   if (state.selectedResultSource === "gallery") return;
   const item = selectedResult();
@@ -3477,6 +3522,48 @@ async function deleteGalleryItem(id) {
   }
 }
 
+async function pinGalleryItem(id) {
+  const item = findCanvasItem(id, "gallery");
+  const galleryId = String(item?.galleryId || "").trim();
+  const password = adminPassword();
+  if (!item || !galleryId) return false;
+  if (!password) {
+    showToast("请先进入站长后台");
+    return false;
+  }
+  try {
+    const response = await apiFetchPreferDirect("/api/admin/gallery/pin", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Password": password,
+      },
+      body: JSON.stringify({ id: galleryId }),
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: ADMIN_API_TIMEOUT_MS,
+      label: "画廊置顶",
+    });
+    const payload = await readJsonResponse(response);
+    if (!response.ok) throw new Error(payload?.error?.message || `置顶失败：HTTP ${response.status}`);
+    const pinnedItem = normalizeGalleryItem(payload.item);
+    if (pinnedItem) {
+      galleryState.items = orderedCanvasItems([pinnedItem, ...galleryState.items.filter((entry) => entry.galleryId !== pinnedItem.galleryId)]);
+      if (state.selectedResultId === id) state.selectedResultId = pinnedItem.id;
+    } else if (item) {
+      item.pinnedAt = Date.now();
+      galleryState.items = orderedCanvasItems(galleryState.items);
+    }
+    renderResults();
+    showToast("画廊图片已置顶");
+    return true;
+  } catch (error) {
+    showToast(error.message || "画廊图片置顶失败");
+    return false;
+  }
+}
+
 async function uploadResultToGallery(id) {
   if (!billingState.authenticated) {
     $("#walletPanel")?.classList.add("open");
@@ -3519,7 +3606,7 @@ async function uploadResultToGallery(id) {
     if (!response.ok) throw new Error(payload?.error?.message || `上传到画廊失败：HTTP ${response.status}`);
     const galleryItem = normalizeGalleryItem(payload.item);
     if (galleryItem) {
-      galleryState.items = [galleryItem, ...galleryState.items.filter((entry) => entry.galleryId !== galleryItem.galleryId)];
+      galleryState.items = orderedCanvasItems([galleryItem, ...galleryState.items.filter((entry) => entry.galleryId !== galleryItem.galleryId)]);
       galleryState.loaded = true;
       galleryState.error = "";
       item.galleryId = galleryItem.galleryId || "";

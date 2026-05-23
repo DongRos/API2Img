@@ -172,6 +172,10 @@ function route_request(PDO $pdo, array $config): void
         gallery_delete($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/admin/gallery/pin') {
+        gallery_pin($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/admin/proxy-image') {
         admin_proxy_image($pdo, $config);
         return;
@@ -632,7 +636,7 @@ function gallery_list(PDO $pdo, array $config): void
          FROM gallery_images g
          LEFT JOIN users u ON u.id = g.user_id
          WHERE g.status = 'active'
-         ORDER BY g.id DESC
+         ORDER BY g.pinned_at IS NULL ASC, g.pinned_at DESC, g.id DESC
          LIMIT ?"
     );
     $stmt->bindValue(1, $limit, PDO::PARAM_INT);
@@ -754,6 +758,35 @@ function gallery_delete(PDO $pdo, array $config): void
     json_response(['ok' => true, 'deletedId' => (string)$id]);
 }
 
+function gallery_pin(PDO $pdo, array $config): void
+{
+    require_admin($pdo, $config);
+    ensure_gallery_tables($pdo);
+    $payload = read_json();
+    $id = max(0, (int)($payload['id'] ?? 0));
+    if ($id <= 0) {
+        throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
+    }
+
+    $stmt = $pdo->prepare("SELECT id FROM gallery_images WHERE id = ? AND status = 'active' LIMIT 1");
+    $stmt->execute([$id]);
+    if (!$stmt->fetch()) {
+        throw new HttpError('画廊图片不存在', 404, 'gallery_image_not_found');
+    }
+
+    $pdo->prepare("UPDATE gallery_images SET pinned_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'active'")->execute([$id]);
+    $rowStmt = $pdo->prepare(
+        "SELECT g.*, u.email AS user_email
+         FROM gallery_images g
+         LEFT JOIN users u ON u.id = g.user_id
+         WHERE g.id = ? AND g.status = 'active'
+         LIMIT 1"
+    );
+    $rowStmt->execute([$id]);
+    $row = $rowStmt->fetch();
+    json_response(['ok' => true, 'item' => public_gallery_item($row ?: [])]);
+}
+
 function public_gallery_item(array $row): array
 {
     $filename = (string)($row['image_filename'] ?? '');
@@ -772,6 +805,7 @@ function public_gallery_item(array $row): array
         'width' => max(1, (int)($row['width'] ?? 1)),
         'height' => max(1, (int)($row['height'] ?? 1)),
         'createdAt' => isset($row['created_at']) ? utc_sql_timestamp_ms((string)$row['created_at']) : 0,
+        'pinnedAt' => !empty($row['pinned_at']) ? utc_sql_timestamp_ms((string)$row['pinned_at']) : 0,
         'uploader' => mask_gallery_email((string)($row['user_email'] ?? '')),
     ];
 }
@@ -802,9 +836,11 @@ function ensure_gallery_tables(PDO $pdo): void
           width INT NOT NULL DEFAULT 1,
           height INT NOT NULL DEFAULT 1,
           status ENUM('active','hidden') NOT NULL DEFAULT 'active',
+          pinned_at DATETIME NULL,
           created_at DATETIME NOT NULL,
           PRIMARY KEY (id),
           KEY idx_gallery_status_created (status, id),
+          KEY idx_gallery_status_pinned_created (status, pinned_at, id),
           KEY idx_gallery_user_created (user_id, id),
           UNIQUE KEY uniq_gallery_filename (image_filename)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
@@ -812,6 +848,8 @@ function ensure_gallery_tables(PDO $pdo): void
     ensure_table_column($pdo, 'gallery_images', 'ratio', "VARCHAR(20) NOT NULL DEFAULT '' AFTER model");
     ensure_table_column($pdo, 'gallery_images', 'resolution_tier', "VARCHAR(10) NOT NULL DEFAULT '' AFTER ratio");
     ensure_table_column($pdo, 'gallery_images', 'quality', "VARCHAR(40) NOT NULL DEFAULT '' AFTER size");
+    ensure_table_column($pdo, 'gallery_images', 'pinned_at', "DATETIME NULL AFTER status");
+    ensure_table_index($pdo, 'gallery_images', 'idx_gallery_status_pinned_created', '(status, pinned_at, id)');
     $done = true;
 }
 

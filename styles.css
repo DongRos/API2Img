@@ -468,6 +468,10 @@ body[data-theme="light"] .view-switch button.active {
   border-color: color-mix(in srgb, var(--accent), transparent 34%);
 }
 
+.image-card.is-pinned {
+  border-color: color-mix(in srgb, var(--accent), transparent 42%);
+}
+
 .image-card img {
   display: block;
   width: 100%;
@@ -539,6 +543,9 @@ body[data-theme="light"] .view-switch button.active {
 
 .card-actions {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -550,6 +557,10 @@ body[data-theme="light"] .view-switch button.active {
   background: rgba(255, 255, 255, 0.14);
   color: white;
   cursor: pointer;
+}
+
+.image-card.is-pinned .card-actions button[data-action="pin"] {
+  background: color-mix(in srgb, var(--accent) 28%, rgba(255, 255, 255, 0.14));
 }
 
 @media (hover: none) {
