@@ -3393,7 +3393,9 @@ async function deleteGalleryItem(id) {
     const payload = await readJsonResponse(response);
     if (!response.ok) throw new Error(payload?.error?.message || `删除失败：HTTP ${response.status}`);
     galleryState.items = galleryState.items.filter((entry) => entry.id !== id && entry.galleryId !== galleryId);
+    const changed = clearLocalGalleryUploadMarker(galleryId);
     if (state.selectedResultId === id) state.selectedResultId = "";
+    if (changed) await persistState();
     renderResults();
     showToast("画廊图片已删除");
     return true;
@@ -3411,7 +3413,7 @@ async function uploadResultToGallery(id) {
   }
   const item = findCanvasItem(id, "mine");
   if (!item) return;
-  if (item.galleryUploaded) {
+  if (item.galleryUploaded && await isLocalGalleryUploadStillActive(item)) {
     showToast("这张图已上传到画廊");
     return;
   }
@@ -3445,6 +3447,7 @@ async function uploadResultToGallery(id) {
       galleryState.items = [galleryItem, ...galleryState.items.filter((entry) => entry.galleryId !== galleryItem.galleryId)];
       galleryState.loaded = true;
       galleryState.error = "";
+      item.galleryId = galleryItem.galleryId || "";
     }
     item.galleryUploaded = true;
     item.galleryUploading = false;
@@ -3456,6 +3459,45 @@ async function uploadResultToGallery(id) {
   } finally {
     item.galleryUploading = false;
   }
+}
+
+function clearLocalGalleryUploadMarker(galleryId) {
+  const normalizedId = String(galleryId || "").trim();
+  if (!normalizedId) return false;
+  let changed = false;
+  state.results.forEach((result) => {
+    if (String(result.galleryId || "").trim() !== normalizedId) return;
+    if (result.galleryUploaded || result.galleryId) {
+      result.galleryUploaded = false;
+      delete result.galleryId;
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+async function isLocalGalleryUploadStillActive(item) {
+  const galleryId = String(item?.galleryId || "").trim();
+  if (!galleryId) {
+    if (item.galleryUploaded) {
+      item.galleryUploaded = false;
+      await persistState();
+    }
+    return false;
+  }
+
+  if (!galleryState.loading) {
+    galleryState.loaded = false;
+    await loadGallery({ silent: true });
+  }
+
+  const exists = galleryState.items.some((entry) => String(entry.galleryId || "").trim() === galleryId);
+  if (!exists) {
+    item.galleryUploaded = false;
+    delete item.galleryId;
+    await persistState();
+  }
+  return exists;
 }
 
 async function prepareGalleryUploadImage(src) {
