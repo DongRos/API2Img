@@ -3448,14 +3448,21 @@ function pinResultItem(id, view = galleryState.view) {
   return view === "gallery" ? pinGalleryItem(id) : pinMineResult(id);
 }
 
+function syncPinnedDetailState(item) {
+  const button = $("#pinDetail");
+  if (!button || $("#detailModal")?.hidden || !item) return;
+  button.title = Number(item.pinnedAt || 0) ? "取消置顶" : "置顶";
+}
+
 async function pinMineResult(id) {
   const item = findCanvasItem(id, "mine");
   if (!item) return false;
   const shouldPin = !Number(item.pinnedAt || 0);
   if (shouldPin) item.pinnedAt = Date.now();
-  else delete item.pinnedAt;
+  else item.pinnedAt = 0;
   await persistState();
   renderResults();
+  syncPinnedDetailState(item);
   showToast(shouldPin ? "图片已置顶" : "已取消置顶");
   return true;
 }
@@ -3499,7 +3506,7 @@ async function deleteGalleryItem(id) {
     return false;
   }
   try {
-    const response = await apiFetchPreferDirect("/api/admin/gallery/delete", {
+    const response = await apiFetchGalleryAdmin("/api/admin/gallery/delete", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -3539,7 +3546,7 @@ async function pinGalleryItem(id) {
   }
   try {
     const shouldPin = !Number(item.pinnedAt || 0);
-    const response = await apiFetchPreferDirect("/api/admin/gallery/pin", {
+    const response = await apiFetchGalleryAdmin("/api/admin/gallery/pin", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -3557,14 +3564,15 @@ async function pinGalleryItem(id) {
     if (!response.ok) throw new Error(payload?.error?.message || `置顶失败：HTTP ${response.status}`);
     const pinnedItem = normalizeGalleryItem(payload.item);
     if (pinnedItem) {
-      galleryState.items = orderedCanvasItems([pinnedItem, ...galleryState.items.filter((entry) => entry.galleryId !== pinnedItem.galleryId)]);
-      if (state.selectedResultId === id) state.selectedResultId = pinnedItem.id;
+      const nextItem = { ...pinnedItem, id };
+      galleryState.items = orderedCanvasItems([nextItem, ...galleryState.items.filter((entry) => entry.galleryId !== pinnedItem.galleryId)]);
     } else if (item) {
       if (shouldPin) item.pinnedAt = Date.now();
-      else delete item.pinnedAt;
+      else item.pinnedAt = 0;
       galleryState.items = orderedCanvasItems(galleryState.items);
     }
     renderResults();
+    syncPinnedDetailState(findCanvasItem(id, "gallery") || item);
     showToast(shouldPin ? "画廊图片已置顶" : "已取消画廊置顶");
     return true;
   } catch (error) {
@@ -5873,6 +5881,31 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
       if (preference.noFetchErrorFallback) throw error;
       const maxFallbackMs = Number(preference.maxFetchErrorFallbackMs || 0);
       if (maxFallbackMs > 0 && Date.now() - startedAt > maxFallbackMs) throw error;
+    }
+  }
+  if (lastRetryableResponse) return lastRetryableResponse;
+  throw lastError || new Error(`${preference.label || "请求"}失败`);
+}
+
+async function apiFetchGalleryAdmin(path, options = {}, preference = {}) {
+  const urls = uniqueUrls([directPhpApiUrl(path), apiUrl(path)]);
+  let lastError = null;
+  let lastRetryableResponse = null;
+  for (const url of urls) {
+    const direct = isDirectPhpApiUrl(url);
+    try {
+      const response = await fetchApiUrl(url, { ...options, timeoutMs: preference.timeoutMs || ADMIN_API_TIMEOUT_MS }, direct ? "omit" : "include");
+      response.apiFetchUrl = url;
+      if (response.ok || !shouldFallbackApiResponse(response, direct, {
+        ...preference,
+        fallbackStatuses: [...new Set([...(preference.fallbackStatuses || []), 404, 405])],
+      })) return response;
+      lastRetryableResponse = response;
+      lastError = new Error(`${preference.label || "请求"}失败：HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+      if (options.signal?.aborted) throw error;
+      if (!isRetryableFetchError(error)) throw error;
     }
   }
   if (lastRetryableResponse) return lastRetryableResponse;
