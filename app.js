@@ -2576,6 +2576,8 @@ async function createResult(src, options, index) {
     src,
     prompt: options.prompt,
     model: options.model,
+    ratio: options.ratio || "",
+    resolutionTier: options.resolutionTier || "",
     size: options.size,
     quality: options.quality,
     generationId: options.generationId || "",
@@ -2723,8 +2725,10 @@ function normalizeGalleryItem(item) {
     src,
     prompt: String(item.prompt || ""),
     model: String(item.model || ""),
+    ratio: String(item.ratio || ""),
+    resolutionTier: String(item.resolutionTier || item.resolution_tier || ""),
     size: String(item.size || ""),
-    quality: "gallery",
+    quality: String(item.quality || "gallery"),
     generationId: "",
     createdAt: Number(item.createdAt || Date.now()),
     width: Math.max(1, Number(item.width || 1)),
@@ -2898,7 +2902,7 @@ function bindResultCard(card, item, options = {}) {
   image.decode?.().then(refreshCardLayout).catch(() => {});
   image.addEventListener("click", () => openDetail(item.id, view));
   card.querySelector('[data-action="edit"]').addEventListener("click", () => openDetail(item.id, view));
-  card.querySelector('[data-action="reuse"]').addEventListener("click", () => reusePrompt(item.prompt));
+  card.querySelector('[data-action="reuse"]').addEventListener("click", () => reusePromptFromItem(item));
   card.querySelector('[data-action="download"]').addEventListener("click", () => {
     const latest = findCanvasItem(item.id, view) || item;
     downloadImage(latest.src, fileNameFor(latest));
@@ -3430,7 +3434,10 @@ async function uploadResultToGallery(id) {
         dataUrl,
         prompt: item.prompt || "",
         model: item.model || "",
+        ratio: item.ratio || inferReusableImageSettings(item).ratio || "",
+        resolutionTier: item.resolutionTier || inferReusableImageSettings(item).resolutionTier || "",
         size: item.size || "",
+        quality: item.quality || "",
         width: item.width || 1,
         height: item.height || 1,
       }),
@@ -3527,7 +3534,7 @@ async function imageSourceToDataUrl(src) {
 
 function reuseSelectedPrompt() {
   const item = selectedResult();
-  if (item) reusePrompt(item.prompt);
+  if (item) reusePromptFromItem(item);
 }
 
 function reusePrompt(prompt) {
@@ -3536,6 +3543,109 @@ function reusePrompt(prompt) {
   closeDetail();
   $("#promptInput").focus();
   showToast("提示词已回填");
+}
+
+function reusePromptFromItem(item) {
+  if (!item) return;
+  reusePrompt(item.prompt || "");
+  applyReusableImageSettings(item);
+}
+
+function applyReusableImageSettings(item) {
+  const settings = inferReusableImageSettings(item);
+  const modelSelect = $("#modelName");
+  if (modelSelect && settings.model) {
+    const options = currentModelOptions();
+    if (options.some((option) => option.name === settings.model)) {
+      modelSelect.value = settings.model;
+      config.modelName = settings.model;
+    }
+  }
+
+  if (settings.ratio && ratioPresets.some((preset) => preset.value === settings.ratio)) {
+    $("#ratioSelect").value = settings.ratio;
+  }
+
+  syncSizeOptions();
+
+  const tierSelect = $("#resolutionTierSelect");
+  if (tierSelect && settings.resolutionTier && [...tierSelect.options].some((option) => option.value === settings.resolutionTier)) {
+    tierSelect.value = settings.resolutionTier;
+    syncSizeOptions();
+  }
+
+  const sizeSelect = $("#sizeSelect");
+  if (sizeSelect && settings.size && [...sizeSelect.options].some((option) => option.value === settings.size)) {
+    sizeSelect.value = settings.size;
+  }
+
+  if (settings.quality && qualityPresets.some((item) => item.value === settings.quality)) {
+    $("#qualitySelect").value = settings.quality;
+  }
+}
+
+function inferReusableImageSettings(item = {}) {
+  const sizeInfo = inferSettingsFromSize(item.size || "");
+  const dimensionInfo = inferSettingsFromDimensions(item.width, item.height);
+  return {
+    model: cleanModelName(item.model || ""),
+    ratio: normalizeReusableRatio(item.ratio) || sizeInfo.ratio || dimensionInfo.ratio || "",
+    resolutionTier: normalizeReusableTier(item.resolutionTier) || sizeInfo.resolutionTier || dimensionInfo.resolutionTier || "",
+    size: normalizeReusableSize(item.size) || sizeInfo.size || "",
+    quality: qualityPresets.some((preset) => preset.value === item.quality) ? item.quality : "",
+  };
+}
+
+function normalizeReusableRatio(value = "") {
+  const ratio = String(value || "").trim();
+  return ratioPresets.some((preset) => preset.value === ratio) ? ratio : "";
+}
+
+function normalizeReusableTier(value = "") {
+  const tier = String(value || "").trim().toUpperCase();
+  return RESOLUTION_TIERS.some((item) => item.value === tier) ? tier : "";
+}
+
+function normalizeReusableSize(value = "") {
+  const size = String(value || "").trim();
+  return size === "auto" || /^\d{2,5}x\d{2,5}$/i.test(size) ? size : "";
+}
+
+function inferSettingsFromSize(size = "") {
+  const normalized = normalizeReusableSize(size);
+  if (!normalized) return {};
+  if (normalized === "auto") return { size: "auto" };
+  for (const preset of ratioPresets) {
+    for (const [tier, presetSize] of Object.entries(preset.sizes || {})) {
+      if (String(presetSize).toLowerCase() === normalized.toLowerCase()) {
+        return { ratio: preset.value, resolutionTier: tier, size: normalized };
+      }
+    }
+  }
+  const match = normalized.match(/^(\d{2,5})x(\d{2,5})$/i);
+  if (!match) return { size: normalized };
+  const dimensionInfo = inferSettingsFromDimensions(Number(match[1]), Number(match[2]));
+  return { ...dimensionInfo, size: normalized };
+}
+
+function inferSettingsFromDimensions(width, height) {
+  const w = Math.max(1, Number(width) || 0);
+  const h = Math.max(1, Number(height) || 0);
+  if (!w || !h) return {};
+  const ratioValue = w / h;
+  const ratio = ratioPresets
+    .filter((preset) => /^\d+:\d+$/.test(preset.value))
+    .map((preset) => {
+      const [rw, rh] = preset.value.split(":").map(Number);
+      return { value: preset.value, delta: Math.abs(ratioValue - rw / rh) };
+    })
+    .sort((a, b) => a.delta - b.delta)[0];
+  const longest = Math.max(w, h);
+  const resolutionTier = longest >= 3000 ? "4K" : longest >= 1600 ? "2K" : "1K";
+  return {
+    ratio: ratio && ratio.delta < 0.08 ? ratio.value : "",
+    resolutionTier,
+  };
 }
 
 async function onReferenceFiles(event) {

@@ -664,8 +664,8 @@ function gallery_upload(PDO $pdo, array $config): void
 
     $stmt = $pdo->prepare(
         "INSERT INTO gallery_images
-         (user_id, image_filename, mime_type, prompt, model, size, width, height, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', UTC_TIMESTAMP())"
+         (user_id, image_filename, mime_type, prompt, model, ratio, resolution_tier, size, quality, width, height, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', UTC_TIMESTAMP())"
     );
     $stmt->execute([
         (int)$user['id'],
@@ -673,7 +673,10 @@ function gallery_upload(PDO $pdo, array $config): void
         $mime,
         usage_log_text((string)($payload['prompt'] ?? ''), 1000),
         custom_api_model_name((string)($payload['model'] ?? '')),
+        gallery_ratio((string)($payload['ratio'] ?? '')),
+        gallery_resolution_tier((string)($payload['resolutionTier'] ?? $payload['resolution_tier'] ?? '')),
         usage_log_text((string)($payload['size'] ?? ''), 40),
+        usage_log_text((string)($payload['quality'] ?? ''), 40),
         $width,
         $height,
     ]);
@@ -684,7 +687,10 @@ function gallery_upload(PDO $pdo, array $config): void
         'mime_type' => $mime,
         'prompt' => usage_log_text((string)($payload['prompt'] ?? ''), 1000),
         'model' => custom_api_model_name((string)($payload['model'] ?? '')),
+        'ratio' => gallery_ratio((string)($payload['ratio'] ?? '')),
+        'resolution_tier' => gallery_resolution_tier((string)($payload['resolutionTier'] ?? $payload['resolution_tier'] ?? '')),
         'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+        'quality' => usage_log_text((string)($payload['quality'] ?? ''), 40),
         'width' => $width,
         'height' => $height,
         'created_at' => now_sql(),
@@ -752,7 +758,10 @@ function public_gallery_item(array $row): array
         'src' => '/api/gallery/image/' . rawurlencode($filename),
         'prompt' => (string)($row['prompt'] ?? ''),
         'model' => (string)($row['model'] ?? ''),
+        'ratio' => (string)($row['ratio'] ?? ''),
+        'resolutionTier' => (string)($row['resolution_tier'] ?? ''),
         'size' => (string)($row['size'] ?? ''),
+        'quality' => (string)($row['quality'] ?? ''),
         'width' => max(1, (int)($row['width'] ?? 1)),
         'height' => max(1, (int)($row['height'] ?? 1)),
         'createdAt' => isset($row['created_at']) ? utc_sql_timestamp_ms((string)$row['created_at']) : 0,
@@ -779,7 +788,10 @@ function ensure_gallery_tables(PDO $pdo): void
           mime_type VARCHAR(80) NOT NULL DEFAULT 'image/jpeg',
           prompt VARCHAR(1000) NOT NULL DEFAULT '',
           model VARCHAR(120) NOT NULL DEFAULT '',
+          ratio VARCHAR(20) NOT NULL DEFAULT '',
+          resolution_tier VARCHAR(10) NOT NULL DEFAULT '',
           size VARCHAR(40) NOT NULL DEFAULT '',
+          quality VARCHAR(40) NOT NULL DEFAULT '',
           width INT NOT NULL DEFAULT 1,
           height INT NOT NULL DEFAULT 1,
           status ENUM('active','hidden') NOT NULL DEFAULT 'active',
@@ -790,7 +802,22 @@ function ensure_gallery_tables(PDO $pdo): void
           UNIQUE KEY uniq_gallery_filename (image_filename)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
     );
+    ensure_table_column($pdo, 'gallery_images', 'ratio', "VARCHAR(20) NOT NULL DEFAULT '' AFTER model");
+    ensure_table_column($pdo, 'gallery_images', 'resolution_tier', "VARCHAR(10) NOT NULL DEFAULT '' AFTER ratio");
+    ensure_table_column($pdo, 'gallery_images', 'quality', "VARCHAR(40) NOT NULL DEFAULT '' AFTER size");
     $done = true;
+}
+
+function gallery_ratio(string $value): string
+{
+    $value = trim($value);
+    return preg_match('/^(?:auto|\d{1,2}:\d{1,2})$/', $value) ? substr($value, 0, 20) : '';
+}
+
+function gallery_resolution_tier(string $value): string
+{
+    $value = strtoupper(trim($value));
+    return in_array($value, ['1K', '2K', '4K'], true) ? $value : '';
 }
 
 function mask_gallery_email(string $email): string
