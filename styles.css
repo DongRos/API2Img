@@ -1145,6 +1145,14 @@ body[data-theme="light"] .view-switch button.active {
   font-size: 16px;
 }
 
+.section-count {
+  margin-left: 6px;
+  color: color-mix(in srgb, var(--muted) 74%, transparent);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
 .panel-header p {
   margin-top: 6px;
   line-height: 1.5;
@@ -1490,7 +1498,7 @@ body[data-theme="light"] .view-switch button.active {
   flex-wrap: wrap;
 }
 
-.wallet-history .config-history-head span {
+.wallet-history .config-history-head > span {
   max-width: 100%;
   text-align: right;
   overflow-wrap: anywhere;

@@ -124,6 +124,10 @@ function route_request(PDO $pdo, array $config): void
         settle_generation($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/generate/failure-log') {
+        generation_failure_log($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/reference-image') {
         reference_image_upload($config);
         return;
@@ -568,11 +572,14 @@ function billing_ledger(PDO $pdo, array $config): void
         'SELECT * FROM wallet_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 50'
     );
     $stmt->execute([(int)$user['id']]);
+    $countStmt = $pdo->prepare('SELECT COUNT(*) FROM wallet_ledger WHERE user_id = ?');
+    $countStmt->execute([(int)$user['id']]);
+    $ledgerCount = (int)$countStmt->fetchColumn();
     $items = [];
     foreach ($stmt->fetchAll() as $item) {
         $items[] = public_ledger_item($item);
     }
-    json_response(['ok' => true, 'ledger' => $items]);
+    json_response(['ok' => true, 'ledger' => $items, 'ledgerCount' => $ledgerCount]);
 }
 
 function public_ledger_item(array $item): array
@@ -1272,6 +1279,7 @@ function generate_platform(PDO $pdo, array $config): void
     }
     $mode = (($ticket['mode'] ?? ($payload['mode'] ?? 'text')) === 'image') ? 'image' : 'text';
     $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
+    $requestId = normalize_request_id((string)($payload['requestId'] ?? ''));
     $count = max(1, min((int)$ticket['count'], (int)$platform['max_count'], (int)($payload['count'] ?? 1)));
     $modelOption = select_platform_model_option($platform, (string)($ticket['model'] ?? $payload['model'] ?? ''));
     $model = (string)$modelOption['name'];
@@ -1300,7 +1308,25 @@ function generate_platform(PDO $pdo, array $config): void
             'settlementRequired' => true,
         ]);
     } catch (Throwable $error) {
-        throw new HttpError($error->getMessage() ?: '生成失败，未扣费', 502, 'platform_failed');
+        $message = $error->getMessage() ?: '生成失败，未扣费';
+        try {
+            record_generation_failure($pdo, (int)$ticket['uid'], $requestId, [
+                'logCode' => (string)($payload['logCode'] ?? $payload['traceCode'] ?? ''),
+                'mode' => $mode,
+                'model' => $model,
+                'prompt' => platform_request_prompt($request),
+                'size' => usage_log_text((string)($payload['size'] ?? ($ticket['size'] ?? platform_request_size($request))), 40),
+                'ratio' => '',
+                'batchIndex' => 0,
+                'batchTotal' => $count,
+                'imageCount' => 0,
+                'priceCents' => $price,
+                'errorMessage' => $message,
+            ]);
+        } catch (Throwable $logError) {
+            error_log('generation failure log failed: ' . $logError->getMessage());
+        }
+        throw new HttpError($message, 502, 'platform_failed');
     }
 }
 
@@ -1316,6 +1342,31 @@ function platform_upstream_error_message(array $upstream, ?array $bodyPayload): 
         return $status > 0 ? "Upstream HTTP {$status}: {$preview}" : $preview;
     }
     return $status > 0 ? "Upstream HTTP {$status} failed" : 'Upstream request failed';
+}
+
+function platform_request_prompt(array $request): string
+{
+    $value = platform_request_field_value($request, 'prompt');
+    return usage_log_text($value, 1000);
+}
+
+function platform_request_size(array $request): string
+{
+    $value = platform_request_field_value($request, 'size');
+    return usage_log_text($value, 40);
+}
+
+function platform_request_field_value(array $request, string $field): string
+{
+    if (($request['bodyType'] ?? '') === 'multipart') {
+        $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
+        return is_scalar($fields[$field] ?? null) ? (string)$fields[$field] : '';
+    }
+    $body = json_decode((string)($request['body'] ?? ''), true);
+    if (!is_array($body)) {
+        return '';
+    }
+    return is_scalar($body[$field] ?? null) ? (string)$body[$field] : '';
 }
 
 function platform_upstream_no_image_message(array $upstream, ?array $bodyPayload): string
@@ -1542,6 +1593,102 @@ function settle_generation(PDO $pdo, array $config): void
         'requestId' => $requestId,
         'logCode' => $logCode,
     ]);
+}
+
+function generation_failure_log(PDO $pdo, array $config): void
+{
+    $user = require_user($pdo, $config);
+    $payload = read_json();
+    $requestId = normalize_request_id((string)($payload['requestId'] ?? ''));
+    $result = record_generation_failure($pdo, (int)$user['id'], $requestId, [
+        'logCode' => (string)($payload['logCode'] ?? $payload['traceCode'] ?? ''),
+        'mode' => (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text',
+        'model' => custom_api_model_name((string)($payload['model'] ?? 'gpt-image-2')),
+        'prompt' => usage_log_text((string)($payload['prompt'] ?? ''), 1000),
+        'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+        'ratio' => usage_log_text((string)($payload['ratio'] ?? ''), 40),
+        'batchIndex' => max(0, (int)($payload['batchIndex'] ?? 0)),
+        'batchTotal' => max(0, (int)($payload['batchTotal'] ?? 0)),
+        'imageCount' => max(0, (int)($payload['imageCount'] ?? 0)),
+        'priceCents' => max(0, (int)($payload['priceCents'] ?? 0)),
+        'errorMessage' => usage_log_text((string)($payload['errorMessage'] ?? '生成失败'), 500),
+    ]);
+    json_response(['ok' => true, 'requestId' => $result['requestId'], 'logCode' => $result['logCode']]);
+}
+
+function record_generation_failure(PDO $pdo, int $userId, string $requestId, array $payload): array
+{
+    $requestId = normalize_request_id($requestId);
+    if ($requestId === '') {
+        $requestId = 'fail_' . normalize_request_id(random_token(12));
+    }
+    if (!starts_with($requestId, 'fail_')) {
+        $requestId = 'fail_' . $requestId;
+    }
+    $logCode = usage_log_code((string)($payload['logCode'] ?? ''));
+    if ($logCode === '') {
+        $logCode = make_ledger_log_code();
+    }
+    $mode = (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text';
+    $model = custom_api_model_name((string)($payload['model'] ?? 'gpt-image-2'));
+    $imageCount = max(0, (int)($payload['imageCount'] ?? 0));
+    $priceCents = max(0, (int)($payload['priceCents'] ?? 0));
+    $errorMessage = usage_log_text((string)($payload['errorMessage'] ?? '生成失败'), 500);
+    if ($errorMessage === '') {
+        $errorMessage = '生成失败';
+    }
+    $usageMeta = [
+        'prompt' => usage_log_text((string)($payload['prompt'] ?? ''), 1000),
+        'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+        'ratio' => usage_log_text((string)($payload['ratio'] ?? ''), 40),
+        'batchIndex' => max(0, (int)($payload['batchIndex'] ?? 0)),
+        'batchTotal' => max(0, (int)($payload['batchTotal'] ?? 0)),
+    ];
+    $hasUsageColumns = ensure_usage_log_columns($pdo);
+    if ($hasUsageColumns) {
+        $stmt = $pdo->prepare(
+            "INSERT INTO generation_requests
+             (user_id, request_id, log_code, mode, model, prompt, size, ratio, batch_index, batch_total, image_count, price_cents, total_cents, status, error_message, created_at, completed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'failed', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+             ON DUPLICATE KEY UPDATE
+               status = IF(status = 'succeeded', status, 'failed'),
+               error_message = IF(status = 'succeeded', error_message, VALUES(error_message)),
+               completed_at = IF(status = 'succeeded', completed_at, UTC_TIMESTAMP()),
+               log_code = IF(log_code = '', VALUES(log_code), log_code),
+               prompt = IF(prompt = '', VALUES(prompt), prompt),
+               size = IF(size = '', VALUES(size), size),
+               ratio = IF(ratio = '', VALUES(ratio), ratio),
+               batch_index = IF(batch_index = 0, VALUES(batch_index), batch_index),
+               batch_total = IF(batch_total = 0, VALUES(batch_total), batch_total)"
+        );
+        $stmt->execute([
+            $userId,
+            $requestId,
+            $logCode,
+            $mode,
+            $model,
+            $usageMeta['prompt'],
+            $usageMeta['size'],
+            $usageMeta['ratio'],
+            $usageMeta['batchIndex'],
+            $usageMeta['batchTotal'],
+            $imageCount,
+            $priceCents,
+            $errorMessage,
+        ]);
+    } else {
+        $stmt = $pdo->prepare(
+            "INSERT INTO generation_requests
+             (user_id, request_id, mode, model, image_count, price_cents, total_cents, status, error_message, created_at, completed_at)
+             VALUES (?, ?, ?, ?, ?, ?, 0, 'failed', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+             ON DUPLICATE KEY UPDATE
+               status = IF(status = 'succeeded', status, 'failed'),
+               error_message = IF(status = 'succeeded', error_message, VALUES(error_message)),
+               completed_at = IF(status = 'succeeded', completed_at, UTC_TIMESTAMP())"
+        );
+        $stmt->execute([$userId, $requestId, $mode, $model, $imageCount, $priceCents, $errorMessage]);
+    }
+    return ['requestId' => $requestId, 'logCode' => $logCode];
 }
 
 function ensure_user_can_afford(PDO $pdo, int $userId, int $total): void
@@ -2216,6 +2363,12 @@ function admin_user_usage(PDO $pdo, array $config): void
     $totals = $totalsStmt->fetch() ?: [];
     $totalRechargeCents = (int)($totals['total_recharge_cents'] ?? 0);
     $totalSpentCents = (int)($totals['total_spent_cents'] ?? 0);
+    $ledgerCountStmt = $pdo->prepare('SELECT COUNT(*) FROM wallet_ledger WHERE user_id = ?');
+    $ledgerCountStmt->execute([$userId]);
+    $ledgerCount = (int)$ledgerCountStmt->fetchColumn();
+    $generationCountStmt = $pdo->prepare('SELECT COUNT(*) FROM generation_requests WHERE user_id = ?');
+    $generationCountStmt->execute([$userId]);
+    $generationLogCount = (int)$generationCountStmt->fetchColumn();
 
     $ledgerStmt = $pdo->prepare(
         "SELECT * FROM wallet_ledger
@@ -2271,6 +2424,8 @@ function admin_user_usage(PDO $pdo, array $config): void
             'createdAt' => utc_sql_timestamp_ms((string)$user['created_at']),
             'lastLoginAt' => $user['last_login_at'] ? utc_sql_timestamp_ms((string)$user['last_login_at']) : 0,
         ],
+        'generationLogCount' => $generationLogCount,
+        'ledgerCount' => $ledgerCount,
         'generationLogs' => $generationLogs,
         'ledger' => $ledger,
     ]);

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>满血Image2生图-支持4K</title>
     <link rel="icon" type="image/png" href="./icon.png?v=2" />
-    <link rel="stylesheet" href="./styles.css?v=52" />
+    <link rel="stylesheet" href="./styles.css?v=53" />
   </head>
   <body data-theme="dark">
     <script>
@@ -264,7 +264,7 @@
 
         <section class="wallet-history">
           <div class="config-history-head">
-            <h3>余额流水</h3>
+            <h3>余额流水 <span id="walletLedgerCount" class="section-count">0条</span></h3>
             <span id="walletCustomerId"></span>
           </div>
           <div id="ledgerList" class="wallet-list"></div>
@@ -480,7 +480,7 @@
       <aside id="logsPanel" class="logs-panel">
         <div class="panel-header">
           <div>
-            <h2>生成日志</h2>
+            <h2>生成日志 <span id="generationLogCount" class="section-count">0条</span></h2>
             <p>每次生成的请求参数、逐张提示词和 API 返回都会记录在这里。</p>
           </div>
           <button class="icon-button" id="closeLogs" title="关闭" type="button">
@@ -550,6 +550,6 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=103"></script>
+    <script src="./app.js?v=104"></script>
   </body>
 </html>

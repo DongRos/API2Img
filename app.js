@@ -168,6 +168,7 @@ const billingState = {
   platformModelOptions: DEFAULT_MODEL_OPTIONS,
   platformDisplayName: "站点配置1",
   ledger: [],
+  ledgerCount: 0,
   ledgerLoading: false,
   activeOrder: null,
 };
@@ -675,6 +676,9 @@ async function generateImages(extra = {}) {
       message: status === "partial" ? message : "",
       imageCount: keptCount,
     });
+    if (!cancelled && usePlatformApi && status === "failed" && !options.platformFailureReported) {
+      void reportPlatformGenerationFailure(options, error, keptCount);
+    }
     updateProgress(cancelled ? "生成已取消" : keptCount ? "部分完成" : "生成失败", message, 100, {
       generated: keptCount,
       total: options.count,
@@ -1448,6 +1452,54 @@ async function settlePlatformImage(result, options, index, context) {
   }
 }
 
+async function reportPlatformGenerationFailure(options = {}, error = null, imageCount = 0) {
+  if (options.apiProvider !== "platform" || !billingState.authenticated || !currentWalletSessionToken()) return;
+  try {
+    const response = await apiFetchPreferDirect("/api/generate/failure-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestId: `fail_${platformBillingRequestId(options)}`,
+        logCode: options.logCode || activeGenerationLog?.traceCode || "",
+        mode: options.mode || $("#modeSelect").value,
+        model: options.model || getModelName(),
+        prompt: options.prompt || "",
+        size: options.size || "",
+        ratio: options.ratio || "",
+        tier: options.resolutionTier || "",
+        siteConfig: options.apiDisplayName || billingState.platformDisplayName || "",
+        batchIndex: Number(options.batchIndex) || 1,
+        batchTotal: Number(options.batchTotal || options.count || 1),
+        imageCount: Math.max(0, Number(imageCount) || 0),
+        priceCents: Number(options.platformPriceCents || billingState.priceCents || 0),
+        errorMessage: cleanErrorMessage(error) || "生成失败",
+      }),
+      timeoutMs: FAST_API_TIMEOUT_MS,
+    }, {
+      directFirst: true,
+      timeoutMs: FAST_API_TIMEOUT_MS,
+      label: "失败日志记录",
+      noHttpFallback: true,
+    });
+    if (!response.ok) {
+      const payload = await readJsonResponse(response);
+      throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+    }
+    await refreshBillingLedgerAfterFailureLog();
+  } catch (logError) {
+    console.warn("站点生成失败日志记录失败", logError);
+  }
+}
+
+async function refreshBillingLedgerAfterFailureLog() {
+  if (!billingState.authenticated) return;
+  const sessionSnapshot = currentWalletSessionToken();
+  try {
+    await loadBillingLedger({ silent: true, sessionSnapshot });
+    if (!walletSessionChanged(sessionSnapshot)) renderWallet();
+  } catch {}
+}
+
 function platformSettlementRequestId(options, result, index) {
   return platformBillingRequestId({
     generationId: options.generationId || result.generationId || result.id,
@@ -1548,7 +1600,23 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
           await wait(retryDelay);
         }
       }
-      if (!images[index] && lastError) errors.push(`第 ${absoluteIndex + 1}/${total} 张：${lastError}`);
+      if (!images[index] && lastError) {
+        errors.push(`第 ${absoluteIndex + 1}/${total} 张：${lastError}`);
+        if (!generationCancelled && options.apiProvider === "platform") {
+          options.platformFailureReported = true;
+          void reportPlatformGenerationFailure(
+            {
+              ...options,
+              count: 1,
+              batchIndex: absoluteIndex + 1,
+              batchTotal: total,
+              requestAttempt: SINGLE_IMAGE_MAX_ATTEMPTS,
+            },
+            new Error(lastError),
+            0,
+          );
+        }
+      }
     } finally {
       completed += 1;
       const imageCount = images.filter(Boolean).length;
@@ -4230,10 +4298,12 @@ async function loadBillingLedger(options = {}) {
     if (walletSessionChanged(sessionSnapshot)) return;
     if (!response.ok) throw new Error(payload?.error?.message || "流水读取失败");
     billingState.ledger = Array.isArray(payload.ledger) ? payload.ledger : [];
+    billingState.ledgerCount = Number.isFinite(Number(payload.ledgerCount)) ? Number(payload.ledgerCount) : billingState.ledger.length;
     billingState.ledgerLoading = false;
   } catch (error) {
     if (walletSessionChanged(sessionSnapshot)) return;
     billingState.ledger = [];
+    billingState.ledgerCount = 0;
     billingState.ledgerLoading = false;
     if (!options.silent) console.warn("流水读取失败", error);
   }
@@ -4441,6 +4511,8 @@ function renderAdminUserUsagePanel() {
   const user = payload.user || {};
   const generationLogs = Array.isArray(payload.generationLogs) ? payload.generationLogs : [];
   const ledger = Array.isArray(payload.ledger) ? payload.ledger : [];
+  const generationLogCount = Number.isFinite(Number(payload.generationLogCount)) ? Number(payload.generationLogCount) : generationLogs.length;
+  const ledgerCount = Number.isFinite(Number(payload.ledgerCount)) ? Number(payload.ledgerCount) : ledger.length;
   return `
     <div class="site-user-usage-panel">
       <div class="site-user-usage-head">
@@ -4449,13 +4521,13 @@ function renderAdminUserUsagePanel() {
       </div>
       <div class="site-user-usage-grid">
         <section class="site-user-usage-section">
-          <h4>生成日志</h4>
+          <h4>生成日志 <span class="section-count">${generationLogCount}条</span></h4>
           <div class="site-user-usage-list">
             ${generationLogs.length ? generationLogs.map(renderAdminGenerationUsageItem).join("") : '<div class="log-empty">暂无生成日志</div>'}
           </div>
         </section>
         <section class="site-user-usage-section">
-          <h4>余额流水</h4>
+          <h4>余额流水 <span class="section-count">${ledgerCount}条</span></h4>
           <div class="site-user-usage-list">
             ${ledger.length ? ledger.map(renderAdminLedgerUsageItem).join("") : '<div class="log-empty">暂无余额流水</div>'}
           </div>
@@ -4642,6 +4714,7 @@ function applyBillingDashboard(payload) {
   if (payload.sessionToken) persistWalletSessionToken(payload.sessionToken);
   if (!billingState.sessionToken) billingState.sessionToken = readWalletSessionToken();
   if (!billingState.authenticated) billingState.ledger = [];
+  if (!billingState.authenticated) billingState.ledgerCount = 0;
   if (!billingState.authenticated) billingState.ledgerLoading = false;
   billingState.priceCents = Number(payload.priceCents || billingState.priceCents || PLATFORM_PRICE_FALLBACK_CENTS);
   billingState.upstreamCostCents = Number(payload.upstreamCostCents || billingState.upstreamCostCents || 0);
@@ -4679,6 +4752,7 @@ function renderWallet() {
 function renderLedgerList() {
   const list = $("#ledgerList");
   if (!list) return;
+  updateLedgerCount();
   if (!billingState.authenticated) {
     list.innerHTML = `<div class="log-empty">登录后显示余额流水。</div>`;
     return;
@@ -4718,6 +4792,15 @@ function renderLedgerList() {
       },
     )
     .join("");
+}
+
+function updateLedgerCount() {
+  const countEl = $("#walletLedgerCount");
+  if (!countEl) return;
+  const count = billingState.authenticated
+    ? (Number.isFinite(Number(billingState.ledgerCount)) ? Number(billingState.ledgerCount) : billingState.ledger.length)
+    : 0;
+  countEl.textContent = `${count}条`;
 }
 
 async function sendLoginCode() {
@@ -4822,6 +4905,7 @@ async function logoutWallet() {
   billingState.email = "";
   billingState.balanceCents = 0;
   billingState.ledger = [];
+  billingState.ledgerCount = 0;
   billingState.ledgerLoading = false;
   clearWalletSessionToken();
   syncGalleryViewWithAuth();
@@ -6163,6 +6247,7 @@ function updatePendingRequestLog(entry, endpoint, request, variant = "") {
 function renderGenerationLogs() {
   const list = $("#generationLogList");
   if (!list) return;
+  updateGenerationLogCount();
   renderCurrentLogPreview();
 
   const notice = `<div class="log-notice">如果遇到超时、失败或结果未知，可以稍后重试、降低单次生成数量，或切换模型重试。</div>`;
@@ -6203,6 +6288,12 @@ function renderGenerationLogs() {
       `;
     })
     .join("");
+}
+
+function updateGenerationLogCount() {
+  const countEl = $("#generationLogCount");
+  if (!countEl) return;
+  countEl.textContent = `${generationLogs.length}条`;
 }
 
 function renderCurrentLogPreview() {
