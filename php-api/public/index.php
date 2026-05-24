@@ -601,6 +601,34 @@ function public_ledger_item(array $item): array
     ];
 }
 
+function public_generation_request_item(array $item): array
+{
+    return [
+        'id' => (int)($item['id'] ?? 0),
+        'requestId' => (string)($item['request_id'] ?? ''),
+        'logCode' => (string)($item['log_code'] ?? ''),
+        'mode' => (string)($item['mode'] ?? ''),
+        'model' => (string)($item['model'] ?? ''),
+        'prompt' => (string)($item['prompt'] ?? ''),
+        'size' => (string)($item['size'] ?? ''),
+        'ratio' => (string)($item['ratio'] ?? ''),
+        'batchIndex' => (int)($item['batch_index'] ?? 0),
+        'batchTotal' => (int)($item['batch_total'] ?? 0),
+        'imageCount' => (int)($item['image_count'] ?? 0),
+        'priceCents' => (int)($item['price_cents'] ?? 0),
+        'totalCents' => (int)($item['total_cents'] ?? 0),
+        'status' => (string)($item['status'] ?? ''),
+        'errorMessage' => (string)($item['error_message'] ?? ''),
+        'requestPreview' => (string)($item['request_preview'] ?? ''),
+        'responsePreview' => (string)($item['response_preview'] ?? ''),
+        'httpStatus' => (int)($item['http_status'] ?? 0),
+        'contentType' => (string)($item['content_type'] ?? ''),
+        'requestVariant' => (string)($item['request_variant'] ?? ''),
+        'createdAt' => utc_sql_timestamp_ms((string)($item['created_at'] ?? '')),
+        'completedAt' => !empty($item['completed_at']) ? utc_sql_timestamp_ms((string)$item['completed_at']) : 0,
+    ];
+}
+
 function public_ledger_note(string $note): string
 {
     $note = trim($note);
@@ -1109,6 +1137,11 @@ function ensure_usage_log_columns(PDO $pdo): bool
         ensure_table_column($pdo, 'generation_requests', 'ratio', "VARCHAR(40) NOT NULL DEFAULT '' AFTER size");
         ensure_table_column($pdo, 'generation_requests', 'batch_index', "INT NOT NULL DEFAULT 0 AFTER ratio");
         ensure_table_column($pdo, 'generation_requests', 'batch_total', "INT NOT NULL DEFAULT 0 AFTER batch_index");
+        ensure_table_column($pdo, 'generation_requests', 'request_preview', "TEXT NULL AFTER batch_total");
+        ensure_table_column($pdo, 'generation_requests', 'response_preview', "TEXT NULL AFTER request_preview");
+        ensure_table_column($pdo, 'generation_requests', 'http_status', "INT NOT NULL DEFAULT 0 AFTER response_preview");
+        ensure_table_column($pdo, 'generation_requests', 'content_type', "VARCHAR(120) NOT NULL DEFAULT '' AFTER http_status");
+        ensure_table_column($pdo, 'generation_requests', 'request_variant', "VARCHAR(40) NOT NULL DEFAULT '' AFTER content_type");
         ensure_table_index($pdo, 'generation_requests', 'idx_generation_log_code', '(log_code)');
         $done = true;
     } catch (Throwable $error) {
@@ -1374,12 +1407,105 @@ function generate_platform(PDO $pdo, array $config): void
                 'imageCount' => 0,
                 'priceCents' => $price,
                 'errorMessage' => $message,
+                'requestPreview' => platform_backend_request_preview($platform, $endpoint, $request, $payload),
+                'responsePreview' => $message,
+                'httpStatus' => isset($upstream) ? max(0, (int)($upstream['status'] ?? 0)) : 0,
+                'contentType' => isset($upstream) ? usage_log_text(upstream_content_type((string)($upstream['headers'] ?? '')), 120) : '',
+                'requestVariant' => usage_log_text((string)($request['payloadVariant'] ?? $payload['requestVariant'] ?? ''), 40),
             ]);
         } catch (Throwable $logError) {
             error_log('generation failure log failed: ' . $logError->getMessage());
         }
         throw new HttpError($message, 502, 'platform_failed');
     }
+}
+
+function platform_backend_request_preview(array $platform, string $endpoint, array $request, array $payload = []): string
+{
+    $requestSummary = [
+        'method' => (string)($request['method'] ?? 'POST'),
+        'endpoint' => $endpoint !== '' ? '[站点 API 地址已隐藏]' : '',
+        'bodyType' => (string)($request['bodyType'] ?? 'json'),
+    ];
+    if (($request['bodyType'] ?? '') === 'multipart') {
+        $requestSummary['payloadVariant'] = (string)($request['payloadVariant'] ?? '');
+        $requestSummary['fileFieldMode'] = (string)($request['fileFieldMode'] ?? '');
+        $requestSummary['fields'] = platform_log_sanitize($request['fields'] ?? []);
+        $requestSummary['files'] = array_map(static function ($file): array {
+            $item = is_array($file) ? $file : [];
+            return [
+                'field' => (string)($item['field'] ?? ''),
+                'filename' => (string)($item['filename'] ?? ''),
+                'dataUrl' => platform_log_image_summary((string)($item['dataUrl'] ?? '')),
+            ];
+        }, is_array($request['files'] ?? null) ? $request['files'] : []);
+    } else {
+        $body = json_decode((string)($request['body'] ?? ''), true);
+        $requestSummary['body'] = platform_log_sanitize(is_array($body) ? $body : (string)($request['body'] ?? ''));
+    }
+    $text = [
+        '站点配置: ' . usage_log_text((string)($payload['siteConfig'] ?? $platform['display_name'] ?? '站点配置1'), 80),
+        '提示词: ' . platform_request_prompt($request),
+        '请求变体: ' . usage_log_text((string)($request['payloadVariant'] ?? $payload['requestVariant'] ?? '-'), 40),
+        '请求: ' . platform_log_json($requestSummary),
+    ];
+    return usage_log_text(implode("\n\n", $text), 4000);
+}
+
+function platform_log_sanitize($value, string $key = '', int $depth = 0)
+{
+    if ($depth > 6) {
+        return '[已截断]';
+    }
+    if (is_array($value)) {
+        $clean = [];
+        $count = 0;
+        foreach ($value as $itemKey => $itemValue) {
+            $count++;
+            if ($count > 30) {
+                $clean['...'] = '已省略更多字段';
+                break;
+            }
+            $clean[$itemKey] = platform_log_sanitize($itemValue, (string)$itemKey, $depth + 1);
+        }
+        return $clean;
+    }
+    if (is_string($value)) {
+        if (preg_match('/authorization|api[-_ ]?key|secret|token/i', $key)) {
+            return '[已隐藏]';
+        }
+        if (starts_with($value, 'data:image/')) {
+            return platform_log_image_summary($value);
+        }
+        if (preg_match('/^[A-Za-z0-9+\/=_-]{800,}$/', $value)) {
+            return '[base64 已隐藏，长度 ' . strlen($value) . ']';
+        }
+        $value = preg_replace('/Bearer\s+[A-Za-z0-9._-]+/i', 'Bearer [已隐藏]', $value) ?? $value;
+        $value = preg_replace('/sk-[A-Za-z0-9._-]+/i', 'sk-[已隐藏]', $value) ?? $value;
+        $value = preg_replace('#https?://[^\s"\'<>]+/v1/images/(?:generations|edits)\b[^\s"\'<>]*#i', '[站点 API 地址已隐藏]', $value) ?? $value;
+        return usage_log_text($value, 1200);
+    }
+    return $value;
+}
+
+function platform_log_image_summary(string $value): string
+{
+    if ($value === '') {
+        return '';
+    }
+    if (preg_match('/^data:(image\/[^;]+);base64,(.*)$/s', $value, $matches)) {
+        return '[' . $matches[1] . ' 数据已隐藏，长度 ' . strlen($matches[2]) . ']';
+    }
+    return usage_log_text($value, 1200);
+}
+
+function platform_log_json($value): string
+{
+    $json = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+    if ($json === false) {
+        return '';
+    }
+    return usage_log_text($json, 3000);
 }
 
 function platform_upstream_error_message(array $upstream, ?array $bodyPayload): string
@@ -1635,6 +1761,11 @@ function settle_generation(PDO $pdo, array $config): void
         'siteConfig' => usage_log_text((string)($payload['siteConfig'] ?? ($ticket['siteConfig'] ?? '')), 80),
         'batchIndex' => max(0, (int)($payload['batchIndex'] ?? 0)),
         'batchTotal' => max(0, (int)($payload['batchTotal'] ?? 0)),
+        'requestPreview' => usage_log_text((string)($payload['requestPreview'] ?? ''), 4000),
+        'responsePreview' => usage_log_text((string)($payload['responsePreview'] ?? ''), 4000),
+        'httpStatus' => max(0, (int)($payload['httpStatus'] ?? 0)),
+        'contentType' => usage_log_text((string)($payload['contentType'] ?? ''), 120),
+        'requestVariant' => usage_log_text((string)($payload['requestVariant'] ?? ''), 40),
     ];
     $result = charge_generation_success($pdo, (int)$ticket['uid'], $requestId, (string)$ticket['mode'], $model, $price, $imageId, $usageMeta);
     $logCode = (string)($result['logCode'] ?? $logCode);
@@ -1664,6 +1795,11 @@ function generation_failure_log(PDO $pdo, array $config): void
         'imageCount' => max(0, (int)($payload['imageCount'] ?? 0)),
         'priceCents' => max(0, (int)($payload['priceCents'] ?? 0)),
         'errorMessage' => usage_log_text((string)($payload['errorMessage'] ?? '生成失败'), 500),
+        'requestPreview' => usage_log_text((string)($payload['requestPreview'] ?? ''), 4000),
+        'responsePreview' => usage_log_text((string)($payload['responsePreview'] ?? ''), 4000),
+        'httpStatus' => max(0, (int)($payload['httpStatus'] ?? 0)),
+        'contentType' => usage_log_text((string)($payload['contentType'] ?? ''), 120),
+        'requestVariant' => usage_log_text((string)($payload['requestVariant'] ?? ''), 40),
     ]);
     json_response(['ok' => true, 'requestId' => $result['requestId'], 'logCode' => $result['logCode']]);
 }
@@ -1695,13 +1831,18 @@ function record_generation_failure(PDO $pdo, int $userId, string $requestId, arr
         'ratio' => usage_log_text((string)($payload['ratio'] ?? ''), 40),
         'batchIndex' => max(0, (int)($payload['batchIndex'] ?? 0)),
         'batchTotal' => max(0, (int)($payload['batchTotal'] ?? 0)),
+        'requestPreview' => usage_log_text((string)($payload['requestPreview'] ?? ''), 4000),
+        'responsePreview' => usage_log_text((string)($payload['responsePreview'] ?? ''), 4000),
+        'httpStatus' => max(0, (int)($payload['httpStatus'] ?? 0)),
+        'contentType' => usage_log_text((string)($payload['contentType'] ?? ''), 120),
+        'requestVariant' => usage_log_text((string)($payload['requestVariant'] ?? ''), 40),
     ];
     $hasUsageColumns = ensure_usage_log_columns($pdo);
     if ($hasUsageColumns) {
         $stmt = $pdo->prepare(
             "INSERT INTO generation_requests
-             (user_id, request_id, log_code, mode, model, prompt, size, ratio, batch_index, batch_total, image_count, price_cents, total_cents, status, error_message, created_at, completed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'failed', ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+             (user_id, request_id, log_code, mode, model, prompt, size, ratio, batch_index, batch_total, image_count, price_cents, total_cents, status, error_message, request_preview, response_preview, http_status, content_type, request_variant, created_at, completed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'failed', ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
              ON DUPLICATE KEY UPDATE
                status = IF(status = 'succeeded', status, 'failed'),
                error_message = IF(status = 'succeeded', error_message, VALUES(error_message)),
@@ -1711,7 +1852,12 @@ function record_generation_failure(PDO $pdo, int $userId, string $requestId, arr
                size = IF(size = '', VALUES(size), size),
                ratio = IF(ratio = '', VALUES(ratio), ratio),
                batch_index = IF(batch_index = 0, VALUES(batch_index), batch_index),
-               batch_total = IF(batch_total = 0, VALUES(batch_total), batch_total)"
+               batch_total = IF(batch_total = 0, VALUES(batch_total), batch_total),
+               request_preview = IF(request_preview = '', VALUES(request_preview), request_preview),
+               response_preview = IF(response_preview = '', VALUES(response_preview), response_preview),
+               http_status = IF(http_status = 0, VALUES(http_status), http_status),
+               content_type = IF(content_type = '', VALUES(content_type), content_type),
+               request_variant = IF(request_variant = '', VALUES(request_variant), request_variant)"
         );
         $stmt->execute([
             $userId,
@@ -1727,6 +1873,11 @@ function record_generation_failure(PDO $pdo, int $userId, string $requestId, arr
             $imageCount,
             $priceCents,
             $errorMessage,
+            $usageMeta['requestPreview'],
+            $usageMeta['responsePreview'],
+            $usageMeta['httpStatus'],
+            $usageMeta['contentType'],
+            $usageMeta['requestVariant'],
         ]);
     } else {
         $stmt = $pdo->prepare(
@@ -1784,7 +1935,12 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
                 $updateGeneration = $pdo->prepare(
                     "UPDATE generation_requests
                      SET log_code = ?, prompt = IF(prompt = '', ?, prompt), size = IF(size = '', ?, size), ratio = IF(ratio = '', ?, ratio),
-                         batch_index = IF(batch_index = 0, ?, batch_index), batch_total = IF(batch_total = 0, ?, batch_total)
+                         batch_index = IF(batch_index = 0, ?, batch_index), batch_total = IF(batch_total = 0, ?, batch_total),
+                         request_preview = IF(request_preview = '' OR request_preview IS NULL, ?, request_preview),
+                         response_preview = IF(response_preview = '' OR response_preview IS NULL, ?, response_preview),
+                         http_status = IF(http_status = 0, ?, http_status),
+                         content_type = IF(content_type = '', ?, content_type),
+                         request_variant = IF(request_variant = '', ?, request_variant)
                      WHERE id = ?"
                 );
                 $updateGeneration->execute([
@@ -1794,6 +1950,11 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
                     usage_log_text((string)($usageMeta['ratio'] ?? ''), 40),
                     max(0, (int)($usageMeta['batchIndex'] ?? 0)),
                     max(0, (int)($usageMeta['batchTotal'] ?? 0)),
+                    usage_log_text((string)($usageMeta['requestPreview'] ?? ''), 4000),
+                    usage_log_text((string)($usageMeta['responsePreview'] ?? ''), 4000),
+                    max(0, (int)($usageMeta['httpStatus'] ?? 0)),
+                    usage_log_text((string)($usageMeta['contentType'] ?? ''), 120),
+                    usage_log_text((string)($usageMeta['requestVariant'] ?? ''), 40),
                     (int)$old['id'],
                 ]);
                 $updateLedger = $pdo->prepare(
@@ -1826,8 +1987,8 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
         if ($hasUsageColumns) {
             $insert = $pdo->prepare(
                 "INSERT INTO generation_requests
-                 (user_id, request_id, log_code, mode, model, prompt, size, ratio, batch_index, batch_total, image_count, price_cents, total_cents, status, error_message, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'succeeded', '', UTC_TIMESTAMP())"
+                 (user_id, request_id, log_code, mode, model, prompt, size, ratio, batch_index, batch_total, request_preview, response_preview, http_status, content_type, request_variant, image_count, price_cents, total_cents, status, error_message, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'succeeded', '', UTC_TIMESTAMP())"
             );
             $insert->execute([
                 $userId,
@@ -1840,6 +2001,11 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
                 usage_log_text((string)($usageMeta['ratio'] ?? ''), 40),
                 max(0, (int)($usageMeta['batchIndex'] ?? 0)),
                 max(0, (int)($usageMeta['batchTotal'] ?? 0)),
+                usage_log_text((string)($usageMeta['requestPreview'] ?? ''), 4000),
+                usage_log_text((string)($usageMeta['responsePreview'] ?? ''), 4000),
+                max(0, (int)($usageMeta['httpStatus'] ?? 0)),
+                usage_log_text((string)($usageMeta['contentType'] ?? ''), 120),
+                usage_log_text((string)($usageMeta['requestVariant'] ?? ''), 40),
                 $price,
                 $price,
             ]);
@@ -2444,25 +2610,7 @@ function admin_user_usage(PDO $pdo, array $config): void
     $generationStmt->execute([$userId]);
     $generationLogs = [];
     foreach ($generationStmt->fetchAll() as $item) {
-        $generationLogs[] = [
-            'id' => (int)$item['id'],
-            'requestId' => (string)$item['request_id'],
-            'logCode' => (string)($item['log_code'] ?? ''),
-            'mode' => (string)$item['mode'],
-            'model' => (string)$item['model'],
-            'prompt' => (string)($item['prompt'] ?? ''),
-            'size' => (string)($item['size'] ?? ''),
-            'ratio' => (string)($item['ratio'] ?? ''),
-            'batchIndex' => (int)($item['batch_index'] ?? 0),
-            'batchTotal' => (int)($item['batch_total'] ?? 0),
-            'imageCount' => (int)$item['image_count'],
-            'priceCents' => (int)$item['price_cents'],
-            'totalCents' => (int)$item['total_cents'],
-            'status' => (string)$item['status'],
-            'errorMessage' => (string)$item['error_message'],
-            'createdAt' => utc_sql_timestamp_ms((string)$item['created_at']),
-            'completedAt' => $item['completed_at'] ? utc_sql_timestamp_ms((string)$item['completed_at']) : 0,
-        ];
+        $generationLogs[] = public_generation_request_item($item);
     }
 
     json_response([

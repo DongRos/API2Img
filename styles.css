@@ -1764,6 +1764,16 @@ button:disabled {
   background: color-mix(in srgb, var(--glass-soft) 75%, transparent);
 }
 
+.site-user-usage-item.failed {
+  border-color: color-mix(in srgb, var(--danger) 38%, var(--glass-border));
+  background: color-mix(in srgb, var(--danger) 7%, var(--glass-soft));
+}
+
+.site-user-usage-item.failed .site-user-usage-row strong,
+.site-user-usage-item.failed .site-user-usage-row span {
+  color: var(--danger);
+}
+
 .site-user-usage-row,
 .site-user-usage-meta {
   display: flex;
@@ -1807,6 +1817,31 @@ button:disabled {
   color: var(--muted);
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+
+.site-user-usage-detail {
+  margin-top: 7px;
+}
+
+.site-user-usage-detail summary {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.site-user-usage-detail pre {
+  max-height: 220px;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--glass-border) 85%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--glass-strong) 82%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .api-stat-card {
@@ -2779,6 +2814,11 @@ body[data-theme="light"] .wallet-panel {
 
   .site-user-usage-list {
     max-height: 260px;
+  }
+
+  .site-user-usage-detail pre {
+    max-height: 170px;
+    font-size: 10.5px;
   }
 
   .api-stat-grid {

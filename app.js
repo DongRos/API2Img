@@ -1374,6 +1374,18 @@ function findRequestLogEntry(options, index) {
   return [...log.requests].reverse().find((entry) => String(entry.label || "").startsWith(label)) || null;
 }
 
+function enrichPlatformRequestMeta(options, requestEntry) {
+  if (!requestEntry) return options;
+  return {
+    ...options,
+    requestPreview: summarizeRequestForBackendLog(requestEntry),
+    responsePreview: requestEntry.responsePreview || requestEntry.error || "",
+    httpStatus: Number(requestEntry.httpStatus || 0),
+    contentType: requestEntry.contentType || "",
+    requestVariant: requestEntry.variant || "",
+  };
+}
+
 async function commitGeneratedImages(sources, options, startIndex, context) {
   const created = [];
   for (const [index, src] of sources.entries()) {
@@ -1395,6 +1407,8 @@ async function settlePlatformImage(result, options, index, context) {
   try {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
+        const requestEntry = findRequestLogEntry(options, index);
+        const enrichedOptions = enrichPlatformRequestMeta(options, requestEntry);
         const response = await apiFetchPreferDirect("/api/generate/settle", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1411,6 +1425,11 @@ async function settlePlatformImage(result, options, index, context) {
             siteConfig: options.apiDisplayName || billingState.platformDisplayName || "",
             batchIndex: Number(options.batchIndex) || index + 1,
             batchTotal: Number(options.batchTotal || options.count || 1),
+            requestPreview: enrichedOptions.requestPreview || "",
+            responsePreview: enrichedOptions.responsePreview || "",
+            httpStatus: Number(enrichedOptions.httpStatus || 0),
+            contentType: String(enrichedOptions.contentType || ""),
+            requestVariant: String(enrichedOptions.requestVariant || ""),
           }),
           timeoutMs: FAST_API_TIMEOUT_MS,
         }, {
@@ -1429,6 +1448,16 @@ async function settlePlatformImage(result, options, index, context) {
           const requestEntry = findRequestLogEntry(options, index);
           if (requestEntry) requestEntry.traceCode = payload.logCode;
           if (activeGenerationLog) activeGenerationLog.traceCode = payload.logCode;
+        }
+        if (requestEntry) {
+          options.requestPreview = enrichedOptions.requestPreview;
+          options.responsePreview = enrichedOptions.responsePreview;
+          options.httpStatus = enrichedOptions.httpStatus;
+          options.contentType = enrichedOptions.contentType;
+          options.requestVariant = enrichedOptions.requestVariant;
+        }
+        if (requestEntry && !requestEntry.costCents) {
+          requestEntry.costCents = Number(payload.chargedCents || options.platformPriceCents || billingState.priceCents || 0);
         }
         applyPlatformRequestCost(options, index, Number(payload.chargedCents || options.platformPriceCents || billingState.priceCents || 0));
         renderWallet();
@@ -1456,6 +1485,8 @@ async function settlePlatformImage(result, options, index, context) {
 async function reportPlatformGenerationFailure(options = {}, error = null, imageCount = 0) {
   if (options.apiProvider !== "platform" || !billingState.authenticated || !currentWalletSessionToken()) return;
   try {
+    const requestEntry = findRequestLogEntry(options, Number(options.batchIndex || 1) - 1);
+    const enrichedOptions = enrichPlatformRequestMeta(options, requestEntry);
     const response = await apiFetchPreferDirect("/api/generate/failure-log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1474,6 +1505,11 @@ async function reportPlatformGenerationFailure(options = {}, error = null, image
         imageCount: Math.max(0, Number(imageCount) || 0),
         priceCents: Number(options.platformPriceCents || billingState.priceCents || 0),
         errorMessage: cleanErrorMessage(error) || "生成失败",
+        requestPreview: enrichedOptions.requestPreview || "",
+        responsePreview: enrichedOptions.responsePreview || cleanErrorMessage(error) || "",
+        httpStatus: Number(enrichedOptions.httpStatus || 0),
+        contentType: String(enrichedOptions.contentType || ""),
+        requestVariant: String(enrichedOptions.requestVariant || ""),
       }),
       timeoutMs: FAST_API_TIMEOUT_MS,
     }, {
@@ -4651,11 +4687,15 @@ function renderAdminGenerationUsageItem(item) {
     item.size || item.ratio || "",
     Number(item.batchTotal || 0) > 1 ? `${item.batchIndex || 1}/${item.batchTotal}` : "",
   ].filter(Boolean).join(" · ");
+  const isFailed = String(item.status || "") === "failed";
+  const amountCents = isFailed ? 0 : Number(item.totalCents || item.priceCents || 0);
+  const requestPreview = String(item.requestPreview || "").trim();
+  const responsePreview = String(item.responsePreview || item.errorMessage || "").trim();
   return `
-    <article class="site-user-usage-item">
+    <article class="site-user-usage-item ${isFailed ? "failed" : ""}">
       <div class="site-user-usage-row">
         <strong>${escapeHtml(status)}</strong>
-        <span>${escapeHtml(formatMoney(item.totalCents || item.priceCents || 0))} 元</span>
+        <span>${escapeHtml(formatMoney(amountCents))} 元</span>
       </div>
       <p>${escapeHtml(prompt)}</p>
       <div class="site-user-usage-meta">
@@ -4663,6 +4703,8 @@ function renderAdminGenerationUsageItem(item) {
         <span>${escapeHtml(meta || "生成记录")}</span>
         <span>${escapeHtml(formatWalletTime(item.completedAt || item.createdAt))}</span>
       </div>
+      ${requestPreview ? `<details class="site-user-usage-detail"><summary>API请求</summary><pre>${escapeHtml(requestPreview)}</pre></details>` : ""}
+      ${responsePreview ? `<details class="site-user-usage-detail"><summary>API返回</summary><pre>${escapeHtml(responsePreview)}</pre></details>` : ""}
     </article>
   `;
 }
@@ -6042,6 +6084,18 @@ function formatSignedMoney(cents) {
   const value = Number(cents || 0);
   const sign = value > 0 ? "+" : "";
   return `${sign}${formatMoney(value)}`;
+}
+
+function summarizeRequestForBackendLog(entry) {
+  if (!entry) return "";
+  return [
+    `站点配置: ${visibleLogApiName(entry)}`,
+    `代码: ${compactLogCode(entry.traceCode)}`,
+    `提示词: ${entry.prompt || ""}`,
+    `请求变体: ${entry.variant || "-"}`,
+    `参数: ${summarizeLogValue(entry.params)}`,
+    `请求: ${summarizeLogValue(entry.request)}`,
+  ].join("\n\n");
 }
 
 function walletLedgerTypeLabel(type) {
