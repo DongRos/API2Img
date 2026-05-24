@@ -603,6 +603,14 @@ function public_ledger_item(array $item): array
 
 function public_generation_request_item(array $item): array
 {
+    $requestPreview = trim((string)($item['request_preview'] ?? ''));
+    if ($requestPreview === '') {
+        $requestPreview = public_generation_request_preview($item);
+    }
+    $responsePreview = trim((string)($item['response_preview'] ?? ''));
+    if ($responsePreview === '') {
+        $responsePreview = public_generation_response_preview($item);
+    }
     return [
         'id' => (int)($item['id'] ?? 0),
         'requestId' => (string)($item['request_id'] ?? ''),
@@ -619,14 +627,54 @@ function public_generation_request_item(array $item): array
         'totalCents' => (int)($item['total_cents'] ?? 0),
         'status' => (string)($item['status'] ?? ''),
         'errorMessage' => (string)($item['error_message'] ?? ''),
-        'requestPreview' => (string)($item['request_preview'] ?? ''),
-        'responsePreview' => (string)($item['response_preview'] ?? ''),
+        'requestPreview' => $requestPreview,
+        'responsePreview' => $responsePreview,
         'httpStatus' => (int)($item['http_status'] ?? 0),
         'contentType' => (string)($item['content_type'] ?? ''),
         'requestVariant' => (string)($item['request_variant'] ?? ''),
         'createdAt' => utc_sql_timestamp_ms((string)($item['created_at'] ?? '')),
         'completedAt' => !empty($item['completed_at']) ? utc_sql_timestamp_ms((string)$item['completed_at']) : 0,
     ];
+}
+
+function public_generation_request_preview(array $item): string
+{
+    $request = [
+        'mode' => (string)($item['mode'] ?? ''),
+        'model' => (string)($item['model'] ?? ''),
+        'prompt' => (string)($item['prompt'] ?? ''),
+        'size' => (string)($item['size'] ?? ''),
+        'ratio' => (string)($item['ratio'] ?? ''),
+        'batchIndex' => (int)($item['batch_index'] ?? 0),
+        'batchTotal' => (int)($item['batch_total'] ?? 0),
+        'requestVariant' => (string)($item['request_variant'] ?? ''),
+        'httpStatus' => (int)($item['http_status'] ?? 0),
+        'contentType' => (string)($item['content_type'] ?? ''),
+    ];
+    $json = json_encode(array_filter($request, static fn($value) => $value !== '' && $value !== 0 && $value !== []), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+    return $json !== false ? $json : '';
+}
+
+function public_generation_response_preview(array $item): string
+{
+    $status = (string)($item['status'] ?? '');
+    $error = trim((string)($item['error_message'] ?? ''));
+    $contentType = trim((string)($item['content_type'] ?? ''));
+    $httpStatus = (int)($item['http_status'] ?? 0);
+    $parts = [];
+    if ($httpStatus > 0) {
+        $parts[] = 'HTTP ' . $httpStatus;
+    }
+    if ($contentType !== '') {
+        $parts[] = $contentType;
+    }
+    if ($status !== '') {
+        $parts[] = $status;
+    }
+    if ($error !== '') {
+        $parts[] = $error;
+    }
+    return implode(' · ', $parts);
 }
 
 function public_ledger_note(string $note): string
@@ -1934,8 +1982,12 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
             if ($hasUsageColumns && $logCode !== '' && $oldLogCode === '') {
                 $updateGeneration = $pdo->prepare(
                     "UPDATE generation_requests
-                     SET log_code = ?, prompt = IF(prompt = '', ?, prompt), size = IF(size = '', ?, size), ratio = IF(ratio = '', ?, ratio),
-                         batch_index = IF(batch_index = 0, ?, batch_index), batch_total = IF(batch_total = 0, ?, batch_total),
+                     SET log_code = IF(log_code = '', ?, log_code),
+                         prompt = IF(prompt = '', ?, prompt),
+                         size = IF(size = '', ?, size),
+                         ratio = IF(ratio = '', ?, ratio),
+                         batch_index = IF(batch_index = 0, ?, batch_index),
+                         batch_total = IF(batch_total = 0, ?, batch_total),
                          request_preview = IF(request_preview = '' OR request_preview IS NULL, ?, request_preview),
                          response_preview = IF(response_preview = '' OR response_preview IS NULL, ?, response_preview),
                          http_status = IF(http_status = 0, ?, http_status),
@@ -1957,6 +2009,8 @@ function charge_generation_success(PDO $pdo, int $userId, string $requestId, str
                     usage_log_text((string)($usageMeta['requestVariant'] ?? ''), 40),
                     (int)$old['id'],
                 ]);
+            }
+            if ($hasUsageColumns) {
                 $updateLedger = $pdo->prepare(
                     "UPDATE wallet_ledger
                      SET log_code = ?
@@ -2175,18 +2229,32 @@ function reference_image_json_endpoint(string $endpoint, string $model = ''): st
     if (!endpoint_uses_reference_image_json($endpoint, $model)) {
         return '';
     }
-    return preg_replace('#/images/edits/?(\?.*)?$#i', '/images/generations$1', $endpoint) ?: $endpoint;
+    return preg_replace('#/images/edits?/?(\?.*)?$#i', '/images/generations$1', $endpoint) ?: $endpoint;
 }
 
 function endpoint_uses_reference_image_json(string $endpoint, string $model = ''): bool
 {
     $host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
     $path = (string)parse_url($endpoint, PHP_URL_PATH);
-    if (!preg_match('#/v\d+/images/(?:generations|edits)/?$#i', $path)) {
+    if (!preg_match('#/v\d+/images/(?:generations|edits?)/?$#i', $path)) {
         return false;
     }
-    return (bool)preg_match('/(^|\.)hfsyapi\.cn$/i', $host)
+    return endpoint_is_hfsy_api($endpoint)
         || is_gpt_image_2_model($model);
+}
+
+function endpoint_is_hfsy_api(string $endpoint): bool
+{
+    $host = strtolower((string)parse_url($endpoint, PHP_URL_HOST));
+    if ($host !== '') {
+        return (bool)preg_match('/(^|\.)hfsyapi\.cn$/i', $host);
+    }
+    return (bool)preg_match('/(^|[\/:])(?:www\.)?hfsyapi\.cn(?=\/|$)/i', $endpoint);
+}
+
+function reference_image_json_prefers_base64(string $endpoint, string $model = ''): bool
+{
+    return is_gpt_image_2_model($model) && !endpoint_is_hfsy_api($endpoint);
 }
 
 function sign_generation_ticket(array $config, array $claims, string $token): string
@@ -2283,12 +2351,15 @@ function platform_reference_json_request(array $config, string $endpoint, array 
         $body['seed'] = is_numeric($fields['seed']) ? (int)$fields['seed'] : (string)$fields['seed'];
     }
 
+    $preferBase64 = reference_image_json_prefers_base64($endpoint, (string)($body['model'] ?? 'gpt-image-2'));
     foreach (array_slice(is_array($request['files'] ?? null) ? $request['files'] : [], 0, 4) as $file) {
         if (!is_array($file)) {
             continue;
         }
-        [$bytes] = reference_image_decode((string)($file['dataUrl'] ?? ''));
-        $body['reference_images'][] = base64_encode($bytes);
+        [$bytes, , $extension] = reference_image_decode((string)($file['dataUrl'] ?? ''));
+        $body['reference_images'][] = $preferBase64
+            ? base64_encode($bytes)
+            : reference_image_store($config, $bytes, $extension);
     }
     if (!count($body['reference_images'])) {
         throw new RuntimeException('图生图参考图为空');

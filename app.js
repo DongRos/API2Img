@@ -873,10 +873,10 @@ function referenceImageJsonEndpoint(endpoint, model = "") {
   if (!shouldUseReferenceImageUrlJson(value, model)) return "";
   try {
     const url = new URL(value);
-    url.pathname = url.pathname.replace(/\/images\/edits\/?$/i, "/images/generations");
+    url.pathname = url.pathname.replace(/\/images\/edits?\/?$/i, "/images/generations");
     return url.toString();
   } catch {
-    return value.replace(/\/images\/edits\/?(?=([?#]|$))/i, "/images/generations");
+    return value.replace(/\/images\/edits?\/?(?=([?#]|$))/i, "/images/generations");
   }
 }
 
@@ -885,14 +885,28 @@ function shouldUseReferenceImageUrlJson(endpoint = "", model = "") {
   if (!value) return false;
   try {
     const url = new URL(value);
-    const isImageEndpoint = /\/v\d+\/images\/(?:generations|edits)\/?$/i.test(url.pathname);
+    const isImageEndpoint = /\/v\d+\/images\/(?:generations|edits?)\/?$/i.test(url.pathname);
     if (!isImageEndpoint) return false;
-    return /(^|\.)hfsyapi\.cn$/i.test(url.hostname) || isGptImage2Model(model);
+    return isHfsyApiEndpoint(value) || isGptImage2Model(model);
   } catch {
-    const isImageEndpoint = /\/v\d+\/images\/(?:generations|edits)\/?([?#].*)?$/i.test(value);
+    const isImageEndpoint = /\/v\d+\/images\/(?:generations|edits?)\/?([?#].*)?$/i.test(value);
     if (!isImageEndpoint) return false;
-    return /hfsyapi\.cn/i.test(value) || isGptImage2Model(model);
+    return isHfsyApiEndpoint(value) || isGptImage2Model(model);
   }
+}
+
+function isHfsyApiEndpoint(endpoint = "") {
+  const value = String(endpoint || "").trim();
+  if (!value) return false;
+  try {
+    return /(^|\.)hfsyapi\.cn$/i.test(new URL(value).hostname);
+  } catch {
+    return /hfsyapi\.cn/i.test(value);
+  }
+}
+
+function referenceImageJsonPrefersBase64(endpoint = "", model = "") {
+  return isGptImage2Model(model) && !isHfsyApiEndpoint(endpoint);
 }
 
 function isGptImage2Model(model = "") {
@@ -925,7 +939,7 @@ async function requestTextImages(endpoint, headers, options, variant) {
 
 async function requestReferenceJsonImages(endpoint, headers, options, variant) {
   headers["Content-Type"] = "application/json";
-  const body = await buildReferenceImageJsonBody(options, variant);
+  const body = await buildReferenceImageJsonBody(endpoint, options, variant);
   return sendAndParseImageRequest(
     endpoint,
     {
@@ -1175,10 +1189,10 @@ function buildImageJsonBody(options, variant) {
   return body;
 }
 
-async function buildReferenceImageJsonBody(options, variant) {
+async function buildReferenceImageJsonBody(endpoint, options, variant) {
   const body = buildImageJsonBody(options, variant);
   body.reference_images = await referenceImageValuesForApi(options.referenceImages || [], {
-    preferBase64: isGptImage2Model(options.model),
+    preferBase64: referenceImageJsonPrefersBase64(endpoint, options.model),
   });
   if (!body.reference_images.length) throw new Error("图生图参考图为空");
   return body;
@@ -1195,7 +1209,7 @@ async function referenceJsonRequestFromMultipart(endpoint, request, modelName = 
       dataUrl: file?.dataUrl || "",
       url: file?.url || "",
     })), {
-      preferBase64: isGptImage2Model(fields.model || modelName),
+      preferBase64: referenceImageJsonPrefersBase64(endpoint, fields.model || modelName),
     }),
   };
   if (!body.reference_images.length) throw new Error("图生图参考图为空");
@@ -4703,8 +4717,8 @@ function renderAdminGenerationUsageItem(item) {
         <span>${escapeHtml(meta || "生成记录")}</span>
         <span>${escapeHtml(formatWalletTime(item.completedAt || item.createdAt))}</span>
       </div>
-      ${requestPreview ? `<details class="site-user-usage-detail"><summary>API请求</summary><pre>${escapeHtml(requestPreview)}</pre></details>` : ""}
-      ${responsePreview ? `<details class="site-user-usage-detail"><summary>API返回</summary><pre>${escapeHtml(responsePreview)}</pre></details>` : ""}
+      ${requestPreview ? `<div class="site-user-usage-detail"><div class="site-user-usage-detail-title">API请求</div><pre>${escapeHtml(requestPreview)}</pre></div>` : ""}
+      ${responsePreview ? `<div class="site-user-usage-detail"><div class="site-user-usage-detail-title">API返回</div><pre>${escapeHtml(responsePreview)}</pre></div>` : ""}
     </article>
   `;
 }
