@@ -795,6 +795,12 @@ body[data-theme="light"] .view-switch button.active {
   backdrop-filter: blur(var(--glass-blur)) saturate(1.25);
 }
 
+body.is-reference-dragging .prompt-card {
+  border-color: color-mix(in srgb, var(--accent) 68%, var(--glass-border));
+  background: color-mix(in srgb, var(--accent) 13%, var(--glass));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), var(--shadow);
+}
+
 .add-button,
 .send-button {
   width: 42px;

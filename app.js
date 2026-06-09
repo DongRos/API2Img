@@ -249,6 +249,7 @@ let resultMasonryObserver = null;
 let resultMasonryObservedWidth = 0;
 let loginCodeCooldownTimer = null;
 let loginCodeCooldownUntil = 0;
+let referenceDragDepth = 0;
 let lastCodeAdminCsv = "";
 let lastCodeAdminFilename = "";
 let billingReadyPromise = null;
@@ -358,6 +359,12 @@ function bindEvents() {
   $("#themeButton").addEventListener("click", toggleTheme);
   $("#uploadButton").addEventListener("click", () => $("#imageInput").click());
   $("#imageInput").addEventListener("change", onReferenceFiles);
+  document.addEventListener("dragenter", onReferenceDragEnter);
+  document.addEventListener("dragover", onReferenceDragOver);
+  document.addEventListener("dragleave", onReferenceDragLeave);
+  document.addEventListener("dragend", resetReferenceDragState);
+  document.addEventListener("drop", onReferenceDrop);
+  window.addEventListener("blur", resetReferenceDragState);
   $("#generateButton").addEventListener("click", () => generateImages());
   $("#editGenerateButton").addEventListener("click", generateFromDetail);
   $("#clearResultsButton").addEventListener("click", clearResults);
@@ -3870,15 +3877,108 @@ function inferSettingsFromDimensions(width, height) {
   };
 }
 
-async function onReferenceFiles(event) {
-  const files = [...event.target.files].filter((file) => file.type.startsWith("image/"));
-  for (const file of files) {
-    state.references.push({ id: makeId(), name: file.name, dataUrl: await fileToDataUrl(file) });
+async function addReferenceFiles(files, options = {}) {
+  const imageFiles = Array.from(files || []).filter(isImageFile);
+  if (!imageFiles.length) {
+    if (options.notify !== false) showToast("未检测到图片文件");
+    return 0;
   }
-  event.target.value = "";
+  let added = 0;
+  let failed = 0;
+  for (const file of imageFiles) {
+    try {
+      state.references.push({ id: makeId(), name: file.name, dataUrl: await fileToDataUrl(file) });
+      added += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  if (!added) {
+    if (options.notify !== false) showToast("图片读取失败，请重试");
+    return 0;
+  }
   $("#modeSelect").value = state.references.length ? "image" : "text";
   renderReferences();
   await persistState();
+  if (options.notify) showToast(failed ? `已添加 ${added} 张参考图，${failed} 张读取失败` : `已添加 ${added} 张参考图`);
+  return added;
+}
+
+async function onReferenceFiles(event) {
+  await addReferenceFiles(event.target.files, { notify: false });
+  event.target.value = "";
+}
+
+function isImageFile(file) {
+  if (!file) return false;
+  if (String(file.type || "").toLowerCase().startsWith("image/")) return true;
+  return /\.(png|jpe?g|webp|gif|bmp|avif|heic|heif|tiff?)$/i.test(String(file.name || ""));
+}
+
+function hasFileDragPayload(dataTransfer) {
+  return Array.from(dataTransfer?.types || []).some((type) => String(type).toLowerCase() === "files");
+}
+
+function droppedImageFiles(dataTransfer) {
+  const candidates = [];
+  if (dataTransfer?.items?.length) {
+    for (const item of Array.from(dataTransfer.items)) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file) candidates.push(file);
+    }
+  }
+  if (!candidates.length && dataTransfer?.files?.length) candidates.push(...Array.from(dataTransfer.files));
+  const seen = new Set();
+  return candidates.filter((file) => {
+    if (!isImageFile(file)) return false;
+    const key = [file.name, file.size, file.lastModified, file.type].join(":");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function setReferenceDragActive(active) {
+  document.body.classList.toggle("is-reference-dragging", Boolean(active));
+}
+
+function resetReferenceDragState() {
+  referenceDragDepth = 0;
+  setReferenceDragActive(false);
+}
+
+function onReferenceDragEnter(event) {
+  if (!hasFileDragPayload(event.dataTransfer)) return;
+  event.preventDefault();
+  referenceDragDepth += 1;
+  setReferenceDragActive(true);
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function onReferenceDragOver(event) {
+  if (!hasFileDragPayload(event.dataTransfer)) return;
+  event.preventDefault();
+  setReferenceDragActive(true);
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+function onReferenceDragLeave(event) {
+  if (!hasFileDragPayload(event.dataTransfer)) return;
+  referenceDragDepth = Math.max(0, referenceDragDepth - 1);
+  if (!referenceDragDepth) setReferenceDragActive(false);
+}
+
+async function onReferenceDrop(event) {
+  if (!hasFileDragPayload(event.dataTransfer)) return;
+  event.preventDefault();
+  resetReferenceDragState();
+  const files = droppedImageFiles(event.dataTransfer);
+  try {
+    await addReferenceFiles(files, { notify: true });
+  } catch (error) {
+    showToast(error.message || "图片添加失败，请重试");
+  }
 }
 
 function renderReferences() {
