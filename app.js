@@ -4588,11 +4588,16 @@ function assignSiteEmailStats(value, fallbackEmails = []) {
     const value = Number(raw || 0);
     return Number.isFinite(value) ? Math.max(0, value) : 0;
   };
+  const previousByEmail = new Map(
+    (Array.isArray(siteStatsState.registeredEmailStats) ? siteStatsState.registeredEmailStats : [])
+      .map((item) => [String(item?.email || "").trim().toLowerCase(), item])
+      .filter(([email]) => email),
+  );
   const addRecord = (item) => {
     const email = String(typeof item === "string" ? item : item?.email || item?.userEmail || "").trim();
     if (!email) return;
     const key = email.toLowerCase();
-    const current = seen.get(key) || { email, registeredAt: 0, totalRechargeCents: 0, totalSpentCents: 0 };
+    const current = seen.get(key) || { email, registeredAt: readTime(previousByEmail.get(key)), totalRechargeCents: 0, totalSpentCents: 0 };
     if (typeof item !== "string") {
       current.totalRechargeCents += Math.max(0, Math.round(Number(item?.totalRechargeCents ?? item?.rechargeCents ?? item?.totalRecharge ?? 0)));
       current.totalSpentCents += Math.max(0, Math.round(Number(item?.totalSpentCents ?? item?.spentCents ?? item?.totalSpent ?? item?.totalCostCents ?? 0)));
@@ -4636,7 +4641,7 @@ function renderSiteStats() {
           ${emailStats.length ? emailStats.map((item) => `
             <button class="site-stats-email-item ${adminUserUsageState.email.toLowerCase() === String(item.email || "").toLowerCase() ? "active" : ""}" type="button" data-site-email="${escapeHtml(item.email)}">
               <span class="site-stats-email-address">${escapeHtml(item.email)}</span>
-              <span class="site-stats-email-registered">注册时间 ${escapeHtml(formatWalletTime(item.registeredAt))}</span>
+              <span class="site-stats-email-registered">${escapeHtml(formatWalletTime(item.registeredAt) || "--")}</span>
               <span class="site-stats-email-money">总充值 ${formatMoney(item.totalRechargeCents)} / 总花费 ${formatMoney(item.totalSpentCents)}</span>
             </button>
           `).join("") : '<div class="site-stats-email-empty">暂无注册邮箱</div>'}

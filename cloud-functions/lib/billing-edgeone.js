@@ -899,13 +899,20 @@ function normalizeRegisteredEmailStats(value, fallbackEmails = []) {
   const records = Array.isArray(value) ? value : [];
   const fallback = Array.isArray(fallbackEmails) ? fallbackEmails : [];
   const seen = new Map();
+  const readRegisteredAt = (item) => {
+    const raw = item?.registeredAt ?? item?.createdAt ?? item?.registered_at ?? item?.created_at ?? 0;
+    const value = Number(raw || 0);
+    return Number.isFinite(value) ? Math.max(0, value) : 0;
+  };
   const addRecord = (item) => {
     const email = String(typeof item === "string" ? item : item?.email || item?.userEmail || "").trim().toLowerCase();
     if (!email) return;
-    const current = seen.get(email) || { email, totalRechargeCents: 0, totalSpentCents: 0 };
+    const current = seen.get(email) || { email, registeredAt: 0, totalRechargeCents: 0, totalSpentCents: 0 };
     if (typeof item !== "string") {
       current.totalRechargeCents += Math.max(0, Math.round(Number(item?.totalRechargeCents ?? item?.rechargeCents ?? item?.totalRecharge ?? 0)));
       current.totalSpentCents += Math.max(0, Math.round(Number(item?.totalSpentCents ?? item?.spentCents ?? item?.totalSpent ?? item?.totalCostCents ?? 0)));
+      const registeredAt = readRegisteredAt(item);
+      if (registeredAt && (!current.registeredAt || registeredAt < current.registeredAt)) current.registeredAt = registeredAt;
     }
     seen.set(email, current);
   };
