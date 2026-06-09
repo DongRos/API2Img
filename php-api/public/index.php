@@ -1023,6 +1023,7 @@ function site_stats_payload(PDO $pdo): array
     $emailStatsStmt = $pdo->query(
         "SELECT
            LOWER(TRIM(u.email)) AS email,
+           MIN(u.created_at) AS registered_at,
            COALESCE(SUM(CASE WHEN wl.type = 'redeem' AND wl.amount_cents > 0 THEN wl.amount_cents ELSE 0 END), 0) AS total_recharge_cents,
            COALESCE(SUM(CASE WHEN wl.type = 'charge' AND wl.amount_cents < 0 THEN -wl.amount_cents ELSE 0 END), 0) AS total_spent_cents
          FROM users u
@@ -1039,6 +1040,7 @@ function site_stats_payload(PDO $pdo): array
         }
         $registeredEmailStats[] = [
             'email' => $email,
+            'registeredAt' => utc_sql_timestamp_ms((string)($row['registered_at'] ?? '')),
             'totalRechargeCents' => (int)($row['total_recharge_cents'] ?? 0),
             'totalSpentCents' => (int)($row['total_spent_cents'] ?? 0),
         ];

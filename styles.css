@@ -1694,6 +1694,13 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.site-stats-email-registered {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .site-stats-email-money {
   flex: 0 0 auto;
   color: var(--muted);
@@ -2805,6 +2812,10 @@ body[data-theme="light"] .wallet-panel {
   }
 
   .site-stats-email-money {
+    white-space: normal;
+  }
+
+  .site-stats-email-registered {
     white-space: normal;
   }
 
