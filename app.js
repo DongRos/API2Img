@@ -33,6 +33,9 @@ const ADMIN_API_TIMEOUT_MS = 8000;
 const PLATFORM_FAILURE_LOG_TIMEOUT_MS = 30000;
 const REFERENCE_READY_WAIT_MS = 6000;
 const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
+const PLATFORM_ASYNC_STEP_TIMEOUT_MS = 60000;
+const PLATFORM_ASYNC_POLL_INTERVAL_MS = 2500;
+const PLATFORM_ASYNC_MAX_WAIT_MS = 285000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
 const REFERENCE_API_MAX_BYTES = 2 * 1024 * 1024;
 const REFERENCE_API_MAX_DIMENSION = 1536;
@@ -2197,6 +2200,9 @@ async function fetchPlatformGeneration(payload, signal) {
   const url = platformDirectUrl("/api/generate/platform");
   const preferDirect = payload?.mode === "image";
   try {
+    const asyncResult = await fetchPlatformAsyncGeneration(payload, signal);
+    if (asyncResult) return asyncResult;
+
     const response = await apiFetchPreferDirect("/api/generate/platform", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2216,6 +2222,101 @@ async function fetchPlatformGeneration(payload, signal) {
     if (signal?.aborted) throw error;
     throw new Error(`站点 API 请求失败：${cleanErrorMessage(error) || "请检查网络后重试"}`);
   }
+}
+
+async function fetchPlatformAsyncGeneration(payload, signal) {
+  const startBody = JSON.stringify(payload);
+  const startResponse = await apiFetchPreferDirect("/api/generate/platform-async/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: startBody,
+    signal,
+    keepalive: startBody.length < 60000,
+    timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+  }, {
+    directFirst: payload?.mode === "image",
+    alwaysTryDirect: true,
+    timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+    label: "站点 API 异步生图启动",
+  });
+  const startPayload = await readJsonResponse(startResponse);
+  if (platformAsyncUnsupported(startResponse, startPayload)) return null;
+  if (!startResponse.ok) {
+    throw imageRequestError(startPayload?.error?.message || `异步生图启动失败：HTTP ${startResponse.status}`, startPayload?.error?.code || "");
+  }
+  if (startPayload?.completed) {
+    return {
+      response: platformAsyncPayloadResponse(startPayload, startResponse.apiFetchUrl),
+      url: startResponse.apiFetchUrl || platformDirectUrl("/api/generate/platform-async/start"),
+    };
+  }
+  const taskToken = String(startPayload?.taskToken || "");
+  const taskId = String(startPayload?.taskId || "");
+  if (!taskToken || !taskId) return null;
+
+  const startedAt = Date.now();
+  let pollCount = 0;
+  while (Date.now() - startedAt < PLATFORM_ASYNC_MAX_WAIT_MS) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    await wait(PLATFORM_ASYNC_POLL_INTERVAL_MS);
+    pollCount += 1;
+    const pollBody = JSON.stringify({
+      taskId,
+      taskToken,
+      logCode: payload?.logCode || "",
+    });
+    const pollResponse = await apiFetchPreferDirect("/api/generate/platform-async/poll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: pollBody,
+      signal,
+      keepalive: pollBody.length < 60000,
+      timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+    }, {
+      directFirst: payload?.mode === "image",
+      alwaysTryDirect: true,
+      timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+      label: "站点 API 异步生图查询",
+    });
+    const pollPayload = await readJsonResponse(pollResponse);
+    if (!pollResponse.ok) {
+      throw imageRequestError(pollPayload?.error?.message || `异步生图查询失败：HTTP ${pollResponse.status}`, pollPayload?.error?.code || "");
+    }
+    const progress = String(pollPayload?.progress || pollPayload?.status || "").trim();
+    updateProgress("等待上游生成", progress ? `上游任务处理中：${progress}` : "上游任务处理中，正在查询结果", Math.min(78, 34 + pollCount * 3), {
+      generated: 0,
+      total: Math.max(1, Number(payload?.count || 1)),
+    });
+    if (pollPayload?.completed) {
+      return {
+        response: platformAsyncPayloadResponse(pollPayload, pollResponse.apiFetchUrl),
+        url: pollResponse.apiFetchUrl || platformDirectUrl("/api/generate/platform-async/poll"),
+      };
+    }
+  }
+  throw new Error("异步生图等待超时，页面未拿到生成结果；请稍后在后台日志中核对任务状态，避免连续重复提交。");
+}
+
+function platformAsyncUnsupported(response, payload) {
+  const code = String(payload?.error?.code || payload?.code || "").trim();
+  const status = Number(response?.status);
+  if ([404, 405].includes(status)) return true;
+  return status === 409 && (
+    code === "platform_async_unsupported" ||
+    code === "not_found" ||
+    /not found|method not allowed|不支持异步/i.test(payload?.error?.message || payload?.message || "")
+  );
+}
+
+function platformAsyncPayloadResponse(payload, apiFetchUrl = "") {
+  const response = new Response(JSON.stringify(payload || {}), {
+    status: 200,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+  response.apiFetchUrl = apiFetchUrl;
+  return response;
 }
 
 function fetchDirectImageRequest(endpoint, request) {

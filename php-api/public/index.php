@@ -120,6 +120,14 @@ function route_request(PDO $pdo, array $config): void
         generate_platform($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/generate/platform-async/start') {
+        generate_platform_async_start($pdo, $config);
+        return;
+    }
+    if ($method === 'POST' && $path === '/api/generate/platform-async/poll') {
+        generate_platform_async_poll($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/generate/settle') {
         settle_generation($pdo, $config);
         return;
@@ -1470,6 +1478,344 @@ function generate_platform(PDO $pdo, array $config): void
     }
 }
 
+function generate_platform_async_start(PDO $pdo, array $config): void
+{
+    $payload = read_json();
+    $context = platform_generation_context($pdo, $config, $payload);
+    if (!platform_supports_async_generation((string)$context['endpoint'])) {
+        throw new HttpError('当前站点 API 不支持异步生图', 409, 'platform_async_unsupported');
+    }
+
+    [$endpoint, $request] = platform_async_start_request(
+        $config,
+        $context['platform'],
+        (string)$context['endpoint'],
+        $context['request']
+    );
+
+    $upstream = call_upstream_request($endpoint, $request, [
+        'Authorization' => 'Bearer ' . (string)$context['platform']['api_key'],
+    ]);
+    $bodyPayload = json_decode($upstream['body'], true);
+    $decoded = is_array($bodyPayload) ? $bodyPayload : null;
+    if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
+        throw new HttpError(platform_upstream_error_message($upstream, $decoded), 502, 'platform_failed');
+    }
+
+    $images = upstream_response_images($upstream, $decoded);
+    if (count($images)) {
+        json_response([
+            'ok' => true,
+            'completed' => true,
+            'status' => 'SUCCESS',
+            'data' => $images,
+            'settlementRequired' => true,
+        ]);
+        return;
+    }
+
+    $taskId = platform_async_task_id($decoded ?? []);
+    if ($taskId === '') {
+        throw new HttpError(platform_upstream_no_image_message($upstream, $decoded), 502, 'platform_failed');
+    }
+
+    $taskToken = sign_generation_ticket($config, [
+        'uid' => (int)$context['ticket']['uid'],
+        'mode' => (string)$context['mode'],
+        'count' => (int)$context['count'],
+        'price' => (int)$context['price'],
+        'model' => (string)$context['model'],
+        'tier' => usage_log_text((string)($context['ticket']['tier'] ?? $payload['tier'] ?? ''), 16),
+        'size' => usage_log_text((string)($context['ticket']['size'] ?? $payload['size'] ?? platform_request_size($context['request'])), 40),
+        'siteConfig' => usage_log_text((string)($context['ticket']['siteConfig'] ?? $context['platform']['display_name'] ?? '站点配置1'), 80),
+        'requestId' => (string)$context['requestId'],
+        'taskId' => $taskId,
+        'exp' => time() + 900,
+        'nonce' => random_token(12),
+    ], random_token(32));
+
+    json_response([
+        'ok' => true,
+        'completed' => false,
+        'taskId' => $taskId,
+        'taskToken' => $taskToken,
+        'status' => platform_async_status($decoded ?? []),
+        'progress' => platform_async_progress($decoded ?? []),
+    ]);
+}
+
+function generate_platform_async_poll(PDO $pdo, array $config): void
+{
+    $payload = read_json();
+    $taskToken = verify_generation_ticket($config, (string)($payload['taskToken'] ?? ''));
+    if (!$taskToken) {
+        throw new HttpError('异步任务已过期，请重新生成', 401, 'platform_async_expired');
+    }
+    $taskId = platform_async_clean_task_id((string)($payload['taskId'] ?? $taskToken['taskId'] ?? ''));
+    if ($taskId === '' || $taskId !== platform_async_clean_task_id((string)($taskToken['taskId'] ?? ''))) {
+        throw new HttpError('异步任务参数无效', 400, 'platform_async_invalid_task');
+    }
+
+    $platform = platform_config($pdo, $config);
+    $modelOption = select_platform_model_option($platform, (string)($taskToken['model'] ?? ''));
+    $model = (string)$modelOption['name'];
+    $mode = (($taskToken['mode'] ?? 'text') === 'image') ? 'image' : 'text';
+    $endpoint = $mode === 'image' ? platform_image_endpoint($platform) : (string)$platform['text_endpoint'];
+    if (!platform_supports_async_generation($endpoint) || trim((string)$platform['api_key']) === '') {
+        throw new HttpError('当前站点 API 不支持异步生图', 409, 'platform_async_unsupported');
+    }
+
+    $queryEndpoint = platform_async_query_endpoint($endpoint, $taskId);
+    $upstream = call_upstream_request($queryEndpoint, [
+        'method' => 'GET',
+        'headers' => [],
+        'bodyType' => 'json',
+        'body' => '',
+    ], [
+        'Authorization' => 'Bearer ' . (string)$platform['api_key'],
+    ]);
+    $bodyPayload = json_decode($upstream['body'], true);
+    $decoded = is_array($bodyPayload) ? $bodyPayload : null;
+    if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
+        throw new HttpError(platform_upstream_error_message($upstream, $decoded), 502, 'platform_failed');
+    }
+
+    $images = upstream_response_images($upstream, $decoded);
+    if (count($images)) {
+        json_response([
+            'ok' => true,
+            'completed' => true,
+            'status' => 'SUCCESS',
+            'data' => $images,
+            'settlementRequired' => true,
+            'taskId' => $taskId,
+            'progress' => platform_async_progress($decoded ?? []),
+        ]);
+        return;
+    }
+
+    if (platform_async_is_failed($decoded ?? [])) {
+        $message = platform_async_failure_message($decoded ?? []) ?: platform_upstream_no_image_message($upstream, $decoded);
+        try {
+            record_generation_failure($pdo, (int)$taskToken['uid'], (string)($taskToken['requestId'] ?? ''), [
+                'logCode' => (string)($payload['logCode'] ?? $payload['traceCode'] ?? ''),
+                'mode' => $mode,
+                'model' => $model,
+                'prompt' => '',
+                'size' => usage_log_text((string)($taskToken['size'] ?? ''), 40),
+                'ratio' => '',
+                'batchIndex' => 0,
+                'batchTotal' => (int)($taskToken['count'] ?? 1),
+                'imageCount' => 0,
+                'priceCents' => (int)($taskToken['price'] ?? 0),
+                'errorMessage' => $message,
+                'requestPreview' => '异步任务查询: ' . platform_log_json(['taskId' => $taskId, 'endpoint' => '[站点 API 地址已隐藏]']),
+                'responsePreview' => platform_log_json($decoded ?? platform_body_preview((string)($upstream['body'] ?? ''))),
+                'httpStatus' => (int)($upstream['status'] ?? 0),
+                'contentType' => usage_log_text(upstream_content_type((string)($upstream['headers'] ?? '')), 120),
+                'requestVariant' => 'async-poll',
+            ]);
+        } catch (Throwable $logError) {
+            error_log('generation async failure log failed: ' . $logError->getMessage());
+        }
+        throw new HttpError($message, 502, 'platform_failed');
+    }
+
+    json_response([
+        'ok' => true,
+        'completed' => false,
+        'status' => platform_async_status($decoded ?? []),
+        'progress' => platform_async_progress($decoded ?? []),
+        'taskId' => $taskId,
+    ]);
+}
+
+function platform_generation_context(PDO $pdo, array $config, array $payload): array
+{
+    $platform = platform_config($pdo, $config);
+    $modelOption = select_platform_model_option($platform, (string)($payload['model'] ?? ''));
+    $model = (string)$modelOption['name'];
+    $ticket = verify_generation_ticket($config, (string)($payload['ticket'] ?? ''));
+    if (!$ticket) {
+        $user = require_user($pdo, $config);
+        $ticket = [
+            'uid' => (int)$user['id'],
+            'mode' => (($payload['mode'] ?? 'text') === 'image') ? 'image' : 'text',
+            'count' => max(1, min((int)$platform['max_count'], (int)($payload['count'] ?? 1))),
+            'price' => custom_api_model_price_cents($modelOption['priceCents'] ?? null, $model, (int)$platform['price_cents']),
+            'model' => $model,
+            'tier' => usage_log_text((string)($payload['tier'] ?? ''), 16),
+            'size' => usage_log_text((string)($payload['size'] ?? ''), 40),
+            'siteConfig' => usage_log_text((string)($platform['display_name'] ?? '站点配置1'), 80),
+        ];
+    }
+    $mode = (($ticket['mode'] ?? ($payload['mode'] ?? 'text')) === 'image') ? 'image' : 'text';
+    $request = is_array($payload['request'] ?? null) ? $payload['request'] : [];
+    $requestId = normalize_request_id((string)($payload['requestId'] ?? ''));
+    $count = max(1, min((int)$ticket['count'], (int)$platform['max_count'], (int)($payload['count'] ?? 1)));
+    $modelOption = select_platform_model_option($platform, (string)($ticket['model'] ?? $payload['model'] ?? ''));
+    $model = (string)$modelOption['name'];
+    $price = max(1, (int)($ticket['price'] ?? custom_api_model_price_cents($modelOption['priceCents'] ?? null, $model, (int)$platform['price_cents'])));
+    ensure_user_can_afford($pdo, (int)$ticket['uid'], $count * $price);
+    $request = enforce_platform_request_count($request, $count);
+    $request = platform_request_with_model($request, $model);
+    $endpoint = $mode === 'image' ? platform_image_endpoint($platform) : (string)$platform['text_endpoint'];
+    if ($endpoint === '' || trim((string)$platform['api_key']) === '') {
+        throw new HttpError('站点 API 尚未配置', 503, 'platform_not_configured');
+    }
+    return compact('platform', 'ticket', 'mode', 'request', 'requestId', 'count', 'model', 'price', 'endpoint');
+}
+
+function platform_supports_async_generation(string $endpoint): bool
+{
+    return endpoint_is_hfsy_api($endpoint)
+        && preg_match('#/v\d+/images/generations/?(\?.*)?$#i', (string)parse_url($endpoint, PHP_URL_PATH)) === 1;
+}
+
+function platform_async_start_request(array $config, array $platform, string $endpoint, array $request): array
+{
+    [$jsonEndpoint, $jsonRequest] = platform_json_generation_request($config, $platform, $endpoint, $request);
+    return [platform_async_start_endpoint($jsonEndpoint), $jsonRequest];
+}
+
+function platform_json_generation_request(array $config, array $platform, string $endpoint, array $request): array
+{
+    $model = platform_request_model($request, $platform);
+    if (endpoint_uses_reference_image_json($endpoint, $model) && ($request['bodyType'] ?? '') === 'multipart') {
+        [$endpoint, $request] = platform_reference_json_request($config, $endpoint, $request);
+    }
+    if (($request['bodyType'] ?? '') === 'multipart') {
+        throw new RuntimeException('当前站点 API 异步生图只支持 JSON 请求');
+    }
+    $body = json_decode((string)($request['body'] ?? ''), true);
+    if (!is_array($body)) {
+        throw new RuntimeException('站点 API 请求体不是有效 JSON');
+    }
+    if (!isset($body['size']) || trim((string)$body['size']) === '' || trim((string)$body['size']) === 'auto') {
+        $body['size'] = '1024x1024';
+    }
+    if (!isset($body['response_format']) || trim((string)$body['response_format']) === '') {
+        $body['response_format'] = 'b64_json';
+    }
+    $request['method'] = 'POST';
+    $request['headers'] = ['Content-Type' => 'application/json'];
+    $request['bodyType'] = 'json';
+    $request['body'] = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return [$endpoint, $request];
+}
+
+function platform_async_start_endpoint(string $endpoint): string
+{
+    return preg_replace('#/v(\d+)/images/generations/?(\?.*)?$#i', '/v$1/images/generations/async$2', $endpoint) ?: $endpoint;
+}
+
+function platform_async_query_endpoint(string $endpoint, string $taskId): string
+{
+    $taskId = rawurlencode(platform_async_clean_task_id($taskId));
+    return preg_replace('#/v(\d+)/images/generations/?(\?.*)?$#i', '/v$1/images/generations/' . $taskId . '$2', $endpoint) ?: $endpoint;
+}
+
+function platform_async_clean_task_id(string $taskId): string
+{
+    return substr(preg_replace('/[^A-Za-z0-9._:-]+/', '', trim($taskId)) ?? '', 0, 120);
+}
+
+function platform_async_task_id(array $payload): string
+{
+    foreach (['task_id', 'taskId', 'id'] as $key) {
+        if (isset($payload[$key]) && is_scalar($payload[$key])) {
+            $value = platform_async_clean_task_id((string)$payload[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+    }
+    foreach (['data', 'result'] as $key) {
+        if (isset($payload[$key]) && is_array($payload[$key])) {
+            $value = platform_async_task_id($payload[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+    }
+    return '';
+}
+
+function platform_async_status(array $payload): string
+{
+    foreach (['status', 'state', 'task_status'] as $key) {
+        if (isset($payload[$key]) && is_scalar($payload[$key])) {
+            return usage_log_text((string)$payload[$key], 80);
+        }
+    }
+    foreach (['data', 'result'] as $key) {
+        if (isset($payload[$key]) && is_array($payload[$key])) {
+            $value = platform_async_status($payload[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+    }
+    return '';
+}
+
+function platform_async_progress(array $payload): string
+{
+    foreach (['progress', 'percentage'] as $key) {
+        if (isset($payload[$key]) && is_scalar($payload[$key])) {
+            return usage_log_text((string)$payload[$key], 40);
+        }
+    }
+    foreach (['data', 'result'] as $key) {
+        if (isset($payload[$key]) && is_array($payload[$key])) {
+            $value = platform_async_progress($payload[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+    }
+    return '';
+}
+
+function platform_async_is_failed(array $payload): bool
+{
+    $status = strtolower(platform_async_status($payload));
+    if (preg_match('/fail|failed|error|cancel|reject/', $status)) {
+        return true;
+    }
+    $reason = platform_async_failure_message($payload);
+    return $reason !== '' && !preg_match('/success|running|pending|processing|queue|100%/i', $status);
+}
+
+function platform_async_failure_message(array $payload): string
+{
+    foreach (['fail_reason', 'error', 'message', 'detail'] as $key) {
+        if (!isset($payload[$key])) {
+            continue;
+        }
+        $value = $payload[$key];
+        if (is_array($value)) {
+            $nested = platform_json_error_message($value);
+            if ($nested !== '') {
+                return usage_log_text($nested, 500);
+            }
+            continue;
+        }
+        if (is_scalar($value) && trim((string)$value) !== '') {
+            return usage_log_text((string)$value, 500);
+        }
+    }
+    foreach (['data', 'result'] as $key) {
+        if (isset($payload[$key]) && is_array($payload[$key])) {
+            $value = platform_async_failure_message($payload[$key]);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+    }
+    return '';
+}
+
 function platform_backend_request_preview(array $platform, string $endpoint, array $request, array $payload = []): string
 {
     $requestSummary = [
@@ -2352,6 +2698,7 @@ function platform_reference_json_request(array $config, string $endpoint, array 
     if (isset($fields['seed']) && trim((string)$fields['seed']) !== '') {
         $body['seed'] = is_numeric($fields['seed']) ? (int)$fields['seed'] : (string)$fields['seed'];
     }
+    $body['response_format'] = 'b64_json';
 
     $preferBase64 = reference_image_json_prefers_base64($endpoint, (string)($body['model'] ?? 'gpt-image-2'));
     foreach (array_slice(is_array($request['files'] ?? null) ? $request['files'] : [], 0, 4) as $file) {
