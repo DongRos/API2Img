@@ -1577,6 +1577,17 @@ function generate_platform_async_poll(PDO $pdo, array $config): void
     $bodyPayload = json_decode($upstream['body'], true);
     $decoded = is_array($bodyPayload) ? $bodyPayload : null;
     if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
+        if (platform_async_is_pending_timeout($decoded)) {
+            json_response([
+                'ok' => true,
+                'completed' => false,
+                'status' => platform_async_status($decoded ?? []) ?: 'PENDING',
+                'progress' => platform_async_progress($decoded ?? []),
+                'taskId' => $taskId,
+                'message' => platform_async_failure_message($decoded ?? []) ?: 'poll timeout without any image',
+            ]);
+            return;
+        }
         throw new HttpError(platform_upstream_error_message($upstream, $decoded), 502, 'platform_failed');
     }
 
@@ -1779,12 +1790,30 @@ function platform_async_progress(array $payload): string
 
 function platform_async_is_failed(array $payload): bool
 {
+    if (platform_async_is_pending_timeout($payload)) {
+        return false;
+    }
     $status = strtolower(platform_async_status($payload));
     if (preg_match('/fail|failed|error|cancel|reject/', $status)) {
         return true;
     }
     $reason = platform_async_failure_message($payload);
     return $reason !== '' && !preg_match('/success|running|pending|processing|queue|100%/i', $status);
+}
+
+function platform_async_is_pending_timeout(?array $payload): bool
+{
+    if (!$payload) {
+        return false;
+    }
+    $text = strtolower(json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '');
+    if ($text === '') {
+        return false;
+    }
+    return strpos($text, 'poll_timeout') !== false
+        || strpos($text, 'poll timeout') !== false
+        || strpos($text, 'timeout without any image') !== false
+        || strpos($text, 'without any image') !== false;
 }
 
 function platform_async_failure_message(array $payload): string
