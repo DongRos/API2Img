@@ -2,6 +2,7 @@ const CONFIG_KEY = "image2.canvas.config.v1";
 const CONFIG_VERSION = 3;
 const CONFIG_HISTORY_KEY = "image2.canvas.config.history.v1";
 const GENERATION_LOGS_KEY = "image2.generation.logs.v1";
+const PLATFORM_FAILURE_LOG_QUEUE_KEY = "image2.platform.failure.logs.pending.v1";
 const API_STATS_KEY = "image2.api.stats.v1";
 const FLOW_STATE_KEY = "image2.flow.state.v1";
 const CODE_ADMIN_PASSWORD_KEY = "image2.code.admin.password.v1";
@@ -9,6 +10,7 @@ const LOGIN_CODE_COOLDOWN_KEY = "image2.login.code.cooldown.v1";
 const WALLET_SESSION_TOKEN_KEY = "image2.wallet.session.v1";
 const CONFIG_HISTORY_LIMIT = 12;
 const GENERATION_LOG_LIMIT = 30;
+const PLATFORM_FAILURE_LOG_QUEUE_LIMIT = 50;
 const API_STATS_LIMIT = 80;
 const LOGIN_CODE_RESEND_COOLDOWN_SECONDS = 60;
 const FIXED_MODEL_NAME = "gpt-image-2";
@@ -231,6 +233,7 @@ let generationLogs = [];
 let apiStats = [];
 let apiUsageRecords = new Map();
 let activeGenerationLog = null;
+let platformFailureLogFlushPromise = null;
 let isGenerating = false;
 let generationAbortController = null;
 let generationCancelled = false;
@@ -297,7 +300,9 @@ async function init() {
   autoGrow($("#promptInput"));
   afterFirstPaint(() => {
     runWhenIdle(() => {
-      billingReadyPromise = loadBilling().catch((error) => console.warn("充值信息读取失败", error));
+      billingReadyPromise = loadBilling()
+        .then(() => flushQueuedPlatformFailureLogs())
+        .catch((error) => console.warn("充值信息读取失败", error));
       loadState()
         .then(() => {
           renderReferences();
@@ -365,6 +370,7 @@ function bindEvents() {
   document.addEventListener("dragend", resetReferenceDragState);
   document.addEventListener("drop", onReferenceDrop);
   window.addEventListener("blur", resetReferenceDragState);
+  window.addEventListener("online", () => flushQueuedPlatformFailureLogs());
   $("#generateButton").addEventListener("click", () => generateImages());
   $("#editGenerateButton").addEventListener("click", generateFromDetail);
   $("#clearResultsButton").addEventListener("click", clearResults);
@@ -1503,50 +1509,110 @@ async function settlePlatformImage(result, options, index, context) {
   }
 }
 
-async function reportPlatformGenerationFailure(options = {}, error = null, imageCount = 0) {
-  if (options.apiProvider !== "platform" || !billingState.authenticated || !currentWalletSessionToken()) return;
-  try {
-    const requestEntry = findRequestLogEntry(options, Number(options.batchIndex || 1) - 1);
-    const enrichedOptions = enrichPlatformRequestMeta(options, requestEntry);
-    const response = await apiFetchPreferDirect("/api/generate/failure-log", {
+function buildPlatformFailureLogPayload(options = {}, error = null, imageCount = 0) {
+  const requestEntry = findRequestLogEntry(options, Number(options.batchIndex || 1) - 1);
+  const enrichedOptions = enrichPlatformRequestMeta(options, requestEntry);
+  return {
+    requestId: `fail_${platformBillingRequestId(options)}`,
+    logCode: options.logCode || activeGenerationLog?.traceCode || "",
+    mode: options.mode || $("#modeSelect").value,
+    model: options.model || getModelName(),
+    prompt: options.prompt || "",
+    size: options.size || "",
+    ratio: options.ratio || "",
+    tier: options.resolutionTier || "",
+    siteConfig: options.apiDisplayName || billingState.platformDisplayName || "",
+    batchIndex: Number(options.batchIndex) || 1,
+    batchTotal: Number(options.batchTotal || options.count || 1),
+    imageCount: Math.max(0, Number(imageCount) || 0),
+    priceCents: Number(options.platformPriceCents || billingState.priceCents || 0),
+    errorMessage: cleanErrorMessage(error) || "生成失败",
+    requestPreview: enrichedOptions.requestPreview || "",
+    responsePreview: enrichedOptions.responsePreview || cleanErrorMessage(error) || "",
+    httpStatus: Number(enrichedOptions.httpStatus || 0),
+    contentType: String(enrichedOptions.contentType || ""),
+    requestVariant: String(enrichedOptions.requestVariant || ""),
+    queuedAt: Date.now(),
+  };
+}
+
+async function postPlatformFailureLogPayload(payload) {
+  const response = await apiFetchPreferDirect("/api/generate/failure-log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requestId: `fail_${platformBillingRequestId(options)}`,
-        logCode: options.logCode || activeGenerationLog?.traceCode || "",
-        mode: options.mode || $("#modeSelect").value,
-        model: options.model || getModelName(),
-        prompt: options.prompt || "",
-        size: options.size || "",
-        ratio: options.ratio || "",
-        tier: options.resolutionTier || "",
-        siteConfig: options.apiDisplayName || billingState.platformDisplayName || "",
-        batchIndex: Number(options.batchIndex) || 1,
-        batchTotal: Number(options.batchTotal || options.count || 1),
-        imageCount: Math.max(0, Number(imageCount) || 0),
-        priceCents: Number(options.platformPriceCents || billingState.priceCents || 0),
-        errorMessage: cleanErrorMessage(error) || "生成失败",
-        requestPreview: enrichedOptions.requestPreview || "",
-        responsePreview: enrichedOptions.responsePreview || cleanErrorMessage(error) || "",
-        httpStatus: Number(enrichedOptions.httpStatus || 0),
-        contentType: String(enrichedOptions.contentType || ""),
-        requestVariant: String(enrichedOptions.requestVariant || ""),
-      }),
+      body: JSON.stringify(payload),
       timeoutMs: FAST_API_TIMEOUT_MS,
     }, {
       directFirst: true,
       timeoutMs: FAST_API_TIMEOUT_MS,
       label: "失败日志记录",
-      noHttpFallback: true,
     });
-    if (!response.ok) {
-      const payload = await readJsonResponse(response);
-      throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-    }
-    await refreshBillingLedgerAfterFailureLog();
-  } catch (logError) {
-    console.warn("站点生成失败日志记录失败", logError);
+  if (!response.ok) {
+    const result = await readJsonResponse(response);
+    throw new Error(result?.error?.message || `HTTP ${response.status}`);
   }
+  return readJsonResponse(response);
+}
+
+async function reportPlatformGenerationFailure(options = {}, error = null, imageCount = 0) {
+  if (options.apiProvider !== "platform" || !billingState.authenticated || !currentWalletSessionToken()) return;
+  const payload = buildPlatformFailureLogPayload(options, error, imageCount);
+  try {
+    await postPlatformFailureLogPayload(payload);
+    await refreshBillingLedgerAfterFailureLog();
+    flushQueuedPlatformFailureLogs();
+  } catch (logError) {
+    queuePlatformFailureLog(payload);
+    console.warn("站点生成失败日志记录失败，已加入待同步队列", logError);
+    setTimeout(() => flushQueuedPlatformFailureLogs(), 3000);
+  }
+}
+
+function readPlatformFailureLogQueue() {
+  try {
+    const items = JSON.parse(localStorage.getItem(PLATFORM_FAILURE_LOG_QUEUE_KEY) || "[]");
+    return Array.isArray(items) ? items.filter((item) => item && typeof item === "object") : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePlatformFailureLogQueue(items) {
+  const clean = Array.isArray(items) ? items.filter((item) => item && typeof item === "object") : [];
+  try {
+    localStorage.setItem(PLATFORM_FAILURE_LOG_QUEUE_KEY, JSON.stringify(clean.slice(-PLATFORM_FAILURE_LOG_QUEUE_LIMIT)));
+  } catch (error) {
+    console.warn("Pending failure log queue write failed", error);
+  }
+}
+
+function queuePlatformFailureLog(payload) {
+  if (!payload?.requestId) return;
+  const items = readPlatformFailureLogQueue().filter((item) => item.requestId !== payload.requestId);
+  items.push({ ...payload, queuedAt: payload.queuedAt || Date.now() });
+  writePlatformFailureLogQueue(items);
+}
+
+async function flushQueuedPlatformFailureLogs() {
+  if (platformFailureLogFlushPromise) return platformFailureLogFlushPromise;
+  if (!billingState.authenticated || !currentWalletSessionToken()) return null;
+  platformFailureLogFlushPromise = (async () => {
+    let pending = readPlatformFailureLogQueue();
+    if (!pending.length) return;
+    const remaining = [];
+    for (const payload of pending) {
+      try {
+        await postPlatformFailureLogPayload(payload);
+      } catch (error) {
+        remaining.push(payload);
+      }
+    }
+    writePlatformFailureLogQueue(remaining);
+    if (remaining.length !== pending.length) await refreshBillingLedgerAfterFailureLog();
+  })().finally(() => {
+    platformFailureLogFlushPromise = null;
+  });
+  return platformFailureLogFlushPromise;
 }
 
 async function refreshBillingLedgerAfterFailureLog() {
@@ -2122,6 +2188,7 @@ async function fetchPlatformGeneration(payload, signal) {
       directFirst: true,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
+      directOnly: true,
       noHttpFallback: true,
       maxFetchErrorFallbackMs: 8000,
     });
@@ -4444,6 +4511,7 @@ async function loadBilling() {
     if (meResponse?.status === "fulfilled" && meResponse.value.ok) applyBillingDashboard(await readJsonResponse(meResponse.value));
     renderWallet();
     if (billingState.authenticated) {
+      flushQueuedPlatformFailureLogs();
       billingState.ledgerLoading = true;
       renderWallet();
       loadBillingLedger({ silent: true, sessionSnapshot })
@@ -4523,6 +4591,7 @@ async function refreshBilling() {
     applyBillingDashboard(await readJsonResponse(response));
     renderWallet();
     if (billingState.authenticated) {
+      flushQueuedPlatformFailureLogs();
       billingState.ledgerLoading = true;
       renderWallet();
       loadBillingLedger({ silent: true, sessionSnapshot })
@@ -5147,6 +5216,7 @@ async function verifyLoginCode() {
     $("#loginCodeInput").value = "";
     renderWallet();
     showToast("登录成功，余额已同步");
+    flushQueuedPlatformFailureLogs();
     const sessionSnapshot = currentWalletSessionToken();
     billingState.ledgerLoading = true;
     renderWallet();
@@ -6027,7 +6097,9 @@ function apiFetch(path, options = {}) {
 
 async function apiFetchPreferDirect(path, options = {}, preference = {}) {
   const shouldTryDirect = Boolean(preference.directFirst || preference.alwaysTryDirect);
-  const urls = directApiReachable === false && !shouldTryDirect
+  const urls = preference.directOnly
+    ? uniqueUrls([directPhpApiUrl(path)])
+    : directApiReachable === false && !shouldTryDirect
     ? [apiUrl(path)]
     : uniqueUrls([...(preference.directFirst ? [directPhpApiUrl(path), apiUrl(path)] : [apiUrl(path), directPhpApiUrl(path)])]);
   let lastError = null;
