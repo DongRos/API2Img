@@ -796,6 +796,7 @@ async function requestImages(endpoint, options) {
       break;
     } catch (error) {
       lastError = error;
+      if (error?.noVariantRetry || (options.apiProvider === "platform" && options.mode === "image")) break;
       if (!shouldRetryWithMinimalPayload(cleanErrorMessage(error), variantInfo.payloadVariant, options)) break;
     }
   }
@@ -1969,11 +1970,6 @@ function shouldSwitchCustomTransportError(error, elapsedMs = 0) {
 
 async function fetchPlatformServerImageRequest(endpoint, request, requestLog = null) {
   await ensurePlatformBrowserGlobalConfigLoaded();
-  const browserConfigs = platformBrowserConfigCandidates(request);
-  if (browserConfigs.length) {
-    return fetchPlatformBrowserImageRequest(request, browserConfigs, requestLog);
-  }
-
   const {
     signal,
     billingCount,
@@ -1985,18 +1981,25 @@ async function fetchPlatformServerImageRequest(endpoint, request, requestLog = n
     billingSize,
     ...serverRequest
   } = request;
+  const mode = billingMode || $("#modeSelect").value;
+  const model = billingModel || getModelName();
+  const browserConfigs = shouldUsePlatformServerGenerationPath(request, mode, model) ? [] : platformBrowserConfigCandidates(request);
+  if (browserConfigs.length) {
+    return fetchPlatformBrowserImageRequest(request, browserConfigs, requestLog);
+  }
+
   const ticket = await getPlatformGenerationTicket({
-    mode: billingMode || $("#modeSelect").value,
+    mode,
     count: billingCount || 1,
-    model: billingModel || getModelName(),
+    model,
     resolutionTier: billingResolutionTier || "",
     size: billingSize || "",
     signal,
   });
   const payload = {
-    mode: billingMode || $("#modeSelect").value,
+    mode,
     count: billingCount || 1,
-    model: billingModel || getModelName(),
+    model,
     requestId: billingRequestId || platformBillingRequestId({ generationId: billingGenerationId, count: billingCount }),
     tier: billingResolutionTier || "",
     size: billingSize || "",
@@ -2011,8 +2014,14 @@ async function fetchPlatformServerImageRequest(endpoint, request, requestLog = n
   response.platformPriceCents = ticket.priceCents;
   response.platformStatsEndpoint = platformUrl;
   response.platformStatsDisplayName = ticket.displayName || billingState.platformDisplayName;
-  response.platformStatsModel = billingModel || getModelName();
+  response.platformStatsModel = model;
   return response;
+}
+
+function shouldUsePlatformServerGenerationPath(request = {}, mode = $("#modeSelect").value, model = getModelName()) {
+  if (mode !== "image") return false;
+  if ((request.bodyType || "") !== "multipart") return false;
+  return isGptImage2Model(model) || (Array.isArray(request.files) && request.files.length > 0);
 }
 
 async function fetchPlatformBrowserImageRequest(request, platformConfigs, requestLog = null) {
@@ -2220,7 +2229,9 @@ async function fetchPlatformGeneration(payload, signal) {
     return { response, url: response.apiFetchUrl || url };
   } catch (error) {
     if (signal?.aborted) throw error;
-    throw new Error(`站点 API 请求失败：${cleanErrorMessage(error) || "请检查网络后重试"}`);
+    const wrapped = new Error(`站点 API 请求失败：${cleanErrorMessage(error) || "请检查网络后重试"}`);
+    if (error?.noVariantRetry) wrapped.noVariantRetry = true;
+    throw wrapped;
   }
 }
 
@@ -2243,7 +2254,7 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
   const startPayload = await readJsonResponse(startResponse);
   if (platformAsyncUnsupported(startResponse, startPayload)) return null;
   if (!startResponse.ok) {
-    throw imageRequestError(startPayload?.error?.message || `异步生图启动失败：HTTP ${startResponse.status}`, startPayload?.error?.code || "");
+    throw noVariantRetryError(imageRequestError(startPayload?.error?.message || `异步生图启动失败：HTTP ${startResponse.status}`, startPayload?.error?.code || ""));
   }
   if (startPayload?.completed) {
     return {
@@ -2253,7 +2264,9 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
   }
   const taskToken = String(startPayload?.taskToken || "");
   const taskId = String(startPayload?.taskId || "");
-  if (!taskToken || !taskId) return null;
+  if (!taskToken || !taskId) {
+    throw noVariantRetryError(new Error("异步生图接口没有返回 task_id，已停止回退同步请求，避免重复消耗上游额度。"));
+  }
 
   const startedAt = Date.now();
   let pollCount = 0;
@@ -2282,7 +2295,7 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
     });
     const pollPayload = await readJsonResponse(pollResponse);
     if (!pollResponse.ok) {
-      throw imageRequestError(pollPayload?.error?.message || `异步生图查询失败：HTTP ${pollResponse.status}`, pollPayload?.error?.code || "");
+      throw noVariantRetryError(imageRequestError(pollPayload?.error?.message || `异步生图查询失败：HTTP ${pollResponse.status}`, pollPayload?.error?.code || ""));
     }
     const progress = String(pollPayload?.progress || pollPayload?.status || "").trim();
     updateProgress("等待上游生成", progress ? `上游任务处理中：${progress}` : "上游任务处理中，正在查询结果", Math.min(78, 34 + pollCount * 3), {
@@ -2296,7 +2309,12 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
       };
     }
   }
-  throw new Error("异步生图等待超时，页面未拿到生成结果；请稍后在后台日志中核对任务状态，避免连续重复提交。");
+  throw noVariantRetryError(new Error("异步生图等待超时，页面未拿到生成结果；请稍后在后台日志中核对任务状态，避免连续重复提交。"));
+}
+
+function noVariantRetryError(error) {
+  error.noVariantRetry = true;
+  return error;
 }
 
 function platformAsyncUnsupported(response, payload) {
