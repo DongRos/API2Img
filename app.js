@@ -1543,7 +1543,7 @@ async function postPlatformFailureLogPayload(payload) {
       body: JSON.stringify(payload),
       timeoutMs: FAST_API_TIMEOUT_MS,
     }, {
-      directFirst: true,
+      directFirst: false,
       timeoutMs: FAST_API_TIMEOUT_MS,
       label: "失败日志记录",
     });
@@ -2176,6 +2176,7 @@ function matchingAdminCustomTransportMode(globalConfig = {}) {
 
 async function fetchPlatformGeneration(payload, signal) {
   const url = platformDirectUrl("/api/generate/platform");
+  const preferDirect = payload?.mode === "image";
   try {
     const response = await apiFetchPreferDirect("/api/generate/platform", {
       method: "POST",
@@ -2185,7 +2186,7 @@ async function fetchPlatformGeneration(payload, signal) {
       signal,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
     }, {
-      directFirst: false,
+      directFirst: preferDirect,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
       noHttpFallback: true,
@@ -2524,8 +2525,8 @@ function formatHttpError(status, message) {
   }
   if (code === "504" && /EdgeOne Pages/i.test(text)) {
     return addApiGuidance(
-      "EdgeOne 代理超时（HTTP 504），这不是 base64 图片。已改为优先使用站点 API 直连；本次未扣费，请重试。",
-      "如果手机端仍出现，请刷新页面确认已加载最新前端，或稍后重试。",
+      "EdgeOne 代理超时（HTTP 504），页面没有拿到生成结果。已停止自动补单以避免重复请求上游；请刷新页面确认已加载最新前端后再试。",
+      "如果上游后台已经显示生成成功，请先不要连续重复提交，避免上游重复扣费。",
     );
   }
   if (/failed to fetch|fetch failed|network error|network|connection|timeout|timed out|request aborted|aborted|econnreset|enotfound|socket hang up|dns|certificate/i.test(text)) {
