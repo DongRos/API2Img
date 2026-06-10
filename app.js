@@ -30,6 +30,8 @@ const DEFAULT_PHP_API_BASE = "https://deep666.top/php-api/index.php";
 const FAST_API_TIMEOUT_MS = 6500;
 const GENERATION_READY_WAIT_MS = 2200;
 const ADMIN_API_TIMEOUT_MS = 8000;
+const PLATFORM_FAILURE_LOG_TIMEOUT_MS = 30000;
+const REFERENCE_READY_WAIT_MS = 6000;
 const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
 const REFERENCE_API_MAX_BYTES = 2 * 1024 * 1024;
@@ -238,6 +240,9 @@ let isGenerating = false;
 let generationAbortController = null;
 let generationCancelled = false;
 let flowDbPromise = null;
+let flowStateLoadPromise = null;
+let referenceImportPromise = Promise.resolve();
+let referenceImportInFlight = 0;
 let statsOpenBuffer = "";
 let codeAdminOpenBuffer = "";
 let siteStatsRefreshTimer = null;
@@ -303,7 +308,7 @@ async function init() {
       billingReadyPromise = loadBilling()
         .then(() => flushQueuedPlatformFailureLogs())
         .catch((error) => console.warn("充值信息读取失败", error));
-      loadState()
+      ensureFlowStateLoaded()
         .then(() => {
           renderReferences();
           renderResults();
@@ -579,7 +584,17 @@ async function generateImages(extra = {}) {
     return;
   }
 
-  const mode = extra.mode || $("#modeSelect").value;
+  await waitForReferenceReadiness();
+  const explicitMode = String(extra.mode || "").trim();
+  const uiMode = $("#modeSelect").value;
+  const availableReferences = Array.isArray(extra.referenceImages) && extra.referenceImages.length
+    ? extra.referenceImages
+    : state.references;
+  const hasReferences = Array.isArray(availableReferences) && availableReferences.length > 0;
+  const mode = hasReferences ? "image" : (explicitMode || uiMode);
+  if (hasReferences && $("#modeSelect").value !== "image") {
+    $("#modeSelect").value = "image";
+  }
   const usePlatformApi = isPlatformApiSelected();
   if (usePlatformApi) {
     await ensurePlatformReadyForGeneration();
@@ -595,7 +610,7 @@ async function generateImages(extra = {}) {
     setTimeout(() => $("#loginEmailInput")?.focus(), 0);
     return;
   }
-  if (mode === "image" && !state.references.length) {
+  if (mode === "image" && !hasReferences) {
     showToast("图生图需要先上传参考图");
     return;
   }
@@ -628,7 +643,7 @@ async function generateImages(extra = {}) {
     seed: $("#seedInput").value.trim(),
     model: getModelName(),
     logCode,
-    referenceImages: mode === "image" ? [...state.references] : [],
+    referenceImages: mode === "image" ? [...availableReferences] : [],
     generationId,
     abortSignal: generationAbortController.signal,
     apiProvider: usePlatformApi ? "platform" : "custom",
@@ -1537,14 +1552,17 @@ function buildPlatformFailureLogPayload(options = {}, error = null, imageCount =
 }
 
 async function postPlatformFailureLogPayload(payload) {
+  const body = JSON.stringify(payload);
   const response = await apiFetchPreferDirect("/api/generate/failure-log", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      timeoutMs: FAST_API_TIMEOUT_MS,
+      body,
+      keepalive: body.length < 60000,
+      timeoutMs: PLATFORM_FAILURE_LOG_TIMEOUT_MS,
     }, {
       directFirst: false,
-      timeoutMs: FAST_API_TIMEOUT_MS,
+      alwaysTryDirect: true,
+      timeoutMs: PLATFORM_FAILURE_LOG_TIMEOUT_MS,
       label: "失败日志记录",
     });
   if (!response.ok) {
@@ -1555,7 +1573,8 @@ async function postPlatformFailureLogPayload(payload) {
 }
 
 async function reportPlatformGenerationFailure(options = {}, error = null, imageCount = 0) {
-  if (options.apiProvider !== "platform" || !billingState.authenticated || !currentWalletSessionToken()) return;
+  if (options.apiProvider !== "platform") return;
+  if (!billingState.authenticated && !currentWalletSessionToken()) return;
   const payload = buildPlatformFailureLogPayload(options, error, imageCount);
   try {
     await postPlatformFailureLogPayload(payload);
@@ -1595,7 +1614,7 @@ function queuePlatformFailureLog(payload) {
 
 async function flushQueuedPlatformFailureLogs() {
   if (platformFailureLogFlushPromise) return platformFailureLogFlushPromise;
-  if (!billingState.authenticated || !currentWalletSessionToken()) return null;
+  if (!billingState.authenticated && !currentWalletSessionToken()) return null;
   platformFailureLogFlushPromise = (async () => {
     let pending = readPlatformFailureLogQueue();
     if (!pending.length) return;
@@ -3943,12 +3962,23 @@ function inferSettingsFromDimensions(width, height) {
   };
 }
 
-async function addReferenceFiles(files, options = {}) {
+function addReferenceFiles(files, options = {}) {
+  referenceImportInFlight += 1;
+  const task = addReferenceFilesNow(files, options);
+  referenceImportPromise = Promise.allSettled([referenceImportPromise, task]).then(() => {});
+  task.then(() => {}, () => {}).finally(() => {
+    referenceImportInFlight = Math.max(0, referenceImportInFlight - 1);
+  });
+  return task;
+}
+
+async function addReferenceFilesNow(files, options = {}) {
   const imageFiles = Array.from(files || []).filter(isImageFile);
   if (!imageFiles.length) {
     if (options.notify !== false) showToast("未检测到图片文件");
     return 0;
   }
+  await ensureFlowStateLoaded();
   let added = 0;
   let failed = 0;
   for (const file of imageFiles) {
@@ -4003,6 +4033,26 @@ function droppedImageFiles(dataTransfer) {
     seen.add(key);
     return true;
   });
+}
+
+function ensureFlowStateLoaded() {
+  if (!flowStateLoadPromise) {
+    flowStateLoadPromise = loadState().catch((error) => {
+      console.warn("本地图片状态读取失败", error);
+    });
+  }
+  return flowStateLoadPromise;
+}
+
+async function waitForReferenceReadiness(timeoutMs = REFERENCE_READY_WAIT_MS) {
+  const waits = [ensureFlowStateLoaded()];
+  if (referenceImportInFlight > 0) {
+    waits.push(referenceImportPromise.catch(() => {}));
+  }
+  await Promise.race([
+    Promise.allSettled(waits),
+    wait(timeoutMs),
+  ]);
 }
 
 function setReferenceDragActive(active) {
@@ -4662,6 +4712,7 @@ async function trackSiteVisit() {
 
 async function loadSiteStats(options = {}) {
   try {
+    await flushQueuedPlatformFailureLogs();
     const headers = {};
     const password = adminPassword();
     if (password) headers["X-Admin-Password"] = password;
@@ -4950,6 +5001,7 @@ async function loadAdminUserUsage(email) {
   adminUserUsageState.data = null;
   renderSiteStats();
   try {
+    await flushQueuedPlatformFailureLogs();
     const response = await apiFetchPreferDirect(`/api/admin/user-usage?email=${encodeURIComponent(email)}`, {
       headers: { "X-Admin-Password": password },
       timeoutMs: ADMIN_API_TIMEOUT_MS,
