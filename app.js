@@ -2009,7 +2009,7 @@ async function fetchPlatformServerImageRequest(endpoint, request, requestLog = n
       headers: sanitizePlatformBrowserHeaders(serverRequest.headers || {}),
     },
   };
-  const { response, url: platformUrl } = await fetchPlatformGeneration(payload, signal);
+  const { response, url: platformUrl } = await fetchPlatformGeneration(payload, signal, requestLog);
   response.platformTicket = ticket.ticket;
   response.platformPriceCents = ticket.priceCents;
   response.platformStatsEndpoint = platformUrl;
@@ -2205,10 +2205,23 @@ function matchingAdminCustomTransportMode(globalConfig = {}) {
   return match?.transportMode || "";
 }
 
-async function fetchPlatformGeneration(payload, signal) {
+async function fetchPlatformGeneration(payload, signal, requestLog = null) {
   const url = platformDirectUrl("/api/generate/platform");
   const preferDirect = payload?.mode === "image";
   try {
+    appendRequestLogDiagnostic(requestLog, "站点 API 客户端链路", {
+      mode: payload?.mode || "",
+      directFirst: preferDirect,
+      directOnly: false,
+      directUrl: url,
+      sameOriginUrl: apiUrl("/api/generate/platform"),
+      effectiveDirectApiBase: effectiveDirectApiBase(),
+      payloadBytes: JSON.stringify(payload || {}).length,
+      referenceCount: Array.isArray(payload?.request?.files) ? payload.request.files.length : 0,
+      requestBodyType: payload?.request?.bodyType || "",
+      browserOnline: navigator.onLine,
+      userAgent: navigator.userAgent,
+    });
     const asyncResult = await fetchPlatformAsyncGeneration(payload, signal);
     if (asyncResult) return asyncResult;
 
@@ -2221,15 +2234,31 @@ async function fetchPlatformGeneration(payload, signal) {
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
     }, {
       directFirst: preferDirect,
-      directOnly: preferDirect,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
       noHttpFallback: true,
       maxFetchErrorFallbackMs: 8000,
     });
+    appendRequestLogDiagnostic(requestLog, "站点 API 入口响应", {
+      url: response.apiFetchUrl || url,
+      status: response.status,
+      ok: response.ok,
+      contentType: response.headers?.get?.("content-type") || "",
+      attempts: response.apiFetchAttempts || [],
+    });
     return { response, url: response.apiFetchUrl || url };
   } catch (error) {
     if (signal?.aborted) throw error;
+    appendRequestLogDiagnostic(requestLog, "站点 API 客户端异常", {
+      message: error?.message || String(error),
+      name: error?.name || "",
+      code: error?.code || "",
+      attempts: error?.apiFetchAttempts || [],
+      directApiReachable,
+      effectiveDirectApiBase: effectiveDirectApiBase(),
+      browserOnline: navigator.onLine,
+      userAgent: navigator.userAgent,
+    });
     const wrapped = new Error(`站点 API 请求失败：${cleanErrorMessage(error) || "请检查网络后重试"}`);
     if (error?.noVariantRetry) wrapped.noVariantRetry = true;
     throw wrapped;
@@ -6308,6 +6337,7 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
     : uniqueUrls([...(preference.directFirst ? [directPhpApiUrl(path), apiUrl(path)] : [apiUrl(path), directPhpApiUrl(path)])]);
   let lastError = null;
   let lastRetryableResponse = null;
+  const attempts = [];
   for (const url of urls) {
     const direct = isDirectPhpApiUrl(url);
     const startedAt = Date.now();
@@ -6315,20 +6345,49 @@ async function apiFetchPreferDirect(path, options = {}, preference = {}) {
       const response = await fetchApiUrl(url, { ...options, timeoutMs: preference.timeoutMs || FAST_API_TIMEOUT_MS }, direct ? "omit" : "include");
       response.apiFetchUrl = url;
       if (direct) directApiReachable = true;
+      attempts.push({
+        url,
+        direct,
+        status: response.status,
+        ok: response.ok,
+        elapsedMs: Date.now() - startedAt,
+        contentType: response.headers?.get?.("content-type") || "",
+      });
+      response.apiFetchAttempts = attempts.slice();
       if (response.ok || !shouldFallbackApiResponse(response, direct, preference)) return response;
       lastRetryableResponse = response;
       lastError = new Error(`${preference.label || "请求"}失败：HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
+      attempts.push({
+        url,
+        direct,
+        elapsedMs: Date.now() - startedAt,
+        error: error?.message || String(error),
+        name: error?.name || "",
+      });
       if (direct && isRetryableFetchError(error)) directApiReachable = false;
       if (options.signal?.aborted) throw error;
-      if (!isRetryableFetchError(error)) throw error;
-      if (preference.noFetchErrorFallback) throw error;
+      if (!isRetryableFetchError(error)) {
+        error.apiFetchAttempts = attempts;
+        throw error;
+      }
+      if (preference.noFetchErrorFallback) {
+        error.apiFetchAttempts = attempts;
+        throw error;
+      }
       const maxFallbackMs = Number(preference.maxFetchErrorFallbackMs || 0);
-      if (maxFallbackMs > 0 && Date.now() - startedAt > maxFallbackMs) throw error;
+      if (maxFallbackMs > 0 && Date.now() - startedAt > maxFallbackMs) {
+        error.apiFetchAttempts = attempts;
+        throw error;
+      }
     }
   }
-  if (lastRetryableResponse) return lastRetryableResponse;
+  if (lastRetryableResponse) {
+    lastRetryableResponse.apiFetchAttempts = attempts.slice();
+    return lastRetryableResponse;
+  }
+  if (lastError) lastError.apiFetchAttempts = attempts;
   throw lastError || new Error(`${preference.label || "请求"}失败`);
 }
 
@@ -6834,6 +6893,19 @@ function completeRequestLog(entry, details = {}) {
   renderGenerationLogs();
 }
 
+function appendRequestLogDiagnostic(entry, title, details = {}) {
+  if (!entry) return;
+  const diagnostics = Array.isArray(entry.diagnostics) ? entry.diagnostics : [];
+  diagnostics.push({
+    title: String(title || "诊断"),
+    at: Date.now(),
+    details: sanitizeForLog(details),
+  });
+  entry.diagnostics = diagnostics.slice(-8);
+  saveGenerationLogs();
+  renderGenerationLogs();
+}
+
 function updatePendingRequestLog(entry, endpoint, request, variant = "") {
   if (!entry || entry.completed) return;
   entry.endpoint = endpoint || entry.endpoint;
@@ -6953,6 +7025,9 @@ function renderRequestLog(entry) {
 }
 
 function requestLogText(entry) {
+  const diagnostics = Array.isArray(entry.diagnostics) && entry.diagnostics.length
+    ? `链路诊断:\n${summarizeLogValue(entry.diagnostics)}`
+    : "";
   return [
     `站点配置:\n${visibleLogApiName(entry)}`,
     `代码:\n${compactLogCode(entry.traceCode)}`,
@@ -6960,9 +7035,10 @@ function requestLogText(entry) {
     `请求变体:\n${entry.variant || "-"}`,
     `参数:\n${summarizeLogValue(entry.params)}`,
     `请求:\n${summarizeLogValue(entry.request)}`,
+    diagnostics,
     `本张花费:\n${formatMoney(entry.costCents || 0)} 元`,
     `API 返回:\nHTTP ${entry.httpStatus || "-"} · ${entry.contentType || "unknown"} · 图片 ${entry.imageCount || 0} 张\n${redactSensitiveApiUrls(entry.responsePreview || entry.error || "暂无返回")}`,
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
 }
 
 function totalGenerationLogCost(log) {

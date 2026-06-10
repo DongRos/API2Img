@@ -1474,7 +1474,15 @@ function generate_platform(PDO $pdo, array $config): void
         } catch (Throwable $logError) {
             error_log('generation failure log failed: ' . $logError->getMessage());
         }
-        throw new HttpError($message, 502, 'platform_failed');
+        json_response([
+            'ok' => false,
+            'error' => [
+                'message' => $message,
+                'code' => 'platform_failed',
+            ],
+            'debug' => platform_generation_failure_debug($endpoint ?? '', $request ?? [], $upstream ?? null, $message, $mode ?? '', $model ?? ''),
+        ], 502);
+        return;
     }
 }
 
@@ -1911,6 +1919,28 @@ function platform_backend_request_preview(array $platform, string $endpoint, arr
         '请求: ' . platform_log_json($requestSummary),
     ];
     return usage_log_text(implode("\n\n", $text), 4000);
+}
+
+function platform_generation_failure_debug(string $endpoint, array $request, ?array $upstream, string $message, string $mode, string $model): array
+{
+    $bodyType = (string)($request['bodyType'] ?? '');
+    $convertedReferenceJson = endpoint_uses_reference_image_json($endpoint, $model) && $bodyType === 'multipart';
+    $debug = [
+        'phase' => isset($upstream) ? 'upstream_response' : 'upstream_request',
+        'mode' => $mode,
+        'model' => $model,
+        'endpointKind' => endpoint_is_hfsy_api($endpoint) ? 'hfsy' : 'custom',
+        'requestBodyType' => $bodyType,
+        'convertedReferenceJson' => $convertedReferenceJson,
+        'fileCount' => is_array($request['files'] ?? null) ? count($request['files']) : 0,
+        'message' => usage_log_text($message, 500),
+    ];
+    if (isset($upstream)) {
+        $debug['upstreamStatus'] = (int)($upstream['status'] ?? 0);
+        $debug['upstreamContentType'] = usage_log_text(upstream_content_type((string)($upstream['headers'] ?? '')), 120);
+        $debug['upstreamBodyPreview'] = platform_body_preview((string)($upstream['body'] ?? ''));
+    }
+    return $debug;
 }
 
 function platform_log_sanitize($value, string $key = '', int $depth = 0)
