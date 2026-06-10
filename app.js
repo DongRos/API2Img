@@ -2185,10 +2185,9 @@ async function fetchPlatformGeneration(payload, signal) {
       signal,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
     }, {
-      directFirst: true,
+      directFirst: false,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
-      directOnly: true,
       noHttpFallback: true,
       maxFetchErrorFallbackMs: 8000,
     });
@@ -2526,7 +2525,7 @@ function formatHttpError(status, message) {
   if (code === "504" && /EdgeOne Pages/i.test(text)) {
     return addApiGuidance(
       "EdgeOne 代理超时（HTTP 504），这不是 base64 图片。已改为优先使用站点 API 直连；本次未扣费，请重试。",
-      "如果手机端仍出现，请检查 deep666.top 是否能直接访问。",
+      "如果手机端仍出现，请刷新页面确认已加载最新前端，或稍后重试。",
     );
   }
   if (/failed to fetch|fetch failed|network error|network|connection|timeout|timed out|request aborted|aborted|econnreset|enotfound|socket hang up|dns|certificate/i.test(text)) {
