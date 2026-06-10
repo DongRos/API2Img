@@ -1498,9 +1498,6 @@ function generate_platform_async_start(PDO $pdo, array $config): void
     ]);
     $bodyPayload = json_decode($upstream['body'], true);
     $decoded = is_array($bodyPayload) ? $bodyPayload : null;
-    if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
-        throw new HttpError(platform_upstream_error_message($upstream, $decoded), 502, 'platform_failed');
-    }
 
     $images = upstream_response_images($upstream, $decoded);
     if (count($images)) {
@@ -1515,6 +1512,9 @@ function generate_platform_async_start(PDO $pdo, array $config): void
     }
 
     $taskId = platform_async_task_id($decoded ?? []);
+    if (($upstream['status'] < 200 || $upstream['status'] >= 300) && $taskId === '') {
+        throw new HttpError(platform_upstream_error_message($upstream, $decoded), 502, 'platform_failed');
+    }
     if ($taskId === '') {
         throw new HttpError(platform_upstream_no_image_message($upstream, $decoded), 502, 'platform_failed');
     }
@@ -1566,29 +1566,45 @@ function generate_platform_async_poll(PDO $pdo, array $config): void
     }
 
     $queryEndpoint = platform_async_query_endpoint($endpoint, $taskId);
-    $upstream = call_upstream_request($queryEndpoint, [
-        'method' => 'GET',
-        'headers' => [],
-        'bodyType' => 'json',
-        'body' => '',
-    ], [
-        'Authorization' => 'Bearer ' . (string)$platform['api_key'],
-    ]);
+    try {
+        $upstream = call_upstream_request($queryEndpoint, [
+            'method' => 'GET',
+            'headers' => [],
+            'bodyType' => 'json',
+            'body' => '',
+        ], [
+            'Authorization' => 'Bearer ' . (string)$platform['api_key'],
+        ]);
+    } catch (Throwable $error) {
+        if (platform_async_poll_error_is_retryable($error->getMessage(), 0)) {
+            json_response([
+                'ok' => true,
+                'completed' => false,
+                'status' => 'PENDING',
+                'progress' => '',
+                'taskId' => $taskId,
+                'message' => usage_log_text($error->getMessage() ?: 'upstream poll interrupted', 500),
+            ]);
+            return;
+        }
+        throw $error;
+    }
     $bodyPayload = json_decode($upstream['body'], true);
     $decoded = is_array($bodyPayload) ? $bodyPayload : null;
     if ($upstream['status'] < 200 || $upstream['status'] >= 300) {
-        if (platform_async_is_pending_timeout($decoded)) {
+        $message = platform_upstream_error_message($upstream, $decoded);
+        if (platform_async_is_pending_timeout($decoded) || platform_async_poll_error_is_retryable($message, (int)$upstream['status'])) {
             json_response([
                 'ok' => true,
                 'completed' => false,
                 'status' => platform_async_status($decoded ?? []) ?: 'PENDING',
                 'progress' => platform_async_progress($decoded ?? []),
                 'taskId' => $taskId,
-                'message' => platform_async_failure_message($decoded ?? []) ?: 'poll timeout without any image',
+                'message' => platform_async_failure_message($decoded ?? []) ?: usage_log_text($message ?: 'upstream poll pending', 500),
             ]);
             return;
         }
-        throw new HttpError(platform_upstream_error_message($upstream, $decoded), 502, 'platform_failed');
+        throw new HttpError($message, 502, 'platform_failed');
     }
 
     $images = upstream_response_images($upstream, $decoded);
@@ -1814,6 +1830,18 @@ function platform_async_is_pending_timeout(?array $payload): bool
         || strpos($text, 'poll timeout') !== false
         || strpos($text, 'timeout without any image') !== false
         || strpos($text, 'without any image') !== false;
+}
+
+function platform_async_poll_error_is_retryable(string $message, int $status = 0): bool
+{
+    $text = strtolower($message);
+    if (preg_match('/invalid[_ -]?(task|request|api|key|token)|unauthori[sz]ed|forbidden|permission|not found|model_not_found|insufficient|balance|quota|rate limit/', $text)) {
+        return false;
+    }
+    if (in_array($status, [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524], true)) {
+        return true;
+    }
+    return preg_match('/poll_timeout|poll timeout|timeout without any image|without any image|timeout|timed out|upstream|gateway|bad gateway|service unavailable|connection|reset|closed|interrupted|incomplete|stream|socket|curl|empty reply|transfer closed|received from peer|rst_stream/', $text) === 1;
 }
 
 function platform_async_failure_message(array $payload): string

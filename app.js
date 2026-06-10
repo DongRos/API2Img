@@ -2279,23 +2279,43 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
       taskToken,
       logCode: payload?.logCode || "",
     });
-    const pollResponse = await apiFetchPreferDirect("/api/generate/platform-async/poll", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-      body: pollBody,
-      signal,
-      keepalive: pollBody.length < 60000,
-      timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
-    }, {
-      directFirst: payload?.mode === "image",
-      alwaysTryDirect: true,
-      timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
-      label: "站点 API 异步生图查询",
-    });
-    const pollPayload = await readJsonResponse(pollResponse);
+    let pollResponse = null;
+    let pollPayload = null;
+    try {
+      pollResponse = await apiFetchPreferDirect("/api/generate/platform-async/poll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: pollBody,
+        signal,
+        keepalive: pollBody.length < 60000,
+        timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+      }, {
+        directFirst: payload?.mode === "image",
+        alwaysTryDirect: true,
+        timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+        label: "站点 API 异步生图查询",
+      });
+      pollPayload = await readJsonResponse(pollResponse);
+    } catch (error) {
+      if (!platformAsyncPollErrorIsRetryable(error)) throw error;
+      updateProgress("等待上游生成", `上游任务仍在处理，查询连接暂时中断，正在继续查询`, Math.min(78, 34 + pollCount * 3), {
+        generated: 0,
+        total: Math.max(1, Number(payload?.count || 1)),
+      });
+      continue;
+    }
     if (!pollResponse.ok) {
-      throw noVariantRetryError(imageRequestError(pollPayload?.error?.message || `异步生图查询失败：HTTP ${pollResponse.status}`, pollPayload?.error?.code || ""));
+      const message = pollPayload?.error?.message || `异步生图查询失败：HTTP ${pollResponse.status}`;
+      const code = pollPayload?.error?.code || pollPayload?.code || "";
+      if (platformAsyncPollErrorIsRetryable({ message, code, status: pollResponse.status }, pollPayload)) {
+        updateProgress("等待上游生成", `上游任务仍在处理，正在继续查询结果`, Math.min(78, 34 + pollCount * 3), {
+          generated: 0,
+          total: Math.max(1, Number(payload?.count || 1)),
+        });
+        continue;
+      }
+      throw noVariantRetryError(imageRequestError(message, code));
     }
     const progress = String(pollPayload?.progress || pollPayload?.status || "").trim();
     updateProgress("等待上游生成", progress ? `上游任务处理中：${progress}` : "上游任务处理中，正在查询结果", Math.min(78, 34 + pollCount * 3), {
@@ -2310,6 +2330,17 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
     }
   }
   throw noVariantRetryError(new Error("异步生图等待超时，页面未拿到生成结果；请稍后在后台日志中核对任务状态，避免连续重复提交。"));
+}
+
+function platformAsyncPollErrorIsRetryable(error, payload = null) {
+  const status = Number(error?.status || 0);
+  const code = String(error?.code || payload?.error?.code || payload?.code || "").trim();
+  const message = `${error?.message || String(error || "")} ${JSON.stringify(payload || {})}`.toLowerCase();
+  if (/invalid[_ -]?(task|request|api|key|token)|unauthori[sz]ed|forbidden|permission|not found|model_not_found|insufficient|balance|quota|rate limit/.test(`${code} ${message}`)) {
+    return false;
+  }
+  if ([408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524].includes(status)) return true;
+  return /poll_timeout|poll timeout|timeout without any image|without any image|timeout|timed out|upstream|gateway|bad gateway|service unavailable|failed to fetch|network|connection|reset|closed|interrupted|incomplete|stream|socket|fetch failed|aborted|transfer closed|empty reply|rst_stream/.test(message);
 }
 
 function noVariantRetryError(error) {
