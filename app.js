@@ -2221,6 +2221,7 @@ async function fetchPlatformGeneration(payload, signal) {
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
     }, {
       directFirst: preferDirect,
+      directOnly: preferDirect,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
       noHttpFallback: true,
@@ -2236,6 +2237,7 @@ async function fetchPlatformGeneration(payload, signal) {
 }
 
 async function fetchPlatformAsyncGeneration(payload, signal) {
+  if (payload?.mode === "image") return null;
   const startBody = JSON.stringify(payload);
   const startResponse = await apiFetchPreferDirect("/api/generate/platform-async/start", {
     method: "POST",

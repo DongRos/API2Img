@@ -1749,7 +1749,7 @@ function platform_async_clean_task_id(string $taskId): string
 
 function platform_async_task_id(array $payload): string
 {
-    foreach (['task_id', 'taskId', 'id'] as $key) {
+    foreach (['task_id', 'taskId'] as $key) {
         if (isset($payload[$key]) && is_scalar($payload[$key])) {
             $value = platform_async_clean_task_id((string)$payload[$key]);
             if ($value !== '') {
@@ -1761,6 +1761,14 @@ function platform_async_task_id(array $payload): string
         if (isset($payload[$key]) && is_array($payload[$key])) {
             $value = platform_async_task_id($payload[$key]);
             if ($value !== '') {
+                return $value;
+            }
+        }
+    }
+    foreach (['id'] as $key) {
+        if (isset($payload[$key]) && is_scalar($payload[$key])) {
+            $value = platform_async_clean_task_id((string)$payload[$key]);
+            if ($value !== '' && !ctype_digit($value)) {
                 return $value;
             }
         }
