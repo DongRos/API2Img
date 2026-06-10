@@ -2123,7 +2123,6 @@ async function fetchPlatformGeneration(payload, signal) {
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
       noHttpFallback: true,
-      noFetchErrorFallback: true,
       maxFetchErrorFallbackMs: 8000,
     });
     return { response, url: response.apiFetchUrl || url };
