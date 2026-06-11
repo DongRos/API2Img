@@ -13,7 +13,7 @@ return [
         'session_days' => 30,
         'code_ttl_minutes' => 10,
         'recharge_url' => 'https://deep666.top/',
-        'public_api_base_url' => 'https://deep666.top/php-api/index.php',
+        'public_api_base_url' => '',
     ],
     'db' => [
         'host' => 'localhost',

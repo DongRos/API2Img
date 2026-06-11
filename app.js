@@ -26,7 +26,7 @@ const SINGLE_IMAGE_MAX_ATTEMPTS = 2;
 const PLATFORM_PRICE_FALLBACK_CENTS = 10;
 const PLATFORM_MAX_BATCH_REQUEST_COUNT = 1;
 const DEFAULT_IMAGE_SIZE = "1024x1024";
-const DEFAULT_PHP_API_BASE = "https://deep666.top/php-api/index.php";
+const DEFAULT_PHP_API_BASE = "";
 const FAST_API_TIMEOUT_MS = 6500;
 const GENERATION_READY_WAIT_MS = 2200;
 const ADMIN_API_TIMEOUT_MS = 8000;
@@ -2237,7 +2237,7 @@ async function fetchPlatformGeneration(payload, signal, requestLog = null) {
       signal,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
     }, {
-      directFirst: preferDirect,
+      directFirst: shouldUseDirectApiBase() && preferDirect,
       timeoutMs: CUSTOM_API_PROXY_TIMEOUT_MS,
       label: "站点 API 生图",
       noHttpFallback: true,
@@ -2272,6 +2272,7 @@ async function fetchPlatformGeneration(payload, signal, requestLog = null) {
 async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = null) {
   if (payload?.mode !== "image") return null;
   if (!Array.isArray(payload?.request?.files) || !payload.request.files.length) return null;
+  if (!shouldTryPlatformImageTask()) return null;
   const startBody = JSON.stringify(payload);
   appendRequestLogDiagnostic(requestLog, "站点 API 图生图任务启动", {
     mode: payload?.mode || "",
@@ -2279,7 +2280,10 @@ async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = nu
     referenceCount: payload.request.files.length,
     payloadBytes: startBody.length,
   });
-  const startResponse = await apiFetchPreferDirect("/api/generate/platform-image-task/start", {
+  let startResponse = null;
+  let startPayload = null;
+  try {
+    startResponse = await apiFetchPreferDirect("/api/generate/platform-image-task/start", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
@@ -2292,10 +2296,28 @@ async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = nu
     timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
     label: "站点 API 图生图任务启动",
     noHttpFallback: true,
-    noFetchErrorFallback: true,
   });
-  const startPayload = await readJsonResponse(startResponse);
+    startPayload = await readJsonResponse(startResponse);
+  } catch (error) {
+    if (!platformAsyncPollErrorIsRetryable(error) && !isRetryableFetchError(error)) throw error;
+    disablePlatformImageTaskForSession(error?.message || String(error));
+    appendRequestLogDiagnostic(requestLog, "platform image task interrupted, fallback to async", {
+      message: error?.message || String(error),
+      attempts: error?.apiFetchAttempts || [],
+    });
+    return null;
+  }
   if (platformImageTaskUnsupported(startResponse, startPayload)) return null;
+  if (!startResponse.ok && platformImageTaskShouldFallback(startResponse, startPayload)) {
+    disablePlatformImageTaskForSession(startPayload?.error?.message || `HTTP ${startResponse.status}`);
+    appendRequestLogDiagnostic(requestLog, "站点 API 图生图任务不可用，切回异步链路", {
+      status: startResponse.status,
+      contentType: startResponse.headers?.get?.("content-type") || "",
+      message: startPayload?.error?.message || startPayload?.message || "",
+      attempts: startResponse.apiFetchAttempts || [],
+    });
+    return null;
+  }
   if (!startResponse.ok) {
     throw noVariantRetryError(imageRequestError(startPayload?.error?.message || `图生图任务启动失败：HTTP ${startResponse.status}`, startPayload?.error?.code || ""));
   }
@@ -2392,8 +2414,24 @@ function platformImageTaskUnsupported(response, payload) {
   );
 }
 
+function platformImageTaskShouldFallback(response, payload) {
+  const status = Number(response?.status || 0);
+  const message = String(payload?.error?.message || payload?.message || "").trim();
+  return [500, 502, 503, 504, 520, 522, 524].includes(status) ||
+    /internal server error|edgeone|function|not configured|php api|proxy|html/i.test(message);
+}
+
+function shouldTryPlatformImageTask() {
+  return sessionStorage.getItem("image2.platform.imageTask.disabled.v1") !== "1";
+}
+
+function disablePlatformImageTaskForSession(reason = "") {
+  sessionStorage.setItem("image2.platform.imageTask.disabled.v1", "1");
+  if (reason) console.warn("Platform image task disabled for this session:", reason);
+}
+
 async function fetchPlatformAsyncGeneration(payload, signal) {
-  if (payload?.mode === "image") return null;
+  if (payload?.mode === "image" && (!Array.isArray(payload?.request?.files) || !payload.request.files.length)) return null;
   const startBody = JSON.stringify(payload);
   const startResponse = await apiFetchPreferDirect("/api/generate/platform-async/start", {
     method: "POST",
@@ -2404,8 +2442,8 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
     keepalive: startBody.length < 60000,
     timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
   }, {
-    directFirst: payload?.mode === "image",
-    alwaysTryDirect: true,
+    directFirst: false,
+    alwaysTryDirect: shouldUseDirectApiBase(),
     timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
     label: "站点 API 异步生图启动",
   });
@@ -2449,8 +2487,8 @@ async function fetchPlatformAsyncGeneration(payload, signal) {
         keepalive: pollBody.length < 60000,
         timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
       }, {
-        directFirst: payload?.mode === "image",
-        alwaysTryDirect: true,
+        directFirst: false,
+        alwaysTryDirect: shouldUseDirectApiBase(),
         timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
         label: "站点 API 异步生图查询",
       });
@@ -6456,9 +6494,9 @@ function apiFetch(path, options = {}) {
 }
 
 async function apiFetchPreferDirect(path, options = {}, preference = {}) {
-  const shouldTryDirect = Boolean(preference.directFirst || preference.alwaysTryDirect);
+  const shouldTryDirect = shouldUseDirectApiBase() && Boolean(preference.directFirst || preference.alwaysTryDirect);
   const urls = preference.directOnly
-    ? uniqueUrls([directPhpApiUrl(path)])
+    ? uniqueUrls([shouldUseDirectApiBase() ? directPhpApiUrl(path) : apiUrl(path)])
     : directApiReachable === false && !shouldTryDirect
     ? [apiUrl(path)]
     : uniqueUrls([...(preference.directFirst ? [directPhpApiUrl(path), apiUrl(path)] : [apiUrl(path), directPhpApiUrl(path)])]);
@@ -6586,30 +6624,43 @@ function directPhpApiUrl(path) {
   const base = effectiveDirectApiBase();
   const value = String(path || "");
   if (/^https?:\/\//i.test(value)) return value;
+  if (!base) return apiUrl(value);
   return `${base}${value.startsWith("/") ? value : `/${value}`}`;
 }
 
 function fixedPhpApiUrl(path) {
-  const base = normalizeDirectApiBase(publicMobileSafeUrl(DEFAULT_PHP_API_BASE));
+  const base = normalizeDirectApiBase(publicMobileSafeUrl(DEFAULT_PHP_API_BASE)) || API_BASE;
   const value = String(path || "");
   if (/^https?:\/\//i.test(value)) return value;
   return `${base}${value.startsWith("/") ? value : `/${value}`}`;
 }
 
 function isDirectPhpApiUrl(url) {
-  return normalizeDirectApiBase(url).startsWith(effectiveDirectApiBase());
+  const base = effectiveDirectApiBase();
+  return base !== "" && normalizeDirectApiBase(url).startsWith(base);
 }
 
 function isFixedPhpApiUrl(url) {
-  return normalizeDirectApiBase(url).startsWith(normalizeDirectApiBase(publicMobileSafeUrl(DEFAULT_PHP_API_BASE)));
+  const base = normalizeDirectApiBase(publicMobileSafeUrl(DEFAULT_PHP_API_BASE));
+  return base !== "" && normalizeDirectApiBase(url).startsWith(base);
 }
 
 function effectiveDirectApiBase() {
-  return normalizeDirectApiBase(publicMobileSafeUrl(billingState.directBaseUrl || DEFAULT_PHP_API_BASE));
+  const configured = normalizeDirectApiBase(publicMobileSafeUrl(billingState.directBaseUrl || DEFAULT_PHP_API_BASE));
+  if (!configured || isRechargeDomainApiBase(configured)) return "";
+  return configured;
+}
+
+function shouldUseDirectApiBase() {
+  return effectiveDirectApiBase() !== "";
 }
 
 function publicMobileSafeUrl(url = "") {
   return String(url || "").replace(/^https?:\/\/(?:www\.|api\.)?api2img\.shop(?=\/|$)/i, "https://deep666.top");
+}
+
+function isRechargeDomainApiBase(url = "") {
+  return /^https?:\/\/(?:www\.)?deep666\.top(?=\/|$)/i.test(String(url || ""));
 }
 
 function uniqueUrls(urls) {

@@ -410,6 +410,15 @@ function public_mobile_safe_url(string $url): string
     return preg_replace('/^https?:\/\/(?:www\.|api\.)?api2img\.shop(?=\/|$)/i', 'https://deep666.top', $url) ?? $url;
 }
 
+function public_generation_api_base_url(array $config): string
+{
+    $configured = rtrim(public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')), '/');
+    if ($configured !== '' && !preg_match('#^https?://(?:www\.)?deep666\.top(?:/|$)#i', $configured)) {
+        return $configured;
+    }
+    return request_public_site_origin_url();
+}
+
 function reference_image_upload(array $config): void
 {
     $payload = read_json();
@@ -480,7 +489,7 @@ function reference_image_store(array $config, string $bytes, string $extension, 
 
     $base = rtrim($baseOverride, '/');
     if ($base === '') {
-        $base = rtrim(public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')), '/');
+        $base = public_generation_api_base_url($config);
     }
     if ($base === '') {
         $base = request_public_api_base_url();
@@ -524,6 +533,41 @@ function request_public_origin_url(): string
     return rtrim($proto . '://' . $host, '/');
 }
 
+function request_public_site_origin_url(): string
+{
+    $origin = request_header_public_origin((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
+    if ($origin !== '') {
+        return $origin;
+    }
+    $referer = request_header_public_origin((string)($_SERVER['HTTP_REFERER'] ?? ''));
+    if ($referer !== '') {
+        return $referer;
+    }
+    $host = (string)($_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? '');
+    if ($host !== '' && !preg_match('/(?:^|\.)qcloudteo\.com$/i', $host)) {
+        return request_public_origin_url();
+    }
+    return 'https://api2image.top';
+}
+
+function request_header_public_origin(string $value): string
+{
+    $value = trim($value);
+    if ($value === '') {
+        return '';
+    }
+    $scheme = strtolower((string)parse_url($value, PHP_URL_SCHEME));
+    $host = strtolower((string)parse_url($value, PHP_URL_HOST));
+    if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
+        return '';
+    }
+    if (!preg_match('/(?:^|\.)api2image\.top$/i', $host)) {
+        return '';
+    }
+    $port = parse_url($value, PHP_URL_PORT);
+    return $scheme . '://' . $host . ($port ? ':' . $port : '');
+}
+
 function billing_config(PDO $pdo, array $config): void
 {
     $platform = platform_config($pdo, $config);
@@ -535,7 +579,7 @@ function billing_config(PDO $pdo, array $config): void
         'currency' => 'CNY',
         'platformEnabled' => platform_is_configured($platform),
         'rechargeUrl' => public_mobile_safe_url((string)$config['app']['recharge_url']),
-        'directBaseUrl' => public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')),
+        'directBaseUrl' => public_generation_api_base_url($config),
         'requestFormat' => (string)$platform['request_format'],
         'transportMode' => (string)($platform['transport_mode'] ?? 'proxy'),
         'customTemplate' => (string)$platform['custom_template'],
@@ -1374,7 +1418,7 @@ function generate_ticket(PDO $pdo, array $config): void
     json_response([
         'ok' => true,
         'ticket' => $ticket,
-        'directBaseUrl' => public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')),
+        'directBaseUrl' => public_generation_api_base_url($config),
         'priceCents' => $price,
         'balanceCents' => current_balance($pdo, (int)$user['id']),
         'displayName' => (string)($platform['display_name'] ?? '站点配置1'),
