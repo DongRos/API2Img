@@ -120,6 +120,14 @@ function route_request(PDO $pdo, array $config): void
         generate_platform($pdo, $config);
         return;
     }
+    if ($method === 'POST' && $path === '/api/generate/platform-image-task/start') {
+        generate_platform_image_task_start($pdo, $config);
+        return;
+    }
+    if ($method === 'POST' && $path === '/api/generate/platform-image-task/poll') {
+        generate_platform_image_task_poll($pdo, $config);
+        return;
+    }
     if ($method === 'POST' && $path === '/api/generate/platform-async/start') {
         generate_platform_async_start($pdo, $config);
         return;
@@ -455,7 +463,7 @@ function reference_image_decode(string $dataUrl): array
     return [$raw, $mime, $extension];
 }
 
-function reference_image_store(array $config, string $bytes, string $extension): string
+function reference_image_store(array $config, string $bytes, string $extension, string $baseOverride = ''): string
 {
     $dir = reference_image_dir();
     if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
@@ -470,7 +478,10 @@ function reference_image_store(array $config, string $bytes, string $extension):
         throw new HttpError('参考图保存失败', 500, 'reference_image_storage_failed');
     }
 
-    $base = rtrim(public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')), '/');
+    $base = rtrim($baseOverride, '/');
+    if ($base === '') {
+        $base = rtrim(public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')), '/');
+    }
     if ($base === '') {
         $base = request_public_api_base_url();
     }
@@ -501,6 +512,16 @@ function request_public_api_base_url(): string
     $script = (string)($_SERVER['SCRIPT_NAME'] ?? '/index.php');
     $basePath = rtrim(str_replace('\\', '/', dirname($script)), '/');
     return rtrim($proto . '://' . $host . ($basePath === '' ? '' : $basePath) . '/index.php', '/');
+}
+
+function request_public_origin_url(): string
+{
+    $host = (string)($_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? '');
+    $proto = (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '');
+    if ($proto === '') {
+        $proto = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    }
+    return rtrim($proto . '://' . $host, '/');
 }
 
 function billing_config(PDO $pdo, array $config): void
@@ -1486,6 +1507,534 @@ function generate_platform(PDO $pdo, array $config): void
     }
 }
 
+function generate_platform_image_task_start(PDO $pdo, array $config): void
+{
+    $payload = read_json();
+    $context = platform_generation_context($pdo, $config, $payload);
+    if ((string)$context['mode'] !== 'image') {
+        throw new HttpError('image task only supports image mode', 400, 'platform_image_task_mode');
+    }
+    if (!platform_image_task_has_reference($context['request'])) {
+        throw new HttpError('image task requires reference image', 400, 'platform_image_task_no_reference');
+    }
+    if (!endpoint_uses_reference_image_json((string)$context['endpoint'], (string)$context['model'])) {
+        throw new HttpError('current site api does not support image task json references', 409, 'platform_image_task_unsupported');
+    }
+
+    platform_image_task_cleanup(platform_image_task_dir());
+    $taskId = platform_image_task_id();
+    $taskToken = sign_generation_ticket($config, [
+        'uid' => (int)$context['ticket']['uid'],
+        'mode' => 'image',
+        'count' => (int)$context['count'],
+        'price' => (int)$context['price'],
+        'model' => (string)$context['model'],
+        'tier' => usage_log_text((string)($context['ticket']['tier'] ?? $payload['tier'] ?? ''), 16),
+        'size' => usage_log_text((string)($context['ticket']['size'] ?? $payload['size'] ?? platform_request_size($context['request'])), 40),
+        'siteConfig' => usage_log_text((string)($context['ticket']['siteConfig'] ?? $context['platform']['display_name'] ?? 'site api'), 80),
+        'requestId' => (string)$context['requestId'],
+        'taskId' => $taskId,
+        'exp' => time() + 1800,
+        'nonce' => random_token(12),
+    ], random_token(32));
+
+    platform_image_task_write($taskId, [
+        'taskId' => $taskId,
+        'status' => 'PENDING',
+        'createdAt' => time(),
+        'updatedAt' => time(),
+        'payload' => $payload,
+        'context' => platform_image_task_context_snapshot($context, $payload),
+        'attempts' => 0,
+    ]);
+
+    platform_image_task_json_response([
+        'ok' => true,
+        'completed' => false,
+        'taskId' => $taskId,
+        'taskToken' => $taskToken,
+        'status' => 'PENDING',
+        'pollAfterMs' => 2500,
+    ]);
+
+    platform_image_task_after_response_run($pdo, $config, $taskId);
+}
+
+function generate_platform_image_task_poll(PDO $pdo, array $config): void
+{
+    $payload = read_json();
+    $taskToken = verify_generation_ticket($config, (string)($payload['taskToken'] ?? ''));
+    if (!$taskToken) {
+        throw new HttpError('image task expired, please retry', 401, 'platform_image_task_expired');
+    }
+    if (($taskToken['mode'] ?? '') !== 'image') {
+        throw new HttpError('invalid image task token', 400, 'platform_image_task_invalid');
+    }
+    $taskId = platform_image_task_clean_id((string)($payload['taskId'] ?? $taskToken['taskId'] ?? ''));
+    if ($taskId === '' || $taskId !== platform_image_task_clean_id((string)($taskToken['taskId'] ?? ''))) {
+        throw new HttpError('invalid image task id', 400, 'platform_image_task_invalid');
+    }
+
+    $task = platform_image_task_read($taskId);
+    if (!$task) {
+        throw new HttpError('image task not found or expired', 404, 'platform_image_task_not_found');
+    }
+
+    $status = (string)($task['status'] ?? 'PENDING');
+    $taskAge = time() - (int)($task['createdAt'] ?? time());
+    if ($status === 'PENDING') {
+        platform_image_task_try_async_run($pdo, $config, $taskId);
+        $task = platform_image_task_read($taskId) ?: $task;
+        $status = (string)($task['status'] ?? $status);
+    } elseif ($status === 'RUNNING' && $taskAge > 330) {
+        platform_image_task_mark_failed($pdo, $config, $taskId, 'image task timed out before upstream response', null, null);
+        $task = platform_image_task_read($taskId) ?: $task;
+        $status = (string)($task['status'] ?? $status);
+    }
+
+    if ($status === 'SUCCEEDED') {
+        json_response([
+            'ok' => true,
+            'completed' => true,
+            'status' => 'SUCCESS',
+            'taskId' => $taskId,
+            'data' => is_array($task['images'] ?? null) ? $task['images'] : [],
+            'settlementRequired' => true,
+            'upstream' => platform_image_task_public_upstream($task),
+        ]);
+        return;
+    }
+    if ($status === 'FAILED') {
+        json_response([
+            'ok' => false,
+            'completed' => true,
+            'status' => 'FAILED',
+            'taskId' => $taskId,
+            'error' => [
+                'message' => usage_log_text((string)($task['error'] ?? 'image task failed'), 800),
+                'code' => 'platform_image_task_failed',
+            ],
+            'upstream' => platform_image_task_public_upstream($task),
+        ], 502);
+        return;
+    }
+
+    json_response([
+        'ok' => true,
+        'completed' => false,
+        'status' => $status ?: 'PENDING',
+        'upstreamStatus' => usage_log_text((string)($task['upstreamStatus'] ?? ''), 80),
+        'progress' => usage_log_text((string)($task['progress'] ?? ''), 40),
+        'phase' => usage_log_text((string)($task['phase'] ?? ''), 40),
+        'upstreamTaskId' => usage_log_text((string)($task['upstreamTaskId'] ?? ''), 120),
+        'taskId' => $taskId,
+        'startedAt' => (int)($task['startedAt'] ?? 0),
+        'updatedAt' => (int)($task['updatedAt'] ?? 0),
+    ]);
+}
+
+function platform_image_task_after_response_run(PDO $pdo, array $config, string $taskId): void
+{
+    ignore_user_abort(true);
+    @ini_set('max_execution_time', '360');
+    @set_time_limit(360);
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+        platform_image_task_run($pdo, $config, $taskId);
+        return;
+    }
+    if (function_exists('session_write_close')) {
+        session_write_close();
+    }
+    @ob_flush();
+    @flush();
+}
+
+function platform_image_task_try_async_run(PDO $pdo, array $config, string $taskId): void
+{
+    $task = platform_image_task_read($taskId);
+    if (!$task) {
+        return;
+    }
+    if (time() - (int)($task['createdAt'] ?? time()) > 330) {
+        platform_image_task_mark_failed($pdo, $config, $taskId, 'image task timed out before upstream response', null, null);
+        return;
+    }
+    platform_image_task_run($pdo, $config, $taskId);
+}
+
+function platform_image_task_run(PDO $pdo, array $config, string $taskId): void
+{
+    ignore_user_abort(true);
+    @ini_set('max_execution_time', '360');
+    @set_time_limit(360);
+    $lockPath = platform_image_task_path($taskId) . '.lock';
+    $lock = @fopen($lockPath, 'c');
+    if (!$lock) {
+        platform_image_task_mark_failed($pdo, $config, $taskId, 'image task lock failed', null, null);
+        return;
+    }
+    try {
+        if (!flock($lock, LOCK_EX | LOCK_NB)) {
+            return;
+        }
+        $task = platform_image_task_read($taskId);
+        if (!$task || in_array((string)($task['status'] ?? ''), ['SUCCEEDED', 'FAILED'], true)) {
+            return;
+        }
+        $task['status'] = 'RUNNING';
+        $task['startedAt'] = (int)($task['startedAt'] ?? time()) ?: time();
+        $task['updatedAt'] = time();
+        $task['attempts'] = max(1, (int)($task['attempts'] ?? 0) + 1);
+        platform_image_task_write($taskId, $task);
+
+        $payload = is_array($task['payload'] ?? null) ? $task['payload'] : [];
+        $context = platform_generation_context($pdo, $config, $payload);
+        if ((string)$context['mode'] !== 'image') {
+            throw new RuntimeException('image task payload mode changed');
+        }
+        $endpoint = (string)$context['endpoint'];
+        $request = $context['request'];
+        if (!endpoint_uses_reference_image_json($endpoint, (string)$context['model'])) {
+            throw new RuntimeException('current site api does not support image task json references');
+        }
+
+        $upstream = platform_image_task_call_upstream($config, $context['platform'], $endpoint, $request, $taskId);
+        $bodyPayload = json_decode((string)($upstream['body'] ?? ''), true);
+        $decoded = is_array($bodyPayload) ? $bodyPayload : null;
+        $images = upstream_response_images($upstream, $decoded);
+        if ((int)($upstream['status'] ?? 0) < 200 || (int)($upstream['status'] ?? 0) >= 300) {
+            throw new RuntimeException(platform_upstream_error_message($upstream, $decoded));
+        }
+        if (!count($images)) {
+            throw new RuntimeException(platform_upstream_no_image_message($upstream, $decoded));
+        }
+
+        $task['status'] = 'SUCCEEDED';
+        $task['completedAt'] = time();
+        $task['updatedAt'] = time();
+        $task['images'] = $images;
+        $task['upstream'] = [
+            'status' => (int)($upstream['status'] ?? 0),
+            'contentType' => usage_log_text(upstream_content_type((string)($upstream['headers'] ?? '')), 120),
+            'bodyPreview' => platform_body_preview((string)($upstream['body'] ?? '')),
+        ];
+        unset($task['payload']);
+        platform_image_task_write($taskId, $task);
+    } catch (Throwable $error) {
+        platform_image_task_mark_failed($pdo, $config, $taskId, $error->getMessage() ?: 'image task failed', $upstream ?? null, $context ?? null);
+    } finally {
+        if (is_resource($lock)) {
+            @flock($lock, LOCK_UN);
+            @fclose($lock);
+        }
+    }
+}
+
+function platform_image_task_call_upstream(array $config, array $platform, string $endpoint, array $request, string $taskId): array
+{
+    if (platform_supports_async_generation($endpoint)) {
+        return platform_image_task_call_async_upstream($config, $platform, $endpoint, $request, $taskId);
+    }
+    return call_platform_upstream($config, $platform, $endpoint, $request);
+}
+
+function platform_image_task_call_async_upstream(array $config, array $platform, string $endpoint, array $request, string $taskId): array
+{
+    [$jsonEndpoint, $jsonRequest] = platform_json_generation_request_with_base($config, $platform, $endpoint, $request, request_public_origin_url());
+    $startEndpoint = platform_async_start_endpoint($jsonEndpoint);
+    $startUpstream = call_upstream_request($startEndpoint, $jsonRequest, [
+        'Authorization' => 'Bearer ' . (string)$platform['api_key'],
+    ]);
+    $startPayload = json_decode((string)($startUpstream['body'] ?? ''), true);
+    $startDecoded = is_array($startPayload) ? $startPayload : null;
+    $startImages = upstream_response_images($startUpstream, $startDecoded);
+    platform_image_task_update_progress($taskId, [
+        'phase' => 'ASYNC_START',
+        'upstreamStatus' => platform_async_status($startDecoded ?? []) ?: 'PENDING',
+        'progress' => platform_async_progress($startDecoded ?? []),
+        'upstream' => [
+            'status' => (int)($startUpstream['status'] ?? 0),
+            'contentType' => usage_log_text(upstream_content_type((string)($startUpstream['headers'] ?? '')), 120),
+            'bodyPreview' => platform_body_preview((string)($startUpstream['body'] ?? '')),
+        ],
+    ]);
+    if (count($startImages)) {
+        return $startUpstream;
+    }
+
+    $upstreamTaskId = platform_async_task_id($startDecoded ?? []);
+    if (((int)($startUpstream['status'] ?? 0) < 200 || (int)($startUpstream['status'] ?? 0) >= 300) && $upstreamTaskId === '') {
+        throw new RuntimeException(platform_upstream_error_message($startUpstream, $startDecoded));
+    }
+    if ($upstreamTaskId === '') {
+        throw new RuntimeException(platform_upstream_no_image_message($startUpstream, $startDecoded));
+    }
+
+    platform_image_task_update_progress($taskId, [
+        'phase' => 'ASYNC_POLL',
+        'upstreamTaskId' => $upstreamTaskId,
+        'upstreamStatus' => platform_async_status($startDecoded ?? []) ?: 'PENDING',
+        'progress' => platform_async_progress($startDecoded ?? []),
+    ]);
+
+    $queryEndpoint = platform_async_query_endpoint($jsonEndpoint, $upstreamTaskId);
+    $startedAt = time();
+    $pollCount = 0;
+    $lastUpstream = $startUpstream;
+    while (time() - $startedAt < 330) {
+        sleep($pollCount === 0 ? 2 : 3);
+        $pollCount++;
+        try {
+            $pollUpstream = call_upstream_request($queryEndpoint, [
+                'method' => 'GET',
+                'headers' => [],
+                'bodyType' => 'json',
+                'body' => '',
+            ], [
+                'Authorization' => 'Bearer ' . (string)$platform['api_key'],
+            ]);
+            $lastUpstream = $pollUpstream;
+        } catch (Throwable $error) {
+            if (!platform_async_poll_error_is_retryable($error->getMessage(), 0)) {
+                throw $error;
+            }
+            platform_image_task_update_progress($taskId, [
+                'phase' => 'ASYNC_POLL',
+                'upstreamTaskId' => $upstreamTaskId,
+                'upstreamStatus' => 'PENDING',
+                'progress' => '',
+                'pollCount' => $pollCount,
+                'upstream' => [
+                    'status' => 0,
+                    'contentType' => '',
+                    'bodyPreview' => usage_log_text($error->getMessage(), 1200),
+                ],
+            ]);
+            continue;
+        }
+
+        $pollPayload = json_decode((string)($pollUpstream['body'] ?? ''), true);
+        $pollDecoded = is_array($pollPayload) ? $pollPayload : null;
+        $pollImages = upstream_response_images($pollUpstream, $pollDecoded);
+        platform_image_task_update_progress($taskId, [
+            'phase' => 'ASYNC_POLL',
+            'upstreamTaskId' => $upstreamTaskId,
+            'upstreamStatus' => platform_async_status($pollDecoded ?? []) ?: 'PENDING',
+            'progress' => platform_async_progress($pollDecoded ?? []),
+            'pollCount' => $pollCount,
+            'upstream' => [
+                'status' => (int)($pollUpstream['status'] ?? 0),
+                'contentType' => usage_log_text(upstream_content_type((string)($pollUpstream['headers'] ?? '')), 120),
+                'bodyPreview' => platform_body_preview((string)($pollUpstream['body'] ?? '')),
+            ],
+        ]);
+        if (count($pollImages)) {
+            return $pollUpstream;
+        }
+
+        $pollStatus = (int)($pollUpstream['status'] ?? 0);
+        if ($pollStatus < 200 || $pollStatus >= 300) {
+            $message = platform_upstream_error_message($pollUpstream, $pollDecoded);
+            if (platform_async_is_pending_timeout($pollDecoded) || platform_async_poll_error_is_retryable($message, $pollStatus)) {
+                continue;
+            }
+            throw new RuntimeException($message);
+        }
+        if (platform_async_is_failed($pollDecoded ?? [])) {
+            throw new RuntimeException(platform_async_failure_message($pollDecoded ?? []) ?: platform_upstream_no_image_message($pollUpstream, $pollDecoded));
+        }
+    }
+    throw new RuntimeException('async image task poll timeout without any image: ' . platform_body_preview((string)($lastUpstream['body'] ?? '')));
+}
+
+function platform_image_task_update_progress(string $taskId, array $fields): void
+{
+    try {
+        $task = platform_image_task_read($taskId);
+        if (!$task || in_array((string)($task['status'] ?? ''), ['SUCCEEDED', 'FAILED'], true)) {
+            return;
+        }
+        foreach ($fields as $key => $value) {
+            $task[$key] = $value;
+        }
+        $task['updatedAt'] = time();
+        platform_image_task_write($taskId, $task);
+    } catch (Throwable $error) {
+        error_log('platform image task progress update failed: ' . $error->getMessage());
+    }
+}
+
+function platform_image_task_mark_failed(PDO $pdo, array $config, string $taskId, string $message, ?array $upstream, ?array $context): void
+{
+    $task = platform_image_task_read($taskId) ?: ['taskId' => $taskId, 'createdAt' => time()];
+    $payload = is_array($task['payload'] ?? null) ? $task['payload'] : [];
+    if (!$context) {
+        try {
+            $context = $payload ? platform_generation_context($pdo, $config, $payload) : null;
+        } catch (Throwable $ignored) {
+            $context = null;
+        }
+    }
+    $task['status'] = 'FAILED';
+    $task['error'] = usage_log_text($message, 1000);
+    $task['completedAt'] = time();
+    $task['updatedAt'] = time();
+    if (!$upstream && is_array($task['upstream'] ?? null)) {
+        $upstream = [
+            'status' => (int)($task['upstream']['status'] ?? 0),
+            'headers' => 'Content-Type: ' . (string)($task['upstream']['contentType'] ?? ''),
+            'body' => (string)($task['upstream']['bodyPreview'] ?? ''),
+        ];
+    }
+    if ($upstream) {
+        $task['upstream'] = [
+            'status' => (int)($upstream['status'] ?? 0),
+            'contentType' => usage_log_text(upstream_content_type((string)($upstream['headers'] ?? '')), 120),
+            'bodyPreview' => platform_body_preview((string)($upstream['body'] ?? '')),
+        ];
+    }
+    unset($task['payload']);
+    platform_image_task_write($taskId, $task);
+
+    if (!$context) {
+        return;
+    }
+    try {
+        record_generation_failure($pdo, (int)$context['ticket']['uid'], (string)$context['requestId'], [
+            'logCode' => (string)($payload['logCode'] ?? $payload['traceCode'] ?? ''),
+            'mode' => 'image',
+            'model' => (string)$context['model'],
+            'prompt' => platform_request_prompt($context['request']),
+            'size' => usage_log_text((string)($payload['size'] ?? ($context['ticket']['size'] ?? platform_request_size($context['request']))), 40),
+            'ratio' => '',
+            'batchIndex' => max(0, (int)($payload['batchIndex'] ?? 0)),
+            'batchTotal' => (int)($context['count'] ?? 1),
+            'imageCount' => 0,
+            'priceCents' => 0,
+            'errorMessage' => $message,
+            'requestPreview' => platform_backend_request_preview($context['platform'], (string)$context['endpoint'], $context['request'], $payload),
+            'responsePreview' => $upstream ? platform_log_json([
+                'taskId' => $taskId,
+                'status' => (int)($upstream['status'] ?? 0),
+                'contentType' => upstream_content_type((string)($upstream['headers'] ?? '')),
+                'body' => platform_body_preview((string)($upstream['body'] ?? '')),
+                'message' => $message,
+            ]) : platform_log_json(['taskId' => $taskId, 'message' => $message]),
+            'httpStatus' => $upstream ? max(0, (int)($upstream['status'] ?? 0)) : 0,
+            'contentType' => $upstream ? usage_log_text(upstream_content_type((string)($upstream['headers'] ?? '')), 120) : '',
+            'requestVariant' => usage_log_text((string)($context['request']['payloadVariant'] ?? $payload['requestVariant'] ?? 'image-task'), 40),
+        ]);
+    } catch (Throwable $logError) {
+        error_log('platform image task failure log failed: ' . $logError->getMessage());
+    }
+}
+
+function platform_image_task_has_reference(array $request): bool
+{
+    if (($request['bodyType'] ?? '') === 'multipart') {
+        return count(is_array($request['files'] ?? null) ? $request['files'] : []) > 0;
+    }
+    $body = json_decode((string)($request['body'] ?? ''), true);
+    return is_array($body) && count(is_array($body['reference_images'] ?? null) ? $body['reference_images'] : []) > 0;
+}
+
+function platform_image_task_context_snapshot(array $context, array $payload): array
+{
+    return [
+        'mode' => (string)$context['mode'],
+        'requestId' => (string)$context['requestId'],
+        'count' => (int)$context['count'],
+        'model' => (string)$context['model'],
+        'price' => (int)$context['price'],
+        'endpointKind' => endpoint_is_hfsy_api((string)$context['endpoint']) ? 'hfsy' : 'custom',
+        'requestBodyType' => (string)($context['request']['bodyType'] ?? ''),
+        'payloadBytes' => strlen(json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: ''),
+        'referenceCount' => count(is_array($context['request']['files'] ?? null) ? $context['request']['files'] : []),
+    ];
+}
+
+function platform_image_task_public_upstream(array $task): array
+{
+    $upstream = is_array($task['upstream'] ?? null) ? $task['upstream'] : [];
+    return [
+        'status' => (int)($upstream['status'] ?? 0),
+        'contentType' => (string)($upstream['contentType'] ?? ''),
+        'bodyPreview' => usage_log_text((string)($upstream['bodyPreview'] ?? ''), 1200),
+    ];
+}
+
+function platform_image_task_json_response(array $payload, int $status = 200): void
+{
+    discard_accidental_output();
+    http_response_code($status);
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+function platform_image_task_dir(): string
+{
+    return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'api2img_platform_image_tasks';
+}
+
+function platform_image_task_id(): string
+{
+    return 'pit_' . bin2hex(random_bytes(12));
+}
+
+function platform_image_task_clean_id(string $taskId): string
+{
+    return substr(preg_replace('/[^A-Za-z0-9_-]+/', '', trim($taskId)) ?? '', 0, 80);
+}
+
+function platform_image_task_path(string $taskId): string
+{
+    $taskId = platform_image_task_clean_id($taskId);
+    return platform_image_task_dir() . DIRECTORY_SEPARATOR . $taskId . '.json';
+}
+
+function platform_image_task_read(string $taskId): ?array
+{
+    $path = platform_image_task_path($taskId);
+    if ($taskId === '' || !is_file($path)) {
+        return null;
+    }
+    $raw = file_get_contents($path);
+    if ($raw === false || $raw === '') {
+        return null;
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : null;
+}
+
+function platform_image_task_write(string $taskId, array $task): void
+{
+    $dir = platform_image_task_dir();
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('image task directory is not writable');
+    }
+    $path = platform_image_task_path($taskId);
+    $temp = $path . '.' . bin2hex(random_bytes(4)) . '.tmp';
+    $json = json_encode($task, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false || file_put_contents($temp, $json, LOCK_EX) === false || !rename($temp, $path)) {
+        @unlink($temp);
+        throw new RuntimeException('image task write failed');
+    }
+}
+
+function platform_image_task_cleanup(string $dir): void
+{
+    if (!is_dir($dir)) {
+        return;
+    }
+    foreach (glob($dir . DIRECTORY_SEPARATOR . 'pit_*.{json,lock}', GLOB_BRACE) ?: [] as $path) {
+        if (is_file($path) && time() - (int)filemtime($path) > 86400) {
+            @unlink($path);
+        }
+    }
+}
+
 function generate_platform_async_start(PDO $pdo, array $config): void
 {
     $payload = read_json();
@@ -1715,9 +2264,14 @@ function platform_async_start_request(array $config, array $platform, string $en
 
 function platform_json_generation_request(array $config, array $platform, string $endpoint, array $request): array
 {
+    return platform_json_generation_request_with_base($config, $platform, $endpoint, $request, '');
+}
+
+function platform_json_generation_request_with_base(array $config, array $platform, string $endpoint, array $request, string $baseOverride = ''): array
+{
     $model = platform_request_model($request, $platform);
     if (endpoint_uses_reference_image_json($endpoint, $model) && ($request['bodyType'] ?? '') === 'multipart') {
-        [$endpoint, $request] = platform_reference_json_request($config, $endpoint, $request);
+        [$endpoint, $request] = platform_reference_json_request($config, $endpoint, $request, $baseOverride);
     }
     if (($request['bodyType'] ?? '') === 'multipart') {
         throw new RuntimeException('当前站点 API 异步生图只支持 JSON 请求');
@@ -2773,7 +3327,7 @@ function platform_request_model(array $request, array $platform): string
     return custom_api_model_name((string)($platform['model_name'] ?? 'gpt-image-2'));
 }
 
-function platform_reference_json_request(array $config, string $endpoint, array $request): array
+function platform_reference_json_request(array $config, string $endpoint, array $request, string $baseOverride = ''): array
 {
     $fields = is_array($request['fields'] ?? null) ? $request['fields'] : [];
     $body = [
@@ -2803,7 +3357,7 @@ function platform_reference_json_request(array $config, string $endpoint, array 
         [$bytes, , $extension] = reference_image_decode((string)($file['dataUrl'] ?? ''));
         $body['reference_images'][] = $preferBase64
             ? base64_encode($bytes)
-            : reference_image_store($config, $bytes, $extension);
+            : reference_image_store($config, $bytes, $extension, $baseOverride);
     }
     if (!count($body['reference_images'])) {
         throw new RuntimeException('图生图参考图为空');

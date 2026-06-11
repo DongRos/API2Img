@@ -36,6 +36,7 @@ const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
 const PLATFORM_ASYNC_STEP_TIMEOUT_MS = 60000;
 const PLATFORM_ASYNC_POLL_INTERVAL_MS = 2500;
 const PLATFORM_ASYNC_MAX_WAIT_MS = 285000;
+const PLATFORM_IMAGE_TASK_MAX_WAIT_MS = 390000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
 const REFERENCE_API_MAX_BYTES = 2 * 1024 * 1024;
 const REFERENCE_API_MAX_DIMENSION = 1536;
@@ -2222,6 +2223,9 @@ async function fetchPlatformGeneration(payload, signal, requestLog = null) {
       browserOnline: navigator.onLine,
       userAgent: navigator.userAgent,
     });
+    const imageTaskResult = await fetchPlatformImageTaskGeneration(payload, signal, requestLog);
+    if (imageTaskResult) return imageTaskResult;
+
     const asyncResult = await fetchPlatformAsyncGeneration(payload, signal);
     if (asyncResult) return asyncResult;
 
@@ -2263,6 +2267,129 @@ async function fetchPlatformGeneration(payload, signal, requestLog = null) {
     if (error?.noVariantRetry) wrapped.noVariantRetry = true;
     throw wrapped;
   }
+}
+
+async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = null) {
+  if (payload?.mode !== "image") return null;
+  if (!Array.isArray(payload?.request?.files) || !payload.request.files.length) return null;
+  const startBody = JSON.stringify(payload);
+  appendRequestLogDiagnostic(requestLog, "站点 API 图生图任务启动", {
+    mode: payload?.mode || "",
+    requestId: payload?.requestId || "",
+    referenceCount: payload.request.files.length,
+    payloadBytes: startBody.length,
+  });
+  const startResponse = await apiFetchPreferDirect("/api/generate/platform-image-task/start", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: startBody,
+    signal,
+    keepalive: startBody.length < 60000,
+    timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+  }, {
+    directFirst: false,
+    timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+    label: "站点 API 图生图任务启动",
+    noHttpFallback: true,
+    noFetchErrorFallback: true,
+  });
+  const startPayload = await readJsonResponse(startResponse);
+  if (platformImageTaskUnsupported(startResponse, startPayload)) return null;
+  if (!startResponse.ok) {
+    throw noVariantRetryError(imageRequestError(startPayload?.error?.message || `图生图任务启动失败：HTTP ${startResponse.status}`, startPayload?.error?.code || ""));
+  }
+  const taskToken = String(startPayload?.taskToken || "");
+  const taskId = String(startPayload?.taskId || "");
+  if (!taskToken || !taskId) {
+    throw noVariantRetryError(new Error("图生图任务启动后没有返回 taskId，已停止同步回退以避免重复请求上游。"));
+  }
+  appendRequestLogDiagnostic(requestLog, "站点 API 图生图任务已创建", {
+    taskId,
+    status: startPayload?.status || "",
+    pollAfterMs: Number(startPayload?.pollAfterMs || 0),
+  });
+
+  const startedAt = Date.now();
+  let pollCount = 0;
+  while (Date.now() - startedAt < PLATFORM_IMAGE_TASK_MAX_WAIT_MS) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    await wait(Math.max(1200, Number(startPayload?.pollAfterMs || PLATFORM_ASYNC_POLL_INTERVAL_MS)));
+    pollCount += 1;
+    const pollBody = JSON.stringify({
+      taskId,
+      taskToken,
+      logCode: payload?.logCode || "",
+    });
+    let pollResponse = null;
+    let pollPayload = null;
+    try {
+      pollResponse = await apiFetchPreferDirect("/api/generate/platform-image-task/poll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: pollBody,
+        signal,
+        keepalive: pollBody.length < 60000,
+        timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+      }, {
+        directFirst: false,
+        timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+        label: "站点 API 图生图任务查询",
+        noHttpFallback: true,
+        noFetchErrorFallback: true,
+      });
+      pollPayload = await readJsonResponse(pollResponse);
+    } catch (error) {
+      if (!platformAsyncPollErrorIsRetryable(error)) throw error;
+      appendRequestLogDiagnostic(requestLog, "图生图任务轮询暂时中断", {
+        taskId,
+        pollCount,
+        message: error?.message || String(error),
+      });
+      updateProgress("等待图生图结果", "服务器仍在等待上游返回，正在继续查询", Math.min(82, 34 + pollCount * 3), {
+        generated: 0,
+        total: Math.max(1, Number(payload?.count || 1)),
+      });
+      continue;
+    }
+
+    const progress = String(pollPayload?.progress || pollPayload?.status || "").trim();
+    updateProgress("等待图生图结果", progress ? `服务器任务处理中：${progress}` : "服务器正在等待上游生成结果", Math.min(82, 34 + pollCount * 3), {
+      generated: 0,
+      total: Math.max(1, Number(payload?.count || 1)),
+    });
+
+    if (!pollResponse.ok) {
+      const message = pollPayload?.error?.message || `图生图任务失败：HTTP ${pollResponse.status}`;
+      const code = pollPayload?.error?.code || pollPayload?.code || "";
+      throw noVariantRetryError(imageRequestError(message, code));
+    }
+    if (pollPayload?.completed) {
+      appendRequestLogDiagnostic(requestLog, "图生图任务完成", {
+        taskId,
+        pollCount,
+        imageCount: normalizeImages(pollPayload, pollResponse.apiFetchUrl || "").length,
+        upstream: pollPayload?.upstream || {},
+      });
+      return {
+        response: platformAsyncPayloadResponse(pollPayload, pollResponse.apiFetchUrl),
+        url: pollResponse.apiFetchUrl || platformDirectUrl("/api/generate/platform-image-task/poll"),
+      };
+    }
+  }
+  throw noVariantRetryError(new Error("图生图任务等待超时，已停止自动重试以避免重复请求上游；请稍后在后台日志核对任务状态。"));
+}
+
+function platformImageTaskUnsupported(response, payload) {
+  const code = String(payload?.error?.code || payload?.code || "").trim();
+  const status = Number(response?.status);
+  if ([404, 405].includes(status)) return true;
+  return status === 409 && (
+    code === "platform_image_task_unsupported" ||
+    code === "not_found" ||
+    /not found|method not allowed|unsupported|does not support/i.test(payload?.error?.message || payload?.message || "")
+  );
 }
 
 async function fetchPlatformAsyncGeneration(payload, signal) {
