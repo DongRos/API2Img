@@ -34,8 +34,8 @@ const PLATFORM_FAILURE_LOG_TIMEOUT_MS = 30000;
 const REFERENCE_READY_WAIT_MS = 6000;
 const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
 const PLATFORM_ASYNC_STEP_TIMEOUT_MS = 60000;
-const PLATFORM_ASYNC_POLL_INTERVAL_MS = 2500;
-const PLATFORM_ASYNC_MAX_WAIT_MS = 285000;
+const PLATFORM_ASYNC_POLL_INTERVAL_MS = 1400;
+const PLATFORM_ASYNC_MAX_WAIT_MS = 210000;
 const PLATFORM_IMAGE_TASK_STEP_TIMEOUT_MS = 150000;
 const PLATFORM_IMAGE_TASK_MAX_WAIT_MS = 210000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
@@ -2271,47 +2271,47 @@ async function fetchPlatformGeneration(payload, signal, requestLog = null) {
 }
 
 async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = null) {
-  if (payload?.mode !== "image") return null;
-  if (!Array.isArray(payload?.request?.files) || !payload.request.files.length) return null;
+  if (payload?.mode !== "image" && payload?.mode !== "text") return null;
+  if (payload?.mode === "image" && (!Array.isArray(payload?.request?.files) || !payload.request.files.length)) return null;
   if (!shouldTryPlatformImageTask()) return null;
+  const referenceFiles = Array.isArray(payload?.request?.files) ? payload.request.files : [];
   const startBody = JSON.stringify(payload);
-  appendRequestLogDiagnostic(requestLog, "站点 API 图生图任务启动", {
+  appendRequestLogDiagnostic(requestLog, "站点 API 生成任务启动", {
     mode: payload?.mode || "",
     requestId: payload?.requestId || "",
-    referenceCount: payload.request.files.length,
+    referenceCount: referenceFiles.length,
     payloadBytes: startBody.length,
   });
   let startResponse = null;
   let startPayload = null;
   try {
     startResponse = await apiFetchPreferDirect("/api/generate/platform-image-task/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: startBody,
-    signal,
-    keepalive: startBody.length < 60000,
-    timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
-  }, {
-    directFirst: false,
-    timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
-    label: "站点 API 图生图任务启动",
-    noHttpFallback: true,
-  });
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: startBody,
+      signal,
+      keepalive: startBody.length < 60000,
+      timeoutMs: PLATFORM_IMAGE_TASK_MAX_WAIT_MS,
+    }, {
+      directFirst: false,
+      timeoutMs: PLATFORM_IMAGE_TASK_MAX_WAIT_MS,
+      label: "站点 API 生成任务启动",
+      noHttpFallback: true,
+    });
     startPayload = await readJsonResponse(startResponse);
   } catch (error) {
     if (!platformAsyncPollErrorIsRetryable(error) && !isRetryableFetchError(error)) throw error;
-    disablePlatformImageTaskForSession(error?.message || String(error));
-    appendRequestLogDiagnostic(requestLog, "platform image task interrupted, fallback to async", {
+    appendRequestLogDiagnostic(requestLog, "生成任务启动状态未知", {
       message: error?.message || String(error),
       attempts: error?.apiFetchAttempts || [],
     });
-    return null;
+    throw noVariantRetryError(new Error("生成任务启动请求状态未知，已停止自动补单以避免重复请求上游；请稍后在后台日志核对是否已创建任务。"));
   }
   if (platformImageTaskUnsupported(startResponse, startPayload)) return null;
   if (!startResponse.ok && platformImageTaskShouldFallback(startResponse, startPayload)) {
     disablePlatformImageTaskForSession(startPayload?.error?.message || `HTTP ${startResponse.status}`);
-    appendRequestLogDiagnostic(requestLog, "站点 API 图生图任务不可用，切回异步链路", {
+    appendRequestLogDiagnostic(requestLog, "站点 API 生成任务不可用，切回异步链路", {
       status: startResponse.status,
       contentType: startResponse.headers?.get?.("content-type") || "",
       message: startPayload?.error?.message || startPayload?.message || "",
@@ -2320,14 +2320,14 @@ async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = nu
     return null;
   }
   if (!startResponse.ok) {
-    throw noVariantRetryError(imageRequestError(startPayload?.error?.message || `图生图任务启动失败：HTTP ${startResponse.status}`, startPayload?.error?.code || ""));
+    throw noVariantRetryError(imageRequestError(startPayload?.error?.message || `生成任务启动失败：HTTP ${startResponse.status}`, startPayload?.error?.code || ""));
   }
   const taskToken = String(startPayload?.taskToken || "");
   const taskId = String(startPayload?.taskId || "");
   if (!taskToken || !taskId) {
-    throw noVariantRetryError(new Error("图生图任务启动后没有返回 taskId，已停止同步回退以避免重复请求上游。"));
+    throw noVariantRetryError(new Error("生成任务启动后没有返回 taskId，已停止同步回退以避免重复请求上游。"));
   }
-  appendRequestLogDiagnostic(requestLog, "站点 API 图生图任务已创建", {
+  appendRequestLogDiagnostic(requestLog, "站点 API 生成任务已创建", {
     taskId,
     status: startPayload?.status || "",
     pollAfterMs: Number(startPayload?.pollAfterMs || 0),
@@ -2358,19 +2358,19 @@ async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = nu
       }, {
         directFirst: false,
         timeoutMs: PLATFORM_IMAGE_TASK_STEP_TIMEOUT_MS,
-        label: "站点 API 图生图任务查询",
+        label: "站点 API 生成任务查询",
         noHttpFallback: true,
         noFetchErrorFallback: true,
       });
       pollPayload = await readJsonResponse(pollResponse);
     } catch (error) {
       if (!platformAsyncPollErrorIsRetryable(error)) throw error;
-      appendRequestLogDiagnostic(requestLog, "图生图任务轮询暂时中断", {
+      appendRequestLogDiagnostic(requestLog, "生成任务轮询暂时中断", {
         taskId,
         pollCount,
         message: error?.message || String(error),
       });
-      updateProgress("等待图生图结果", "服务器仍在等待上游返回，正在继续查询", Math.min(82, 34 + pollCount * 3), {
+      updateProgress("等待生成结果", "服务器仍在等待上游返回，正在继续查询", Math.min(82, 34 + pollCount * 3), {
         generated: 0,
         total: Math.max(1, Number(payload?.count || 1)),
       });
@@ -2378,18 +2378,18 @@ async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = nu
     }
 
     const progress = String(pollPayload?.progress || pollPayload?.status || "").trim();
-    updateProgress("等待图生图结果", progress ? `服务器任务处理中：${progress}` : "服务器正在等待上游生成结果", Math.min(82, 34 + pollCount * 3), {
+    updateProgress("等待生成结果", progress ? `服务器任务处理中：${progress}` : "服务器正在等待上游生成结果", Math.min(82, 34 + pollCount * 3), {
       generated: 0,
       total: Math.max(1, Number(payload?.count || 1)),
     });
 
     if (!pollResponse.ok) {
-      const message = pollPayload?.error?.message || `图生图任务失败：HTTP ${pollResponse.status}`;
+      const message = pollPayload?.error?.message || `生成任务失败：HTTP ${pollResponse.status}`;
       const code = pollPayload?.error?.code || pollPayload?.code || "";
       throw noVariantRetryError(imageRequestError(message, code));
     }
     if (pollPayload?.completed) {
-      appendRequestLogDiagnostic(requestLog, "图生图任务完成", {
+      appendRequestLogDiagnostic(requestLog, "生成任务完成", {
         taskId,
         pollCount,
         imageCount: normalizeImages(pollPayload, pollResponse.apiFetchUrl || "").length,
@@ -2401,7 +2401,7 @@ async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = nu
       };
     }
   }
-  throw noVariantRetryError(new Error("图生图任务等待超时，已停止自动重试以避免重复请求上游；请稍后在后台日志核对任务状态。"));
+  throw noVariantRetryError(new Error("生成任务等待超时，已停止自动重试以避免重复请求上游；请稍后在后台日志核对任务状态。"));
 }
 
 function platformImageTaskUnsupported(response, payload) {
@@ -2432,6 +2432,7 @@ function disablePlatformImageTaskForSession(reason = "") {
 }
 
 async function fetchPlatformAsyncGeneration(payload, signal) {
+  if (payload?.mode === "text") return null;
   if (payload?.mode === "image" && (!Array.isArray(payload?.request?.files) || !payload.request.files.length)) return null;
   const startBody = JSON.stringify(payload);
   const startResponse = await apiFetchPreferDirect("/api/generate/platform-async/start", {

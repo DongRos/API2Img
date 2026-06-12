@@ -727,6 +727,7 @@ function json_image_sources(string $text, string $keyPath): array
 {
     $sources = [];
     $imageField = preg_match('/(^|[^a-z0-9])(b64|b64_json|base64|image|image_url|images|img|data|url|result|output|content|asset|assets|file|files|download)($|[^a-z0-9])/i', $keyPath) === 1;
+    $explicitImageUrlField = preg_match('/(^|[._-])(result_url|image_url|url|output_url|file_url|download_url)($|[._-])/i', $keyPath) === 1;
 
     if (preg_match_all('/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=\r\n]+/i', $text, $matches)) {
         foreach ($matches[0] as $dataUrl) {
@@ -737,7 +738,7 @@ function json_image_sources(string $text, string $keyPath): array
     if (preg_match_all('/https?:\/\/[^\s"\'<>),]+/i', $text, $matches)) {
         foreach ($matches[0] as $url) {
             $cleanUrl = rtrim($url, ".。");
-            if (json_is_likely_image_url($cleanUrl) || ($imageField && !json_is_excluded_image_url($cleanUrl))) {
+            if (json_is_likely_image_url($cleanUrl) || (($imageField || $explicitImageUrlField) && !json_is_excluded_image_url($cleanUrl))) {
                 $sources[] = ['url' => $cleanUrl];
             }
         }

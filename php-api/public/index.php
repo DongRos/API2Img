@@ -1588,13 +1588,13 @@ function generate_platform_image_task_start(PDO $pdo, array $config): void
 {
     $payload = read_json();
     $context = platform_generation_context($pdo, $config, $payload);
-    if ((string)$context['mode'] !== 'image') {
-        throw new HttpError('image task only supports image mode', 400, 'platform_image_task_mode');
+    if (!in_array((string)$context['mode'], ['image', 'text'], true)) {
+        throw new HttpError('image task only supports image or text mode', 400, 'platform_image_task_mode');
     }
-    if (!platform_image_task_has_reference($context['request'])) {
+    if ((string)$context['mode'] === 'image' && !platform_image_task_has_reference($context['request'])) {
         throw new HttpError('image task requires reference image', 400, 'platform_image_task_no_reference');
     }
-    if (!endpoint_uses_reference_image_json((string)$context['endpoint'], (string)$context['model'])) {
+    if ((string)$context['mode'] === 'image' && !endpoint_uses_reference_image_json((string)$context['endpoint'], (string)$context['model'])) {
         throw new HttpError('current site api does not support image task json references', 409, 'platform_image_task_unsupported');
     }
 
@@ -1602,7 +1602,7 @@ function generate_platform_image_task_start(PDO $pdo, array $config): void
     $taskId = platform_image_task_id();
     $taskToken = sign_generation_ticket($config, [
         'uid' => (int)$context['ticket']['uid'],
-        'mode' => 'image',
+        'mode' => (string)$context['mode'],
         'count' => (int)$context['count'],
         'price' => (int)$context['price'],
         'model' => (string)$context['model'],
@@ -1631,7 +1631,7 @@ function generate_platform_image_task_start(PDO $pdo, array $config): void
         'taskId' => $taskId,
         'taskToken' => $taskToken,
         'status' => 'PENDING',
-        'pollAfterMs' => 2500,
+        'pollAfterMs' => 1200,
     ]);
 
     platform_image_task_after_response_run($pdo, $config, $taskId);
@@ -1644,7 +1644,7 @@ function generate_platform_image_task_poll(PDO $pdo, array $config): void
     if (!$taskToken) {
         throw new HttpError('image task expired, please retry', 401, 'platform_image_task_expired');
     }
-    if (($taskToken['mode'] ?? '') !== 'image') {
+    if (!in_array((string)($taskToken['mode'] ?? ''), ['image', 'text'], true)) {
         throw new HttpError('invalid image task token', 400, 'platform_image_task_invalid');
     }
     $taskId = platform_image_task_clean_id((string)($payload['taskId'] ?? $taskToken['taskId'] ?? ''));
@@ -1767,12 +1767,12 @@ function platform_image_task_run(PDO $pdo, array $config, string $taskId): void
 
         $payload = is_array($task['payload'] ?? null) ? $task['payload'] : [];
         $context = platform_generation_context($pdo, $config, $payload);
-        if ((string)$context['mode'] !== 'image') {
+        if (!in_array((string)$context['mode'], ['image', 'text'], true)) {
             throw new RuntimeException('image task payload mode changed');
         }
         $endpoint = (string)$context['endpoint'];
         $request = $context['request'];
-        if (!endpoint_uses_reference_image_json($endpoint, (string)$context['model'])) {
+        if ((string)$context['mode'] === 'image' && !endpoint_uses_reference_image_json($endpoint, (string)$context['model'])) {
             throw new RuntimeException('current site api does not support image task json references');
         }
 
@@ -1823,6 +1823,9 @@ function platform_image_task_call_upstream(array $config, array $platform, strin
 function platform_image_task_should_use_async(string $endpoint, array $request): bool
 {
     if (!platform_supports_async_generation($endpoint)) {
+        return false;
+    }
+    if (($request['bodyType'] ?? '') !== 'multipart') {
         return false;
     }
     if (($request['bodyType'] ?? '') === 'multipart' && endpoint_uses_reference_image_json($endpoint, platform_request_model($request, []))) {
@@ -1995,7 +1998,7 @@ function platform_image_task_mark_failed(PDO $pdo, array $config, string $taskId
     try {
         record_generation_failure($pdo, (int)$context['ticket']['uid'], (string)$context['requestId'], [
             'logCode' => (string)($payload['logCode'] ?? $payload['traceCode'] ?? ''),
-            'mode' => 'image',
+            'mode' => (string)($context['mode'] ?? 'image'),
             'model' => (string)$context['model'],
             'prompt' => platform_request_prompt($context['request']),
             'size' => usage_log_text((string)($payload['size'] ?? ($context['ticket']['size'] ?? platform_request_size($context['request']))), 40),
