@@ -58,7 +58,8 @@ export async function proxyPhpApi(context) {
   if (shouldClearSession) {
     responseHeaders.append("Set-Cookie", "api2image_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0");
   }
-  if (sourceUrl.pathname.startsWith("/api/gallery/image/")) {
+  const upstreamContentType = upstream.headers.get("content-type") || "";
+  if (isGalleryImageRequest(sourceUrl.pathname) && upstreamContentType.startsWith("image/")) {
     if (!responseHeaders.has("Cache-Control")) {
       responseHeaders.set("Cache-Control", "public, max-age=31536000, immutable");
     }
@@ -91,6 +92,10 @@ function getEnv(context, key) {
 
 function normalizePhpApiBaseUrl(value) {
   return String(value || "").replace(/^https?:\/\/(?:www\.|api\.)?api2img\.shop(?=\/|$)/i, "https://deep666.top");
+}
+
+function isGalleryImageRequest(pathname) {
+  return pathname === "/api/gallery/image" || pathname.startsWith("/api/gallery/image/");
 }
 
 async function fetchPhpApiWithFallback(targetUrl, init, base) {

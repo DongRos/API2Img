@@ -2686,7 +2686,20 @@ function platformDirectUrl(path) {
 }
 
 function normalizeDirectApiBase(value) {
-  return String(value || "").trim().replace(/\/+$/, "");
+  const raw = String(value || "").trim().replace(/\/+$/, "");
+  if (!raw) return "";
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (/^(?:www\.)?api2image\.top$/i.test(url.hostname)) {
+      url.protocol = "https:";
+      url.hostname = "api2image.top";
+      url.port = "";
+      return url.toString().replace(/\/+$/, "");
+    }
+  } catch {
+    // Keep the configured value when URL parsing fails.
+  }
+  return raw;
 }
 
 function shouldFallbackToDirect(response, transportMode = config.transportMode) {
@@ -3298,7 +3311,17 @@ function normalizeGalleryItem(item) {
 function normalizeGalleryImageSource(value) {
   const src = String(value || "").trim();
   if (!src) return "";
-  if (/^\/api\/gallery\/image\//i.test(src)) return fixedPhpApiUrl(src);
+  if (/^\/api\/gallery\/image\//i.test(src)) {
+    const filename = src.replace(/^\/api\/gallery\/image\//i, "").split(/[?#]/)[0];
+    let decoded = filename;
+    try {
+      decoded = decodeURIComponent(filename);
+    } catch {
+      decoded = filename;
+    }
+    return fixedPhpApiUrl(`/api/gallery/image?file=${encodeURIComponent(decoded)}`);
+  }
+  if (/^\/api\/gallery\/image\?/i.test(src)) return fixedPhpApiUrl(src);
   return src;
 }
 

@@ -100,6 +100,10 @@ function route_request(PDO $pdo, array $config): void
         gallery_list($pdo, $config);
         return;
     }
+    if ($method === 'GET' && $path === '/api/gallery/image') {
+        gallery_image_read((string)($_GET['file'] ?? ''));
+        return;
+    }
     if ($method === 'POST' && $path === '/api/gallery') {
         gallery_upload($pdo, $config);
         return;
@@ -146,6 +150,10 @@ function route_request(PDO $pdo, array $config): void
     }
     if ($method === 'POST' && $path === '/api/reference-image') {
         reference_image_upload($config);
+        return;
+    }
+    if ($method === 'GET' && $path === '/api/reference-image') {
+        reference_image_read((string)($_GET['file'] ?? ''));
         return;
     }
     if ($method === 'GET' && preg_match('#^/api/reference-image/([^/]+)$#', $path, $matches)) {
@@ -414,7 +422,7 @@ function public_generation_api_base_url(array $config): string
 {
     $configured = rtrim(public_mobile_safe_url((string)($config['app']['public_api_base_url'] ?? '')), '/');
     if ($configured !== '' && !preg_match('#^https?://(?:www\.)?deep666\.top(?:/|$)#i', $configured)) {
-        return $configured;
+        return public_https_site_origin($configured);
     }
     return request_public_site_origin_url();
 }
@@ -494,7 +502,7 @@ function reference_image_store(array $config, string $bytes, string $extension, 
     if ($base === '') {
         $base = request_public_api_base_url();
     }
-    return $base . '/api/reference-image/' . rawurlencode($filename);
+    return $base . '/api/reference-image?file=' . rawurlencode($filename);
 }
 
 function reference_image_dir(): string
@@ -530,7 +538,7 @@ function request_public_origin_url(): string
     if ($proto === '') {
         $proto = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     }
-    return rtrim($proto . '://' . $host, '/');
+    return public_https_site_origin($proto . '://' . $host);
 }
 
 function request_public_site_origin_url(): string
@@ -565,7 +573,26 @@ function request_header_public_origin(string $value): string
         return '';
     }
     $port = parse_url($value, PHP_URL_PORT);
-    return $scheme . '://' . $host . ($port ? ':' . $port : '');
+    $origin = $scheme . '://' . $host . ($port ? ':' . $port : '');
+    return public_https_site_origin($origin);
+}
+
+function public_https_site_origin(string $origin): string
+{
+    $origin = rtrim(trim($origin), '/');
+    if ($origin === '') {
+        return '';
+    }
+    $scheme = strtolower((string)parse_url($origin, PHP_URL_SCHEME));
+    $host = strtolower((string)parse_url($origin, PHP_URL_HOST));
+    if ($host === 'api2image.top' || $host === 'www.api2image.top') {
+        return 'https://api2image.top';
+    }
+    if ($scheme === 'http' && preg_match('/(?:^|\.)api2image\.top$/i', $host)) {
+        $port = parse_url($origin, PHP_URL_PORT);
+        return 'https://' . $host . ($port ? ':' . $port : '');
+    }
+    return $origin;
 }
 
 function billing_config(PDO $pdo, array $config): void
@@ -958,7 +985,7 @@ function public_gallery_item(array $row): array
     }
     return [
         'id' => (string)($row['id'] ?? ''),
-        'src' => '/api/gallery/image/' . rawurlencode($filename),
+        'src' => '/api/gallery/image?file=' . rawurlencode($filename),
         'prompt' => (string)($row['prompt'] ?? ''),
         'model' => (string)($row['model'] ?? ''),
         'ratio' => (string)($row['ratio'] ?? ''),
