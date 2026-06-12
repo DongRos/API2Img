@@ -30,7 +30,7 @@ export async function proxyPhpApi(context) {
   headers.set("X-Forwarded-Proto", sourceUrl.protocol.replace(":", ""));
 
   const init = {
-    method: context.request.method,
+    method: context.request.method === "HEAD" ? "GET" : context.request.method,
     headers,
     redirect: "manual",
   };
@@ -66,7 +66,8 @@ export async function proxyPhpApi(context) {
   } else {
     responseHeaders.set("Cache-Control", "no-store");
   }
-  return new Response(await upstream.arrayBuffer(), {
+  const body = context.request.method === "HEAD" ? null : await upstream.arrayBuffer();
+  return new Response(body, {
     status: upstream.status,
     headers: responseHeaders,
   });

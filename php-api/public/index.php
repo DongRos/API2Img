@@ -47,7 +47,7 @@ function handle_cors(array $config): void
         header('Access-Control-Allow-Credentials: true');
     }
     header('Access-Control-Allow-Headers: Content-Type, X-Admin-Password, X-Api2Image-Session');
-    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+    header('Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS');
     header('Vary: Origin');
 }
 
@@ -100,7 +100,7 @@ function route_request(PDO $pdo, array $config): void
         gallery_list($pdo, $config);
         return;
     }
-    if ($method === 'GET' && $path === '/api/gallery/image') {
+    if (($method === 'GET' || $method === 'HEAD') && $path === '/api/gallery/image') {
         gallery_image_read((string)($_GET['file'] ?? ''));
         return;
     }
@@ -108,7 +108,7 @@ function route_request(PDO $pdo, array $config): void
         gallery_upload($pdo, $config);
         return;
     }
-    if ($method === 'GET' && preg_match('#^/api/gallery/image/([^/]+)$#', $path, $matches)) {
+    if (($method === 'GET' || $method === 'HEAD') && preg_match('#^/api/gallery/image/([^/]+)$#', $path, $matches)) {
         gallery_image_read((string)$matches[1]);
         return;
     }
@@ -152,11 +152,11 @@ function route_request(PDO $pdo, array $config): void
         reference_image_upload($config);
         return;
     }
-    if ($method === 'GET' && $path === '/api/reference-image') {
+    if (($method === 'GET' || $method === 'HEAD') && $path === '/api/reference-image') {
         reference_image_read((string)($_GET['file'] ?? ''));
         return;
     }
-    if ($method === 'GET' && preg_match('#^/api/reference-image/([^/]+)$#', $path, $matches)) {
+    if (($method === 'GET' || $method === 'HEAD') && preg_match('#^/api/reference-image/([^/]+)$#', $path, $matches)) {
         reference_image_read((string)$matches[1]);
         return;
     }
@@ -460,6 +460,9 @@ function reference_image_read(string $filename): void
     header('Content-Type: ' . $mime);
     header('Cache-Control: public, max-age=21600');
     header('Content-Length: ' . filesize($path));
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+        exit;
+    }
     readfile($path);
     exit;
 }
@@ -507,7 +510,7 @@ function reference_image_store(array $config, string $bytes, string $extension, 
 
 function reference_image_dir(): string
 {
-    return rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'api2img_reference_images';
+    return dirname(__DIR__) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'reference-images';
 }
 
 function reference_image_cleanup(string $dir): void
@@ -902,6 +905,9 @@ function gallery_image_read(string $filename): void
     header('Content-Type: ' . $mime);
     header('Cache-Control: public, max-age=31536000, immutable');
     header('Content-Length: ' . filesize($path));
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
+        exit;
+    }
     readfile($path);
     exit;
 }
@@ -1812,7 +1818,7 @@ function platform_image_task_call_upstream(array $config, array $platform, strin
 
 function platform_image_task_call_async_upstream(array $config, array $platform, string $endpoint, array $request, string $taskId): array
 {
-    [$jsonEndpoint, $jsonRequest] = platform_json_generation_request_with_base($config, $platform, $endpoint, $request, request_public_origin_url());
+    [$jsonEndpoint, $jsonRequest] = platform_json_generation_request_with_base($config, $platform, $endpoint, $request, public_generation_api_base_url($config));
     $startEndpoint = platform_async_start_endpoint($jsonEndpoint);
     $startUpstream = call_upstream_request($startEndpoint, $jsonRequest, [
         'Authorization' => 'Bearer ' . (string)$platform['api_key'],
