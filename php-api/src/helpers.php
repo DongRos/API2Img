@@ -523,21 +523,22 @@ function fetch_url(string $url, array $options): array
     foreach ($headers as $name => $value) {
         $headerLines[] = $name . ': ' . $value;
     }
-    $strict = curl_request_once($url, $method, $headerLines, $body, true);
+    $timeoutSeconds = max(5, min(300, (int)($options['timeout'] ?? 300)));
+    $strict = curl_request_once($url, $method, $headerLines, $body, true, $timeoutSeconds);
     if ($strict['ok']) {
         return $strict['response'];
     }
     if (!is_ssl_certificate_error((string)($strict['error'] ?? ''))) {
         throw new RuntimeException((string)($strict['error'] ?? 'upstream request failed'));
     }
-    $relaxed = curl_request_once($url, $method, $headerLines, $body, false);
+    $relaxed = curl_request_once($url, $method, $headerLines, $body, false, $timeoutSeconds);
     if ($relaxed['ok']) {
         return $relaxed['response'];
     }
     throw new RuntimeException((string)($relaxed['error'] ?? $strict['error'] ?? 'upstream request failed'));
 }
 
-function curl_request_once(string $url, string $method, array $headerLines, $body, bool $strictTls): array
+function curl_request_once(string $url, string $method, array $headerLines, $body, bool $strictTls, int $timeoutSeconds = 300): array
 {
     $ch = curl_init($url);
     $options = [
@@ -547,7 +548,7 @@ function curl_request_once(string $url, string $method, array $headerLines, $bod
         CURLOPT_HTTPHEADER => $headerLines,
         CURLOPT_POSTFIELDS => $body,
         CURLOPT_CONNECTTIMEOUT => 30,
-        CURLOPT_TIMEOUT => 300,
+        CURLOPT_TIMEOUT => $timeoutSeconds,
         CURLOPT_ENCODING => '',
         CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
         CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,

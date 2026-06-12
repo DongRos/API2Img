@@ -1810,10 +1810,25 @@ function platform_image_task_run(PDO $pdo, array $config, string $taskId): void
 
 function platform_image_task_call_upstream(array $config, array $platform, string $endpoint, array $request, string $taskId): array
 {
-    if (platform_supports_async_generation($endpoint)) {
+    if (platform_image_task_should_use_async($endpoint, $request)) {
         return platform_image_task_call_async_upstream($config, $platform, $endpoint, $request, $taskId);
     }
-    return call_platform_upstream($config, $platform, $endpoint, $request);
+    [$jsonEndpoint, $jsonRequest] = platform_json_generation_request_with_base($config, $platform, $endpoint, $request, public_generation_api_base_url($config));
+    $jsonRequest['timeout'] = 150;
+    return call_upstream_request($jsonEndpoint, $jsonRequest, [
+        'Authorization' => 'Bearer ' . (string)$platform['api_key'],
+    ]);
+}
+
+function platform_image_task_should_use_async(string $endpoint, array $request): bool
+{
+    if (!platform_supports_async_generation($endpoint)) {
+        return false;
+    }
+    if (($request['bodyType'] ?? '') === 'multipart' && endpoint_uses_reference_image_json($endpoint, platform_request_model($request, []))) {
+        return false;
+    }
+    return true;
 }
 
 function platform_image_task_call_async_upstream(array $config, array $platform, string $endpoint, array $request, string $taskId): array
@@ -2268,7 +2283,7 @@ function generate_platform_async_poll(PDO $pdo, array $config): void
                 'batchIndex' => 0,
                 'batchTotal' => (int)($taskToken['count'] ?? 1),
                 'imageCount' => 0,
-                'priceCents' => (int)($taskToken['price'] ?? 0),
+                'priceCents' => 0,
                 'errorMessage' => $message,
                 'requestPreview' => '异步任务查询: ' . platform_log_json(['taskId' => $taskId, 'endpoint' => '[站点 API 地址已隐藏]']),
                 'responsePreview' => platform_log_json($decoded ?? platform_body_preview((string)($upstream['body'] ?? ''))),
@@ -2453,8 +2468,8 @@ function platform_async_progress(array $payload): string
 
 function platform_async_is_failed(array $payload): bool
 {
-    if (platform_async_is_pending_timeout($payload)) {
-        return false;
+    if (platform_async_is_final_timeout($payload)) {
+        return true;
     }
     $status = strtolower(platform_async_status($payload));
     if (preg_match('/fail|failed|error|cancel|reject/', $status)) {
@@ -2465,6 +2480,11 @@ function platform_async_is_failed(array $payload): bool
 }
 
 function platform_async_is_pending_timeout(?array $payload): bool
+{
+    return false;
+}
+
+function platform_async_is_final_timeout(?array $payload): bool
 {
     if (!$payload) {
         return false;
@@ -2488,7 +2508,10 @@ function platform_async_poll_error_is_retryable(string $message, int $status = 0
     if (in_array($status, [408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524], true)) {
         return true;
     }
-    return preg_match('/poll_timeout|poll timeout|timeout without any image|without any image|timeout|timed out|upstream|gateway|bad gateway|service unavailable|connection|reset|closed|interrupted|incomplete|stream|socket|curl|empty reply|transfer closed|received from peer|rst_stream/', $text) === 1;
+    if (preg_match('/poll_timeout|poll timeout|timeout without any image|without any image/', $text)) {
+        return false;
+    }
+    return preg_match('/timeout|timed out|upstream|gateway|bad gateway|service unavailable|connection|reset|closed|interrupted|incomplete|stream|socket|curl|empty reply|transfer closed|received from peer|rst_stream/', $text) === 1;
 }
 
 function platform_async_failure_message(array $payload): string
@@ -3502,6 +3525,7 @@ function call_upstream_request(string $endpoint, array $request, array $forcedHe
             'method' => (string)($request['method'] ?? 'POST'),
             'headers' => $headers,
             'body' => $body,
+            'timeout' => (int)($request['timeout'] ?? 300),
         ]);
     } finally {
         foreach ($tempFiles as $path) {

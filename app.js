@@ -36,7 +36,8 @@ const CUSTOM_API_PROXY_TIMEOUT_MS = 300000;
 const PLATFORM_ASYNC_STEP_TIMEOUT_MS = 60000;
 const PLATFORM_ASYNC_POLL_INTERVAL_MS = 2500;
 const PLATFORM_ASYNC_MAX_WAIT_MS = 285000;
-const PLATFORM_IMAGE_TASK_MAX_WAIT_MS = 390000;
+const PLATFORM_IMAGE_TASK_STEP_TIMEOUT_MS = 150000;
+const PLATFORM_IMAGE_TASK_MAX_WAIT_MS = 210000;
 const PLATFORM_GENERATION_RETRY_DELAY_MS = 1400;
 const REFERENCE_API_MAX_BYTES = 2 * 1024 * 1024;
 const REFERENCE_API_MAX_DIMENSION = 1536;
@@ -2353,10 +2354,10 @@ async function fetchPlatformImageTaskGeneration(payload, signal, requestLog = nu
         body: pollBody,
         signal,
         keepalive: pollBody.length < 60000,
-        timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+        timeoutMs: PLATFORM_IMAGE_TASK_STEP_TIMEOUT_MS,
       }, {
         directFirst: false,
-        timeoutMs: PLATFORM_ASYNC_STEP_TIMEOUT_MS,
+        timeoutMs: PLATFORM_IMAGE_TASK_STEP_TIMEOUT_MS,
         label: "站点 API 图生图任务查询",
         noHttpFallback: true,
         noFetchErrorFallback: true,
@@ -2535,8 +2536,11 @@ function platformAsyncPollErrorIsRetryable(error, payload = null) {
   if (/invalid[_ -]?(task|request|api|key|token)|unauthori[sz]ed|forbidden|permission|not found|model_not_found|insufficient|balance|quota|rate limit/.test(`${code} ${message}`)) {
     return false;
   }
+  if (/poll_timeout|poll timeout|timeout without any image|without any image/.test(message)) {
+    return false;
+  }
   if ([408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524].includes(status)) return true;
-  return /poll_timeout|poll timeout|timeout without any image|without any image|timeout|timed out|upstream|gateway|bad gateway|service unavailable|failed to fetch|network|connection|reset|closed|interrupted|incomplete|stream|socket|fetch failed|aborted|transfer closed|empty reply|rst_stream/.test(message);
+  return /timeout|timed out|upstream|gateway|bad gateway|service unavailable|failed to fetch|network|connection|reset|closed|interrupted|incomplete|stream|socket|fetch failed|aborted|transfer closed|empty reply|rst_stream/.test(message);
 }
 
 function noVariantRetryError(error) {
