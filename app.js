@@ -44,6 +44,7 @@ const REFERENCE_API_MAX_DIMENSION = 1536;
 const REFERENCE_API_JPEG_QUALITY_START = 0.86;
 const REFERENCE_API_JPEG_QUALITY_MIN = 0.72;
 const REFERENCE_API_JPEG_QUALITY_STEP = 0.06;
+const BATCH_GENERATION_CONCURRENCY = 2;
 const RESULT_CACHE_TIMEOUT_MS = 4500;
 const IMAGE_DIMENSION_TIMEOUT_MS = 2200;
 const REFERENCE_IMAGE_UPLOAD_TIMEOUT_MS = 30000;
@@ -112,6 +113,7 @@ const iconPaths = {
   upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
   "external-link": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>',
   list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  layers: '<path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 17V9"/><path d="M13 17V5"/><path d="M18 17v-6"/>',
   wallet: '<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2H7"/><path d="M16 14h.01"/>',
   check: '<path d="m20 6-11 11-5-5"/>',
@@ -198,6 +200,10 @@ const siteStatsState = {
   lastVisitAt: 0,
   updatedAt: 0,
   onlineWindowMs: 3 * 60 * 1000,
+};
+
+const batchState = {
+  items: [],
 };
 
 const adminUserUsageState = {
@@ -306,6 +312,7 @@ async function init() {
   bindEvents();
   renderReferences();
   renderResults();
+  renderBatchPanel();
   renderIcons();
   autoGrow($("#promptInput"));
   afterFirstPaint(() => {
@@ -357,6 +364,23 @@ function bindEvents() {
     refreshBilling();
   });
   $("#closeWallet").addEventListener("click", () => $("#walletPanel").classList.remove("open"));
+  $("#batchToggle")?.addEventListener("click", openBatchPanel);
+  $("#closeBatchPanel")?.addEventListener("click", closeBatchPanel);
+  $("#batchUploadButton")?.addEventListener("click", () => $("#batchImageInput")?.click());
+  $("#batchImageInput")?.addEventListener("change", onBatchFiles);
+  $("#batchSelectAll")?.addEventListener("change", onBatchSelectAll);
+  $("#batchRemoveSelected")?.addEventListener("click", removeSelectedBatchItems);
+  $("#batchApplyCurrentSelected")?.addEventListener("click", () => applyCurrentSettingsToBatch(true));
+  $("#batchApplyCurrentAll")?.addEventListener("click", () => applyCurrentSettingsToBatch(false));
+  $("#batchFillCanvasSelected")?.addEventListener("click", () => fillBatchFromCanvas(true));
+  $("#batchFillCanvasAll")?.addEventListener("click", () => fillBatchFromCanvas(false));
+  $("#batchGenerateButton")?.addEventListener("click", generateBatchImages);
+  $("#batchList")?.addEventListener("input", onBatchListInput);
+  $("#batchList")?.addEventListener("change", onBatchListChange);
+  $("#batchList")?.addEventListener("click", onBatchListClick);
+  $("#batchPanel")?.addEventListener("dragenter", onBatchPanelDragOver);
+  $("#batchPanel")?.addEventListener("dragover", onBatchPanelDragOver);
+  $("#batchPanel")?.addEventListener("drop", onBatchPanelDrop);
   $("#apiProviderSelect")?.addEventListener("change", onApiProviderChange);
   $("#sendLoginCodeButton").addEventListener("click", sendLoginCode);
   $("#loginButton").addEventListener("click", verifyLoginCode);
@@ -814,7 +838,7 @@ function normalizeEndpointBeforeRequest(endpoint, options) {
   return corrected || endpoint;
 }
 
-function resolveEndpointForMode(mode) {
+function resolveEndpointForMode(mode, modelOverride = "") {
   if (isPlatformApiSelected()) {
     return {
       endpoint: "/api/generate/platform",
@@ -824,7 +848,7 @@ function resolveEndpointForMode(mode) {
   }
 
   if (mode === "image") {
-    const modelName = getModelName();
+    const modelName = normalizeModelName(modelOverride || getModelName());
     const editEndpoint = (config.editEndpoint || "").trim();
     if (editEndpoint) {
       const referenceEndpoint = referenceImageJsonEndpoint(editEndpoint, modelName);
@@ -1303,16 +1327,16 @@ function effectiveRequestSize(options = {}) {
   const selected = String(options.size || "").trim();
   if (selected && selected !== "auto") return selected;
   if (String(options.ratio || "").trim() === "auto") return "";
-  const ratioSize = requestSizeFromRatio(options.ratio);
+  const ratioSize = requestSizeFromRatio(options.ratio, options.resolutionTier);
   if (ratioSize) return ratioSize;
   const inferredSize = inferAutoRequestSize(options);
   if (inferredSize) return inferredSize;
   return "";
 }
 
-function requestSizeFromRatio(ratio = "") {
+function requestSizeFromRatio(ratio = "", tierOverride = "") {
   const preset = ratioPresets.find((item) => item.value === String(ratio || "").trim());
-  const tier = $("#resolutionTierSelect")?.value || "1K";
+  const tier = String(tierOverride || "").trim().toUpperCase() || $("#resolutionTierSelect")?.value || "1K";
   return preset?.sizes?.[tier] || preset?.sizes?.["1K"] || "";
 }
 
@@ -1660,8 +1684,11 @@ function platformSettlementRequestId(options, result, index) {
 async function requestImageBatch(endpoint, options, context) {
   const desired = Math.max(1, options.count || 1);
   if (shouldUseSingleImageRequests(options, desired)) {
-    updateProgress("逐张生成中", `正在精确生成 ${desired} 张图片`, 30, { generated: 0, total: desired });
-    return requestSingleImages(endpoint, options, desired, 0, desired, context);
+    const offset = Math.max(0, Number(options.batchOffset || 0));
+    const total = Math.max(desired, Number(options.batchTotal || desired));
+    const generated = options.sharedBatchProgress && context ? context.created.length : offset;
+    updateProgress("逐张生成中", `正在精确生成 ${desired} 张图片`, 30, { generated, total });
+    return requestSingleImages(endpoint, options, desired, offset, total, context);
   }
 
   const title = desired > 1 ? "批量优先生成中" : "生成中";
@@ -1743,7 +1770,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
           }
           const retryDelay = options.apiProvider === "platform" ? PLATFORM_GENERATION_RETRY_DELAY_MS : 900;
           updateProgress("重试单张生成", `第 ${absoluteIndex + 1}/${total} 张失败：${lastError}，正在重试`, currentProgress, {
-            generated: offset + images.filter(Boolean).length,
+            generated: requestSingleProgressGenerated(options, context, offset, images),
             total,
           });
           await wait(retryDelay);
@@ -1773,7 +1800,7 @@ async function requestSingleImages(endpoint, options, desired, offset = 0, total
         "逐张生成中",
         `已生成 ${offset + imageCount}/${total} 张，已完成 ${completed}/${desired} 次请求`,
         progressStart + (completed / desired) * progressRange,
-        { generated: offset + imageCount, total },
+        { generated: requestSingleProgressGenerated(options, context, offset, images), total },
       );
     }
   });
@@ -1792,7 +1819,13 @@ function getSingleRequestConcurrency() {
   return 1;
 }
 
+function requestSingleProgressGenerated(options = {}, context = null, offset = 0, images = []) {
+  if (options.sharedBatchProgress && context) return context.created.length;
+  return offset + images.filter(Boolean).length;
+}
+
 function shouldUseSingleImageRequests(options, desired) {
+  if (options.forceSingleRequests) return true;
   if (options.apiProvider === "platform") return true;
   if (desired <= PLATFORM_MAX_BATCH_REQUEST_COUNT) return false;
   return true;
@@ -3115,7 +3148,7 @@ function looksLikeHtml(value) {
 }
 
 function buildPrompt(options) {
-  const batchHint = options.batchTotal > 1 ? `Variation ${options.batchIndex} of ${options.batchTotal}.` : "";
+  const batchHint = options.batchTotal > 1 && !options.suppressBatchHint ? `Variation ${options.batchIndex} of ${options.batchTotal}.` : "";
   return [options.prompt, batchHint, options.negativePrompt ? `Negative prompt: ${options.negativePrompt}` : ""].filter(Boolean).join("\n");
 }
 
@@ -4377,6 +4410,648 @@ async function addReferenceFilesNow(files, options = {}) {
 async function onReferenceFiles(event) {
   await addReferenceFiles(event.target.files, { notify: false });
   event.target.value = "";
+}
+
+function openBatchPanel() {
+  $("#batchPanel")?.classList.add("open");
+  renderBatchPanel();
+}
+
+function closeBatchPanel() {
+  $("#batchPanel")?.classList.remove("open");
+}
+
+async function onBatchFiles(event) {
+  try {
+    await addBatchFiles(event.target.files, { notify: true });
+  } catch (error) {
+    showToast(error.message || "批量图片添加失败");
+  } finally {
+    event.target.value = "";
+  }
+}
+
+function onBatchPanelDragOver(event) {
+  if (!hasFileDragPayload(event.dataTransfer)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+}
+
+async function onBatchPanelDrop(event) {
+  if (!hasFileDragPayload(event.dataTransfer)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  resetReferenceDragState();
+  try {
+    await addBatchFiles(droppedImageFiles(event.dataTransfer), { notify: true });
+  } catch (error) {
+    showToast(error.message || "批量图片添加失败");
+  }
+}
+
+async function addBatchFiles(files, options = {}) {
+  const imageFiles = Array.from(files || []).filter(isImageFile);
+  if (!imageFiles.length) {
+    if (options.notify !== false) showToast("未检测到图片文件");
+    return 0;
+  }
+
+  const settings = currentGenerationSettingsSnapshot();
+  let added = 0;
+  let failed = 0;
+  for (const file of imageFiles) {
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      batchState.items.push(normalizeBatchItem({
+        ...settings,
+        id: makeId(),
+        name: file.name || `batch-${batchState.items.length + 1}.png`,
+        dataUrl,
+        selected: true,
+        status: "ready",
+        statusText: "待生成",
+      }));
+      added += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+
+  if (!added) {
+    if (options.notify !== false) showToast("图片读取失败，请重试");
+    return 0;
+  }
+
+  openBatchPanel();
+  renderBatchPanel();
+  if (options.notify !== false) {
+    showToast(failed ? `已添加 ${added} 张批量图片，${failed} 张读取失败` : `已添加 ${added} 张批量图片`);
+  }
+  return added;
+}
+
+function currentGenerationSettingsSnapshot() {
+  return normalizeBatchSettings({
+    prompt: $("#promptInput")?.value.trim() || "",
+    negativePrompt: $("#negativePrompt")?.value.trim() || "",
+    ratio: $("#ratioSelect")?.value || "auto",
+    resolutionTier: $("#resolutionTierSelect")?.value || "1K",
+    size: $("#sizeSelect")?.value || "auto",
+    count: $("#countSelect")?.value || 1,
+    quality: $("#qualitySelect")?.value || "standard",
+    seed: $("#seedInput")?.value.trim() || "",
+    model: getModelName(),
+  });
+}
+
+function canvasGenerationSettingsSnapshot(item = {}) {
+  const reusable = inferReusableImageSettings(item);
+  const fallback = currentGenerationSettingsSnapshot();
+  return normalizeBatchSettings({
+    ...fallback,
+    prompt: item.prompt || "",
+    model: reusable.model || fallback.model,
+    ratio: reusable.ratio || fallback.ratio,
+    resolutionTier: reusable.resolutionTier || fallback.resolutionTier,
+    size: reusable.size || fallback.size,
+    quality: reusable.quality || fallback.quality,
+  });
+}
+
+function normalizeBatchSettings(settings = {}) {
+  const model = batchModelOption(settings.model);
+  const ratio = ratioPresets.some((preset) => preset.value === settings.ratio) ? settings.ratio : "auto";
+  const allowedTiers = normalizeResolutionTiers(model?.tiers, model?.name);
+  const requestedTier = String(settings.resolutionTier || "").trim().toUpperCase();
+  const resolutionTier = allowedTiers.includes(requestedTier) ? requestedTier : allowedTiers[0] || "1K";
+  const size = normalizeBatchSize(settings.size, ratio, resolutionTier);
+  const quality = qualityPresets.some((preset) => preset.value === settings.quality) ? settings.quality : "standard";
+  return {
+    prompt: String(settings.prompt || ""),
+    negativePrompt: String(settings.negativePrompt || ""),
+    ratio,
+    resolutionTier,
+    size,
+    count: normalizeBatchCount(settings.count),
+    quality,
+    seed: String(settings.seed || "").trim(),
+    model: model?.name || normalizeModelName(settings.model || FIXED_MODEL_NAME),
+  };
+}
+
+function normalizeBatchItem(item = {}) {
+  return {
+    id: item.id || makeId(),
+    name: item.name || "batch-image.png",
+    dataUrl: item.dataUrl || "",
+    selected: item.selected !== false,
+    status: item.status || "ready",
+    statusText: item.statusText || "待生成",
+    error: item.error || "",
+    ...normalizeBatchSettings(item),
+  };
+}
+
+function normalizeBatchCount(value) {
+  const count = Math.round(Number(value) || 1);
+  return Math.max(1, Math.min(8, count));
+}
+
+function normalizeBatchSize(value, ratio, resolutionTier) {
+  const clean = normalizeReusableSize(value);
+  if (ratio === "auto") return "auto";
+  const presetSize = requestSizeFromRatio(ratio, resolutionTier) || DEFAULT_IMAGE_SIZE;
+  return clean && clean !== "auto" ? clean : presetSize;
+}
+
+function batchModelOption(modelName = "") {
+  const options = currentModelOptions();
+  const clean = cleanModelName(modelName);
+  return options.find((item) => item.name === clean) || options[0] || DEFAULT_MODEL_OPTIONS[0];
+}
+
+function modelPriceCentsForName(modelName = "") {
+  const model = batchModelOption(modelName);
+  return normalizeModelPriceCents(model?.priceCents || billingState.priceCents, model?.name || modelName);
+}
+
+function selectedBatchItems() {
+  return batchState.items.filter((item) => item.selected);
+}
+
+function targetBatchItems(selectedOnly = false) {
+  const targets = selectedOnly ? selectedBatchItems() : batchState.items;
+  if (targets.length) return targets;
+  showToast(selectedOnly ? "请先勾选要处理的图片" : "请先上传批量图片");
+  return [];
+}
+
+function applyCurrentSettingsToBatch(selectedOnly = false) {
+  const targets = targetBatchItems(selectedOnly);
+  if (!targets.length) return;
+  applySettingsToBatchItems(currentGenerationSettingsSnapshot(), targets);
+  showToast(selectedOnly ? "已把当前参数套用到选中图片" : "已把当前参数套用到全部图片");
+}
+
+function fillBatchFromCanvas(selectedOnly = false) {
+  const canvasItem = selectedResult() || state.results[0] || galleryState.items[0];
+  if (!canvasItem) {
+    showToast("请先在画布中选中一张图片");
+    return;
+  }
+  const targets = targetBatchItems(selectedOnly);
+  if (!targets.length) return;
+  applySettingsToBatchItems(canvasGenerationSettingsSnapshot(canvasItem), targets);
+  showToast(selectedOnly ? "已把画布参数回填到选中图片" : "已把画布参数回填到全部图片");
+}
+
+function applySettingsToBatchItems(settings, targets) {
+  const normalized = normalizeBatchSettings(settings);
+  for (const item of targets) {
+    Object.assign(item, normalized, {
+      status: item.status === "running" ? item.status : "ready",
+      statusText: item.status === "running" ? item.statusText : "待生成",
+      error: "",
+    });
+  }
+  renderBatchPanel();
+}
+
+function onBatchSelectAll(event) {
+  const checked = Boolean(event.target.checked);
+  batchState.items.forEach((item) => {
+    item.selected = checked;
+  });
+  renderBatchPanel();
+}
+
+function removeSelectedBatchItems() {
+  const before = batchState.items.length;
+  batchState.items = batchState.items.filter((item) => !item.selected || item.status === "running");
+  if (batchState.items.length === before) {
+    showToast(before ? "没有可移除的选中图片" : "批量列表为空");
+    return;
+  }
+  renderBatchPanel();
+  showToast("已移除选中图片");
+}
+
+function onBatchListInput(event) {
+  const control = event.target.closest("[data-batch-field]");
+  if (!control) return;
+  const item = batchState.items.find((entry) => entry.id === control.closest("[data-batch-id]")?.dataset.batchId);
+  if (!item || item.status === "running") return;
+  const field = control.dataset.batchField;
+  if (!["prompt", "negativePrompt", "seed"].includes(field)) return;
+  item[field] = control.value;
+  item.error = "";
+  if (field === "prompt") autoGrow(control);
+}
+
+function onBatchListChange(event) {
+  const control = event.target.closest("[data-batch-field]");
+  if (!control) return;
+  const item = batchState.items.find((entry) => entry.id === control.closest("[data-batch-id]")?.dataset.batchId);
+  if (!item || item.status === "running") {
+    renderBatchPanel();
+    return;
+  }
+  const field = control.dataset.batchField;
+  if (field === "selected") {
+    item.selected = Boolean(control.checked);
+    renderBatchPanel();
+    return;
+  }
+
+  if (field === "count") {
+    item.count = normalizeBatchCount(control.value);
+  } else if (field === "model") {
+    item.model = batchModelOption(control.value)?.name || normalizeModelName(control.value);
+    Object.assign(item, normalizeBatchSettings(item));
+  } else if (field === "ratio") {
+    item.ratio = ratioPresets.some((preset) => preset.value === control.value) ? control.value : "auto";
+    item.size = normalizeBatchSize("", item.ratio, item.resolutionTier);
+  } else if (field === "resolutionTier") {
+    item.resolutionTier = String(control.value || "").trim().toUpperCase();
+    Object.assign(item, normalizeBatchSettings(item));
+  } else if (field === "size") {
+    item.size = normalizeBatchSize(control.value, item.ratio, item.resolutionTier);
+  } else if (field === "quality") {
+    item.quality = qualityPresets.some((preset) => preset.value === control.value) ? control.value : "standard";
+  }
+  item.error = "";
+  item.status = "ready";
+  item.statusText = "待生成";
+  renderBatchPanel();
+}
+
+function onBatchListClick(event) {
+  const button = event.target.closest("[data-batch-action]");
+  if (!button) return;
+  const itemId = button.closest("[data-batch-id]")?.dataset.batchId || "";
+  const item = batchState.items.find((entry) => entry.id === itemId);
+  if (!item) return;
+  if (button.dataset.batchAction === "remove") {
+    if (item.status === "running") {
+      showToast("生成中的图片不能移除");
+      return;
+    }
+    batchState.items = batchState.items.filter((entry) => entry.id !== itemId);
+    renderBatchPanel();
+  }
+}
+
+function renderBatchPanel() {
+  const list = $("#batchList");
+  if (!list) return;
+  batchState.items = batchState.items.filter(Boolean);
+  batchState.items.forEach((item) => Object.assign(item, normalizeBatchItem(item)));
+  const countEl = $("#batchItemCount");
+  if (countEl) countEl.textContent = `${batchState.items.length}张`;
+
+  const selectedCount = selectedBatchItems().length;
+  const selectAll = $("#batchSelectAll");
+  if (selectAll) {
+    selectAll.checked = Boolean(batchState.items.length && selectedCount === batchState.items.length);
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < batchState.items.length;
+    selectAll.disabled = isGenerating || !batchState.items.length;
+  }
+  ["batchRemoveSelected", "batchApplyCurrentSelected", "batchFillCanvasSelected"].forEach((id) => {
+    const button = $(`#${id}`);
+    if (button) button.disabled = isGenerating || !selectedCount;
+  });
+  ["batchApplyCurrentAll", "batchFillCanvasAll"].forEach((id) => {
+    const button = $(`#${id}`);
+    if (button) button.disabled = isGenerating || !batchState.items.length;
+  });
+  const generateButton = $("#batchGenerateButton");
+  if (generateButton) generateButton.disabled = isGenerating || !selectedCount;
+
+  if (!batchState.items.length) {
+    list.innerHTML = `<div class="log-empty">上传图片后会在这里逐张编辑提示词与参数。</div>`;
+    renderIcons();
+    return;
+  }
+
+  list.innerHTML = batchState.items.map(renderBatchItem).join("");
+  list.querySelectorAll("textarea").forEach(autoGrow);
+  renderIcons();
+}
+
+function renderBatchItem(item, index) {
+  const statusClass = item.status === "failed" ? "failed" : item.status === "success" || item.status === "partial" ? "success" : "";
+  return `
+    <article class="batch-item${item.selected ? " selected" : ""}" data-batch-id="${escapeHtml(item.id)}">
+      <div class="batch-thumb">
+        <img src="${escapeHtml(item.dataUrl)}" alt="${escapeHtml(item.name)}" />
+        <label>
+          <input type="checkbox" data-batch-field="selected" ${item.selected ? "checked" : ""} ${isGenerating ? "disabled" : ""} />
+          <span>选中</span>
+        </label>
+      </div>
+      <div class="batch-main">
+        <div class="batch-row-head">
+          <strong title="${escapeHtml(item.name)}">${index + 1}. ${escapeHtml(item.name)}</strong>
+          <button class="icon-button" type="button" title="移除" data-batch-action="remove" ${isGenerating ? "disabled" : ""}>
+            <i data-icon="x"></i>
+          </button>
+        </div>
+        <textarea data-batch-field="prompt" placeholder="输入这张图的提示词" ${isGenerating ? "disabled" : ""}>${escapeHtml(item.prompt || "")}</textarea>
+        <div class="batch-grid">
+          <select data-batch-field="model" title="模型" ${isGenerating ? "disabled" : ""}>${batchModelOptionsHtml(item.model)}</select>
+          <select data-batch-field="count" title="数量" ${isGenerating ? "disabled" : ""}>${batchCountOptionsHtml(item.count)}</select>
+          <select data-batch-field="ratio" title="比例" ${isGenerating ? "disabled" : ""}>${batchRatioOptionsHtml(item.ratio)}</select>
+          <select data-batch-field="resolutionTier" title="清晰度" ${isGenerating ? "disabled" : ""}>${batchTierOptionsHtml(item)}</select>
+          <select data-batch-field="size" title="尺寸" ${isGenerating ? "disabled" : ""}>${batchSizeOptionsHtml(item)}</select>
+          <select data-batch-field="quality" title="质量" ${isGenerating ? "disabled" : ""}>${batchQualityOptionsHtml(item.quality)}</select>
+          <input data-batch-field="negativePrompt" type="text" placeholder="反向提示词" value="${escapeHtml(item.negativePrompt || "")}" ${isGenerating ? "disabled" : ""} />
+          <input data-batch-field="seed" type="number" placeholder="种子" value="${escapeHtml(item.seed || "")}" ${isGenerating ? "disabled" : ""} />
+        </div>
+        <div class="batch-status ${statusClass}">${escapeHtml(batchStatusText(item))}</div>
+      </div>
+    </article>
+  `;
+}
+
+function batchModelOptionsHtml(selected) {
+  const current = batchModelOption(selected)?.name || selected;
+  return currentModelOptions().map((item) => optionHtml(item.name, item.displayName || item.name).replace(`value="${escapeHtml(item.name)}"`, `value="${escapeHtml(item.name)}"${item.name === current ? " selected" : ""}`)).join("");
+}
+
+function batchCountOptionsHtml(selected) {
+  const current = normalizeBatchCount(selected);
+  return [1, 2, 3, 4, 6, 8].map((count) => `<option value="${count}"${count === current ? " selected" : ""}>${count} 张</option>`).join("");
+}
+
+function batchRatioOptionsHtml(selected) {
+  const current = ratioPresets.some((preset) => preset.value === selected) ? selected : "auto";
+  return ratioPresets.map((item) => `<option value="${escapeHtml(item.value)}"${item.value === current ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+}
+
+function batchTierOptionsHtml(item) {
+  const model = batchModelOption(item.model);
+  const allowed = normalizeResolutionTiers(model?.tiers, model?.name);
+  const current = allowed.includes(item.resolutionTier) ? item.resolutionTier : allowed[0] || "1K";
+  return RESOLUTION_TIERS
+    .filter((tier) => allowed.includes(tier.value))
+    .map((tier) => `<option value="${escapeHtml(tier.value)}"${tier.value === current ? " selected" : ""}>${escapeHtml(tier.label)}</option>`)
+    .join("");
+}
+
+function batchSizeOptionsHtml(item) {
+  if (item.ratio === "auto") return `<option value="auto" selected>自动 · 不固定尺寸</option>`;
+  const preset = ratioPresets.find((entry) => entry.value === item.ratio);
+  const size = requestSizeFromRatio(item.ratio, item.resolutionTier) || DEFAULT_IMAGE_SIZE;
+  const label = `${size} · ${preset?.note || item.ratio}`;
+  return `<option value="${escapeHtml(size)}" selected>${escapeHtml(label)}</option>`;
+}
+
+function batchQualityOptionsHtml(selected) {
+  const current = qualityPresets.some((item) => item.value === selected) ? selected : "standard";
+  return qualityPresets.map((item) => `<option value="${escapeHtml(item.value)}"${item.value === current ? " selected" : ""}>${escapeHtml(item.label)}</option>`).join("");
+}
+
+function batchStatusText(item) {
+  if (item.status === "running") return item.statusText || "生成中";
+  if (item.status === "success") return item.statusText || "已生成";
+  if (item.status === "partial") return item.statusText || "部分完成";
+  if (item.status === "failed") return item.error ? `失败：${item.error}` : item.statusText || "失败";
+  return item.statusText || "待生成";
+}
+
+async function generateBatchImages() {
+  if (isGenerating) {
+    showToast("正在生成中，请稍候");
+    return;
+  }
+
+  const targets = selectedBatchItems();
+  if (!targets.length) {
+    showToast(batchState.items.length ? "请先勾选要生成的图片" : "请先上传批量图片");
+    return;
+  }
+
+  const missingPromptIndex = targets.findIndex((item) => !String(item.prompt || "").trim());
+  if (missingPromptIndex >= 0) {
+    showToast(`第 ${batchState.items.indexOf(targets[missingPromptIndex]) + 1} 张图片缺少提示词`);
+    return;
+  }
+
+  const usePlatformApi = isPlatformApiSelected();
+  if (usePlatformApi) {
+    await ensurePlatformReadyForGeneration();
+  }
+  if (usePlatformApi && billingState.configLoaded && !billingState.platformEnabled) {
+    $("#walletPanel").classList.add("open");
+    showToast("站点 API 暂未配置，请联系站长处理");
+    return;
+  }
+  if (usePlatformApi && !billingState.authenticated) {
+    $("#walletPanel").classList.add("open");
+    showToast(currentWalletSessionToken() ? "登录状态还在同步，请稍后再点生成" : "请先用邮箱登录后再使用站点 API");
+    setTimeout(() => $("#loginEmailInput")?.focus(), 0);
+    return;
+  }
+
+  const jobs = [];
+  let totalImages = 0;
+  for (const item of targets) {
+    const normalized = normalizeBatchItem(item);
+    Object.assign(item, normalized);
+    if (!item.dataUrl) {
+      showToast(`${item.name || "图片"} 缺少参考图数据`);
+      return;
+    }
+    const endpointInfo = resolveEndpointForMode("image", item.model);
+    if (!endpointInfo.endpoint) {
+      if (usePlatformApi) $("#walletPanel").classList.add("open");
+      else openCustomApiAdminSection();
+      showToast(endpointInfo.message || "请先配置图生图 API URL");
+      return;
+    }
+    if (endpointInfo.inferred) showToast(endpointInfo.message);
+    jobs.push({
+      item,
+      endpoint: endpointInfo.endpoint,
+      offset: totalImages,
+      count: normalizeBatchCount(item.count),
+    });
+    totalImages += normalizeBatchCount(item.count);
+  }
+
+  if (usePlatformApi && billingState.configLoaded) {
+    const requiredCents = jobs.reduce((sum, job) => sum + job.count * modelPriceCentsForName(job.item.model), 0);
+    if (billingState.balanceCents < requiredCents) {
+      $("#walletPanel").classList.add("open");
+      showToast(`余额不足，本次预计需要 ${formatMoney(requiredCents)} 元`);
+      renderWallet();
+      return;
+    }
+  }
+
+  const generationId = makeId();
+  const logCode = makeLogCode();
+  generationAbortController = new AbortController();
+  generationCancelled = false;
+  const aggregateOptions = {
+    mode: "image",
+    prompt: `批量处理 ${jobs.length} 张图片`,
+    negativePrompt: "",
+    ratio: "auto",
+    size: "auto",
+    resolutionTier: "",
+    count: totalImages,
+    multiImageMode: "batch",
+    quality: "",
+    seed: "",
+    model: dedupe(jobs.map((job) => job.item.model)).join(", "),
+    logCode,
+    referenceImages: jobs.map((job) => ({ id: job.item.id, name: job.item.name, dataUrl: job.item.dataUrl })),
+    generationId,
+    abortSignal: generationAbortController.signal,
+    apiProvider: usePlatformApi ? "platform" : "custom",
+    platformPriceCents: usePlatformApi ? 0 : 0,
+  };
+  aggregateOptions.apiDisplayName = currentApiDisplayName(jobs[0]?.endpoint || "", aggregateOptions);
+  state.lastOptions = aggregateOptions;
+  activeGenerationLog = startGenerationLog(jobs[0]?.endpoint || "", aggregateOptions);
+
+  isGenerating = true;
+  setGenerating(true);
+  jobs.forEach((job) => {
+    job.item.status = "ready";
+    job.item.statusText = "等待生成";
+    job.item.error = "";
+  });
+  renderBatchPanel();
+  startProgress("批量生成中", `准备并行生成 ${totalImages} 张图片`, 8, { generated: 0, total: totalImages });
+
+  const context = createGenerationContext(aggregateOptions);
+  let failedJobs = 0;
+  try {
+    await runLimited(jobs, Math.min(BATCH_GENERATION_CONCURRENCY, jobs.length), async (job) => {
+      if (generationCancelled) return;
+      const { item, endpoint, offset, count } = job;
+      item.status = "running";
+      item.statusText = `生成中，预计 ${count} 张`;
+      renderBatchPanel();
+
+      const options = {
+        mode: "image",
+        prompt: String(item.prompt || "").trim(),
+        negativePrompt: String(item.negativePrompt || "").trim(),
+        ratio: item.ratio || "auto",
+        size: item.size || "auto",
+        resolutionTier: item.resolutionTier || "",
+        count,
+        multiImageMode: "single",
+        quality: item.quality || "standard",
+        seed: item.seed || "",
+        model: item.model || getModelName(),
+        logCode,
+        referenceImages: [{ id: item.id, name: item.name, dataUrl: item.dataUrl }],
+        generationId,
+        abortSignal: generationAbortController.signal,
+        apiProvider: usePlatformApi ? "platform" : "custom",
+        platformPriceCents: usePlatformApi ? modelPriceCentsForName(item.model) : 0,
+        apiDisplayName: currentApiDisplayName(endpoint, { apiProvider: usePlatformApi ? "platform" : "custom" }),
+        batchOffset: offset,
+        batchIndex: offset + 1,
+        batchTotal: totalImages,
+        forceSingleRequests: true,
+        suppressBatchHint: true,
+        sharedBatchProgress: true,
+      };
+
+      try {
+        const images = await requestImageBatch(endpoint, options, context);
+        const createdCount = Math.min(count, Array.isArray(images) ? images.length : 0);
+        if (createdCount >= count) {
+          item.status = "success";
+          item.statusText = `完成 ${createdCount}/${count} 张`;
+        } else if (createdCount > 0) {
+          failedJobs += 1;
+          item.status = "partial";
+          item.statusText = `部分完成 ${createdCount}/${count} 张`;
+        } else {
+          failedJobs += 1;
+          item.status = "failed";
+          item.error = "接口没有返回图片";
+        }
+      } catch (error) {
+        const createdCount = 0;
+        if (createdCount > 0) {
+          failedJobs += 1;
+          item.status = "partial";
+          item.statusText = `部分完成 ${createdCount}/${count} 张：${cleanErrorMessage(error)}`;
+        } else {
+          failedJobs += 1;
+          item.status = generationCancelled || isAbortError(error) ? "ready" : "failed";
+          item.statusText = item.status === "ready" ? "已取消" : "失败";
+          item.error = generationCancelled || isAbortError(error) ? "" : cleanErrorMessage(error);
+          if (!generationCancelled && usePlatformApi && !options.platformFailureReported) {
+            options.platformFailureReported = true;
+            void reportPlatformGenerationFailure(options, error, 0);
+          }
+        }
+      } finally {
+        renderBatchPanel();
+        updateProgress("批量生成中", `已生成 ${context.created.length}/${totalImages} 张，已处理 ${jobs.filter((entry) => ["success", "partial", "failed"].includes(entry.item.status)).length}/${jobs.length} 个任务`, Math.min(92, 18 + (jobs.filter((entry) => ["success", "partial", "failed"].includes(entry.item.status)).length / jobs.length) * 70), {
+          generated: context.created.length,
+          total: totalImages,
+        });
+      }
+    });
+
+    const created = context.created.length;
+    const finalStatus = generationCancelled ? "cancelled" : created >= totalImages ? "completed" : created ? "partial" : "failed";
+    const finalMessage = generationCancelled
+      ? `批量生成已取消，保留 ${created}/${totalImages} 张图片`
+      : created >= totalImages
+        ? `批量生成完成，共 ${created}/${totalImages} 张图片`
+        : created
+          ? `批量生成部分完成，保留 ${created}/${totalImages} 张图片，${failedJobs} 个任务失败`
+          : "批量生成失败，没有可保留的图片";
+    finishGenerationLog(finalStatus, {
+      imageCount: created,
+      message: finalStatus === "failed" ? "" : finalMessage,
+      error: finalStatus === "failed" ? finalMessage : "",
+    });
+    updateProgress(finalStatus === "failed" ? "批量生成失败" : finalStatus === "cancelled" ? "批量生成已取消" : "批量生成完成", `${finalMessage}，用时 ${formatDurationLabel(Date.now() - progressStartedAt)}`, 100, {
+      generated: created,
+      total: totalImages,
+    });
+    showToast(finalMessage);
+  } catch (error) {
+    const created = context.created.length;
+    const cancelled = generationCancelled || isAbortError(error);
+    const finalMessage = cancelled
+      ? `批量生成已取消，保留 ${created}/${totalImages} 张图片`
+      : created
+        ? `批量生成部分完成，保留 ${created}/${totalImages} 张图片：${error.message || "生成失败"}`
+        : error.message || "批量生成失败";
+    finishGenerationLog(cancelled ? "cancelled" : created ? "partial" : "failed", {
+      imageCount: created,
+      message: created ? finalMessage : "",
+      error: created ? "" : finalMessage,
+    });
+    updateProgress(cancelled ? "批量生成已取消" : created ? "批量部分完成" : "批量生成失败", finalMessage, 100, {
+      generated: created,
+      total: totalImages,
+    });
+    showToast(finalMessage);
+  } finally {
+    setTimeout(() => {
+      isGenerating = false;
+      activeGenerationLog = null;
+      generationAbortController = null;
+      generationCancelled = false;
+      setGenerating(false);
+      renderBatchPanel();
+      hideProgress();
+    }, 900);
+  }
 }
 
 function isImageFile(file) {
@@ -7658,6 +8333,8 @@ function setGenerating(generating) {
   $("#generateButton").disabled = generating;
   $("#generateButton").innerHTML = generating ? '<i data-icon="sparkles"></i>' : '<i data-icon="arrow-right"></i>';
   $("#cancelGenerateButton").hidden = !generating;
+  $("#batchUploadButton") && ($("#batchUploadButton").disabled = generating);
+  renderBatchPanel();
   renderIcons();
 }
 

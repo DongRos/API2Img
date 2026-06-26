@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>满血Image2生图-支持4K</title>
     <link rel="icon" type="image/png" href="./icon.png?v=2" />
-    <link rel="stylesheet" href="./styles.css?v=55" />
+    <link rel="stylesheet" href="./styles.css?v=56" />
   </head>
   <body data-theme="dark">
     <script>
@@ -38,6 +38,9 @@
           </button>
           <button class="pill-button wallet-chip" id="walletToggle" type="button">
             <i data-icon="wallet"></i><span id="walletBalance">余额 --</span>
+          </button>
+          <button class="pill-button" id="batchToggle" type="button">
+            <i data-icon="layers"></i><span>批量处理</span>
           </button>
           <button class="pill-button" id="logsToggle" type="button">
             <i data-icon="list"></i><span>生成日志</span>
@@ -495,6 +498,53 @@
         <div id="generationLogList" class="generation-log-list"></div>
       </aside>
 
+      <aside id="batchPanel" class="batch-panel">
+        <div class="panel-header">
+          <div>
+            <h2>批量处理 <span id="batchItemCount" class="section-count">0张</span></h2>
+            <p>批量上传图片，每张可单独设置提示词和参数，也可一键套用当前输入框或画布设置。</p>
+          </div>
+          <button class="icon-button" id="closeBatchPanel" title="关闭" type="button">
+            <i data-icon="x"></i>
+          </button>
+        </div>
+
+        <div class="batch-actions">
+          <button class="pill-button primary" id="batchUploadButton" type="button">
+            <i data-icon="upload"></i><span>上传图片</span>
+          </button>
+          <button class="pill-button" id="batchApplyCurrentSelected" type="button">
+            <i data-icon="check"></i><span>当前到选中</span>
+          </button>
+          <button class="pill-button" id="batchApplyCurrentAll" type="button">
+            <i data-icon="check"></i><span>当前到全部</span>
+          </button>
+          <button class="pill-button" id="batchFillCanvasSelected" type="button">
+            <i data-icon="rotate"></i><span>画布到选中</span>
+          </button>
+          <button class="pill-button" id="batchFillCanvasAll" type="button">
+            <i data-icon="rotate"></i><span>画布到全部</span>
+          </button>
+        </div>
+
+        <div class="batch-toolbar">
+          <label class="check-line batch-check-all">
+            <input id="batchSelectAll" type="checkbox" />
+            <span>全选</span>
+          </label>
+          <button class="pill-button" id="batchRemoveSelected" type="button">
+            <i data-icon="trash"></i><span>移除选中</span>
+          </button>
+          <button class="pill-button primary" id="batchGenerateButton" type="button">
+            <i data-icon="sparkles"></i><span>并行生成</span>
+          </button>
+        </div>
+
+        <div id="batchList" class="batch-list">
+          <div class="log-empty">上传图片后会在这里逐张编辑提示词与参数。</div>
+        </div>
+      </aside>
+
     </div>
 
     <section id="detailModal" class="detail-modal" hidden>
@@ -551,6 +601,7 @@
 
     <div id="toast" class="toast" hidden></div>
     <input id="imageInput" type="file" accept="image/*" multiple hidden />
-    <script src="./app.js?v=122"></script>
+    <input id="batchImageInput" type="file" accept="image/*" multiple hidden />
+    <script src="./app.js?v=123"></script>
   </body>
 </html>
